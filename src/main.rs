@@ -47,6 +47,14 @@ struct Args {
     #[arg(long)]
     unsafe_routes: bool,
 
+    /// Restrict search strictly to NPC stations (guaranteed public docking)
+    #[arg(long)]
+    npc_only: bool,
+
+    /// Allow player-owned structures (Upwell Citadels) in search pool
+    #[arg(long, aliases = ["allow-citadels", "include-structures"])]
+    allow_structures: bool,
+
     /// Minimum net profit filter in ISK
     #[arg(long)]
     min_profit: Option<f64>,
@@ -114,6 +122,11 @@ async fn main() -> Result<()> {
     } else if args.unsafe_routes {
         cfg.scan.safe_route_only = false;
     }
+    if args.npc_only {
+        cfg.scan.npc_stations_only = true;
+    } else if args.allow_structures {
+        cfg.scan.npc_stations_only = false;
+    }
     if let Some(min_p) = args.min_profit {
         cfg.filters.min_profit_isk = min_p;
     }
@@ -149,9 +162,17 @@ async fn main() -> Result<()> {
     println!(
         " Safe Highsec Routing: {}",
         if cfg.scan.safe_route_only {
-            "Yes (Avoid Lowsec/Nullsec)"
+            "Yes (Highsec Space Only)"
         } else {
             "No (All space)"
+        }
+    );
+    println!(
+        " Station Access Pool: {}",
+        if cfg.scan.npc_stations_only {
+            "NPC Stations Only (Preferred)"
+        } else {
+            "Include Player Citadels / Upwell Structures"
         }
     );
     println!(
@@ -191,6 +212,13 @@ async fn main() -> Result<()> {
     let graph = Arc::new(graph);
     println!(" Stargate Graph ready.");
 
+    if !graph.is_highsec(home_system_id) {
+        println!(
+            " ⚠ Notice: Starting system '{}' is Lowsec/Nullsec (sec < 0.45). Only Highsec trades will be scanned.",
+            home_system_name
+        );
+    }
+
     // 3. Initialize ESI Client
     let cache_dir = PathBuf::from(&cfg.cache.directory);
     let esi = EsiClient::new(&cache_dir).context("Failed to initialize ESI API client")?;
@@ -224,7 +252,7 @@ async fn main() -> Result<()> {
         broker_fee: cfg.fees.broker_fee_pct,
         sales_tax: cfg.fees.sales_tax_pct,
         safe_only: cfg.scan.safe_route_only,
-        npc_stations_only: true,
+        npc_stations_only: cfg.scan.npc_stations_only,
     };
 
     let deals = find_deals(&markets, &sde, &graph, &arb_cfg);
@@ -271,6 +299,7 @@ async fn main() -> Result<()> {
             is_big,
             home_system_name,
             cfg.scan.safe_route_only,
+            cfg.scan.npc_stations_only,
             cfg.filters.min_net_profit_pct,
             cfg.filters.min_profit_isk,
             cfg.scan.regions.clone(),
@@ -287,6 +316,7 @@ async fn main() -> Result<()> {
             ship_profile,
             &home_system_name,
             cfg.scan.safe_route_only,
+            cfg.scan.npc_stations_only,
         )?;
     } else {
         print_cli_summary(&deals, &route, args.top, args.route);

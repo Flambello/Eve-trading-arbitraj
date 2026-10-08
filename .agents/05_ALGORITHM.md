@@ -202,13 +202,14 @@ Orders pass through the following filters in order:
 Raw ESI orders
     │
     ├── [F1] Remove zero-volume / expired orders
-    ├── [F2] Remove orders in Upwell structures (location_id > 1e12) [optional]
-    ├── [F3] Remove items with packaged_volume == 0 or unpublished
-    ├── [F4] Remove pairs with spread < min_spread_pct
-    ├── [F5] Remove deals with net_profit < min_profit
-    ├── [F6] Enforce minimum net profitability: net_profit_pct >= 15.0% after taxes
-    ├── [F7] Remove deals where quantity < 1 (don't fit in ship)
-    └── [F8] Remove deals through lowsec/nullsec (if safe_only)
+    ├── [F2] Strictly exclude Lowsec and Nullsec systems (security < 0.45): Highsec space only
+    ├── [F3] Filter Station Pool: NPC Stations Only (< 1e12) by default, or include Player Citadels (>= 1e12)
+    ├── [F4] Remove items with packaged_volume == 0 or unpublished
+    ├── [F5] Remove pairs with spread < min_spread_pct
+    ├── [F6] Remove deals with net_profit < min_profit
+    ├── [F7] Enforce minimum net profitability: net_profit_pct >= 15.0% after taxes
+    ├── [F8] Remove deals where quantity < 1 (don't fit in ship volume or budget)
+    └── [F9] Pathfinding & Jumps: Stargate path must stay in highsec without entering lowsec/nullsec
 ```
 
 ---

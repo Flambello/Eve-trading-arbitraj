@@ -30,6 +30,7 @@ pub struct AppState<'a> {
     pub ship: ShipProfile,
     pub home_system_name: String,
     pub safe_only: bool,
+    pub npc_stations_only: bool,
     pub table_state: TableState,
 }
 
@@ -40,6 +41,7 @@ impl<'a> AppState<'a> {
         ship: ShipProfile,
         home_system_name: String,
         safe_only: bool,
+        npc_stations_only: bool,
     ) -> Self {
         let mut table_state = TableState::default();
         if !deals.is_empty() {
@@ -52,6 +54,7 @@ impl<'a> AppState<'a> {
             ship,
             home_system_name,
             safe_only,
+            npc_stations_only,
             table_state,
         }
     }
@@ -97,6 +100,7 @@ pub fn run_tui(
     ship: ShipProfile,
     home_system: &str,
     safe_only: bool,
+    npc_stations_only: bool,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -104,7 +108,7 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new(deals, route, ship, home_system.to_string(), safe_only);
+    let mut state = AppState::new(deals, route, ship, home_system.to_string(), safe_only, npc_stations_only);
 
     let res = main_loop(&mut terminal, &mut state);
 
@@ -189,12 +193,13 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let title_line = format!(
-        " EVE Trade Scout │ Ship: {} ({} m³ / {} M ISK) │ Home: {} │ Safe: {} ",
+        " EVE Trade Scout │ Ship: {} ({} m³ / {} M ISK) │ Home: {} │ Safe: {} │ Stations: {} ",
         state.ship.name,
         state.ship.max_volume,
         state.ship.max_budget / 1_000_000.0,
         state.home_system_name,
-        if state.safe_only { "Highsec" } else { "Any" }
+        if state.safe_only { "Highsec" } else { "Any" },
+        if state.npc_stations_only { "NPC Only" } else { "+ Citadels" }
     );
 
     let tabs = Tabs::new(titles)

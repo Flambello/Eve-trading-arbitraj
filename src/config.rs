@@ -47,6 +47,12 @@ pub struct LocationConfig {
 pub struct ScanConfig {
     pub regions: Vec<u32>,
     pub safe_route_only: bool,
+    #[serde(default = "default_npc_stations_only")]
+    pub npc_stations_only: bool,
+}
+
+fn default_npc_stations_only() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -96,6 +102,7 @@ impl Default for UserConfig {
                 // Default to The Forge (10000002) - Jita's region
                 regions: vec![10000002],
                 safe_route_only: true,
+                npc_stations_only: true,
             },
             filters: FilterConfig {
                 min_profit_isk: 1_000_000.0,

@@ -45,6 +45,7 @@ pub struct DesktopApp {
     ship_is_big: bool,
     home_system: String,
     safe_only: bool,
+    npc_stations_only: bool,
     min_roi_pct: f64,
     min_profit_isk: f64,
     broker_fee_pct: f64,
@@ -86,6 +87,7 @@ impl DesktopApp {
         initial_ship_is_big: bool,
         initial_home_system: String,
         initial_safe_only: bool,
+        initial_npc_stations_only: bool,
         initial_min_roi: f64,
         initial_min_profit: f64,
         initial_regions: Vec<u32>,
@@ -113,6 +115,7 @@ impl DesktopApp {
             ship_is_big: initial_ship_is_big,
             home_system: initial_home_system,
             safe_only: initial_safe_only,
+            npc_stations_only: initial_npc_stations_only,
             min_roi_pct: initial_min_roi.max(15.0),
             min_profit_isk: if initial_min_profit <= 0.0 { 1_000_000.0 } else { initial_min_profit },
             broker_fee_pct: 3.0,
@@ -180,6 +183,7 @@ impl DesktopApp {
 
         let home_name = self.home_system.clone();
         let safe_only = self.safe_only;
+        let npc_stations_only = self.npc_stations_only;
         let min_roi = self.min_roi_pct.max(15.0); // Strict 15% invariant
         let min_profit = self.min_profit_isk;
         let broker_fee = self.broker_fee_pct;
@@ -237,7 +241,7 @@ impl DesktopApp {
                     broker_fee,
                     sales_tax,
                     safe_only,
-                    npc_stations_only: true,
+                    npc_stations_only,
                 };
 
                 let deals = find_deals(&markets, &sde, &graph, &arb_cfg);
@@ -452,6 +456,34 @@ impl DesktopApp {
             // Safe Highsec
             let safe_color = if self.safe_only { Color32::from_rgb(0, 230, 150) } else { Color32::from_rgb(255, 120, 120) };
             ui.checkbox(&mut self.safe_only, RichText::new("🛡️ Safe Highsec Only").color(safe_color).strong());
+
+            ui.separator();
+
+            // Station Pool Toggle (NPC Stations Only vs Include Player Citadels)
+            let (station_icon, station_text, station_color) = if self.npc_stations_only {
+                ("🏛️", "NPC Stations Only", Color32::from_rgb(0, 220, 255))
+            } else {
+                ("🏰", "+ Citadels Included", Color32::from_rgb(255, 185, 60))
+            };
+
+            let station_tip = if self.npc_stations_only {
+                "Pool: Strictly NPC Stations only (public docking guaranteed).\nClick to switch: Include player-owned Citadels / Upwell structures."
+            } else {
+                "Pool: Includes player-owned Citadels & Upwell structures.\nClick to switch: Restrict strictly to NPC Stations only."
+            };
+
+            if ui.button(RichText::new(format!("{} {}", station_icon, station_text)).color(station_color).strong())
+                .on_hover_text(station_tip)
+                .clicked()
+            {
+                self.npc_stations_only = !self.npc_stations_only;
+                let toast_msg = if self.npc_stations_only {
+                    "Station Pool: NPC Stations Only"
+                } else {
+                    "Station Pool: Player Citadels Included"
+                };
+                self.set_toast(toast_msg);
+            }
 
             ui.separator();
 
@@ -677,15 +709,21 @@ impl DesktopApp {
                                 };
                                 ui.label(RichText::new(format!("#{}", display_rank + 1)).color(rank_color).strong());
 
-                                // Item Name with selection toggle
+                                // Item Name with selection toggle and citadel badge if applicable
                                 let item_color = if is_selected {
                                     Color32::from_rgb(0, 230, 255)
                                 } else {
                                     Color32::WHITE
                                 };
-                                if ui.selectable_label(is_selected, RichText::new(&deal.item_name).color(item_color).strong()).clicked() {
-                                    toggle_select = Some(*orig_idx);
-                                }
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(is_selected, RichText::new(&deal.item_name).color(item_color).strong()).clicked() {
+                                        toggle_select = Some(*orig_idx);
+                                    }
+                                    if !crate::arbitrage::is_npc_station(deal.source_station_id) || !crate::arbitrage::is_npc_station(deal.dest_station_id) {
+                                        ui.label(RichText::new("🏰").color(Color32::from_rgb(255, 185, 60)).strong())
+                                            .on_hover_text("Includes player-owned Upwell Citadel / Structure");
+                                    }
+                                });
 
                                 ui.label(RichText::new(&deal.source_system_name).color(Color32::from_rgb(120, 200, 255)));
                                 ui.label(RichText::new(&deal.dest_system_name).color(Color32::from_rgb(255, 140, 240)));
@@ -784,7 +822,14 @@ impl DesktopApp {
                 ui.columns(3, |cols| {
                     // Column 1: Buy Details
                     cols[0].heading(RichText::new("🛒 PURCHASE").size(13.0).color(Color32::from_rgb(100, 200, 255)));
+                    let src_is_npc = crate::arbitrage::is_npc_station(deal.source_station_id);
+                    let (src_badge, src_badge_color) = if src_is_npc {
+                        ("🏛️ NPC Station", Color32::from_rgb(100, 210, 255))
+                    } else {
+                        ("🏰 Upwell Citadel", Color32::from_rgb(255, 185, 60))
+                    };
                     cols[0].label(RichText::new(&deal.source_station_name).size(12.0).strong());
+                    cols[0].label(RichText::new(src_badge).size(11.0).color(src_badge_color).strong());
                     cols[0].label(format!("System: {} ({} jumps from home)", deal.source_system_name, deal.jumps_from_home));
                     cols[0].label(format!("Unit Price: {:.2} ISK", deal.buy_price));
                     cols[0].label(format!("Quantity: {} units", deal.quantity));
@@ -795,7 +840,14 @@ impl DesktopApp {
 
                     // Column 2: Sell Details
                     cols[1].heading(RichText::new("💰 SALE").size(13.0).color(Color32::from_rgb(255, 140, 240)));
+                    let dst_is_npc = crate::arbitrage::is_npc_station(deal.dest_station_id);
+                    let (dst_badge, dst_badge_color) = if dst_is_npc {
+                        ("🏛️ NPC Station", Color32::from_rgb(100, 210, 255))
+                    } else {
+                        ("🏰 Upwell Citadel", Color32::from_rgb(255, 185, 60))
+                    };
                     cols[1].label(RichText::new(&deal.dest_station_name).size(12.0).strong());
+                    cols[1].label(RichText::new(dst_badge).size(11.0).color(dst_badge_color).strong());
                     cols[1].label(format!("System: {} ({} jumps delivery)", deal.dest_system_name, deal.jumps_source_dest));
                     cols[1].label(format!("Unit Price: {:.2} ISK", deal.sell_price));
                     cols[1].label(format!("Gross Revenue: {:.2}M ISK", (deal.sell_price * deal.quantity as f64) / 1_000_000.0));
@@ -1017,7 +1069,29 @@ impl DesktopApp {
 
             ui.add_space(12.0);
 
-            // Card 3: Enforced Invariants
+            // Card 3: Station & Structure Access Pool
+            egui::Frame::none()
+                .fill(Color32::from_rgb(18, 25, 40))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(32, 45, 72)))
+                .rounding(6.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("🏛️ Station & Structure Access Pool").size(15.0).color(Color32::from_rgb(0, 210, 255)).strong());
+                    ui.label("Configure whether arbitrage deals should strictly target NPC stations or allow player-owned Citadels:");
+                    ui.add_space(8.0);
+
+                    if ui.radio_value(&mut self.npc_stations_only, true, "🏛️ Preferred: Only NPC Stations (Guaranteed public docking, no access lockouts)").changed() {
+                        self.set_toast("Station Pool: Set to NPC Stations Only");
+                    }
+                    ui.add_space(4.0);
+                    if ui.radio_value(&mut self.npc_stations_only, false, "🏰 Add Player Citadels / Upwell Structures to Pool (May require docking access ACL)").changed() {
+                        self.set_toast("Station Pool: Set to Include Player Citadels");
+                    }
+                });
+
+            ui.add_space(12.0);
+
+            // Card 4: Enforced Invariants
             egui::Frame::none()
                 .fill(Color32::from_rgb(18, 25, 40))
                 .stroke(Stroke::new(1.0_f32, Color32::from_rgb(32, 45, 72)))
@@ -1031,6 +1105,7 @@ impl DesktopApp {
                     ui.label("• Small Hauler Constraints: 30,000 m³ volume capacity / 50,000,000 ISK max budget.");
                     ui.label("• True Profit-Per-Jump: Jumps required to fly to the pickup station are counted in total flight distance.");
                     ui.label("• Safe Stargate Navigation: Routes avoid lowsec (<0.45) and nullsec camps by default.");
+                    ui.label("• Highsec Space Only: All trade routes and station orders are restricted to high security space.");
                 });
         });
     }

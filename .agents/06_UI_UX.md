@@ -17,7 +17,10 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
   - 🚢 **Big Hauler**: `60,000 m³` volume cap · `500,000,000 ISK` capital budget.
   - 🚀 **Small Hauler**: `30,000 m³` volume cap · `50,000,000 ISK` capital budget.
 - **Starting System Input & Quick Hub Chips**: Quick-select buttons for `Jita`, `Amarr`, `Dodixie`, `Rens`, or type any system in New Eden.
-- **Safety Switch**: `🛡️ Safe Highsec Only` toggle enforces Dijkstra avoidance of systems with security $<0.45$.
+- **Safety Switch**: `🛡️ Safe Highsec Only` toggle enforces Dijkstra avoidance of systems with security $<0.45$. Lowsec and Nullsec space is strictly excluded.
+- **Station Access Pool Switch**: Instant 1-click toggle between:
+  - 🏛️ **NPC Stations Only** (Preferred & Default): Strictly targets NPC stations with guaranteed 100% public docking.
+  - 🏰 **+ Citadels Included**: Adds player-owned Citadels / Upwell Structures to the arbitrage search pool.
 - **Min ROI % Drag Slider**: Live adjustments starting at the enforced minimum of $15.0\%$.
 - **Executive KPI Strip**: Real-time badges displaying Top Deal Profit (`+XX.XX M ISK`) and Top Profit Per Jump (`XX.XX M / jump`).
 
@@ -226,6 +229,8 @@ Options:
       --regions <REGIONS>        Comma-separated region IDs [default: 10000002]
       --safe                     Force highsec safe route only (avoid lowsec/nullsec)
       --unsafe-routes            Allow lowsec and nullsec routes
+      --npc-only                 Restrict search strictly to NPC stations (guaranteed public docking)
+      --allow-structures         Allow player-owned structures (Upwell Citadels) in search pool
       --min-profit <MIN_PROFIT>  Minimum net profit in ISK [default: 1000000]
       --min-spread <MIN_SPREAD>  Minimum price spread percentage [default: 3.0]
       --min-roi <MIN_ROI>        Minimum net ROI % after taxes [default: 15.0]

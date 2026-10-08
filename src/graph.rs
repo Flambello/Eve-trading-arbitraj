@@ -85,6 +85,11 @@ impl SystemGraph {
         };
 
         let result = if safe_only {
+            // Strictly exclude lowsec and nullsec origin or destination
+            if !self.is_highsec(origin) || !self.is_highsec(dest) {
+                return 9999;
+            }
+
             // Dijkstra where target system security < 0.45 has high weight 1000.0
             let costs = dijkstra(&self.graph, origin_idx, Some(dest_idx), |edge| {
                 let target = edge.target();
@@ -118,6 +123,10 @@ impl SystemGraph {
     pub fn shortest_path(&self, origin: u32, dest: u32, safe_only: bool) -> Vec<u32> {
         if origin == dest {
             return vec![origin];
+        }
+
+        if safe_only && (!self.is_highsec(origin) || !self.is_highsec(dest)) {
+            return Vec::new();
         }
 
         let origin_idx = match self.id_to_idx.get(&origin) {

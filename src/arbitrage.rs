@@ -74,6 +74,10 @@ pub fn find_deals(
         for (&type_id, orders) in &market.sell_orders {
             let entry = all_sells.entry(type_id).or_default();
             for o in orders {
+                // Strictly exclude lowsec and nullsec systems: only highsec allowed
+                if !graph.is_highsec(o.system_id) {
+                    continue;
+                }
                 if !cfg.npc_stations_only || is_npc_station(o.location_id) {
                     entry.push(o);
                 }
@@ -83,6 +87,10 @@ pub fn find_deals(
         for (&type_id, orders) in &market.buy_orders {
             let entry = all_buys.entry(type_id).or_default();
             for o in orders {
+                // Strictly exclude lowsec and nullsec systems: only highsec allowed
+                if !graph.is_highsec(o.system_id) {
+                    continue;
+                }
                 if !cfg.npc_stations_only || is_npc_station(o.location_id) {
                     entry.push(o);
                 }
@@ -193,6 +201,16 @@ pub fn calculate_deal(
     let src_system_id = src_order.system_id;
     let dst_system_id = dst_order.system_id;
 
+    // Strictly exclude lowsec and nullsec: only highsec systems allowed
+    if !graph.is_highsec(src_system_id) || !graph.is_highsec(dst_system_id) {
+        return None;
+    }
+
+    // Station preference: if npc_stations_only is enabled, both stations must be NPC stations
+    if cfg.npc_stations_only && (!is_npc_station(src_station) || !is_npc_station(dst_station)) {
+        return None;
+    }
+
     // Jump calculations
     let jumps_from_home = graph.jump_count(cfg.home_system, src_system_id, cfg.safe_only);
     if cfg.safe_only && jumps_from_home >= 9999 {
@@ -286,11 +304,23 @@ pub fn calculate_deal(
 
     let src_station_name = sde
         .get_station_name(src_station)
-        .unwrap_or_else(|| format!("Station #{}", src_station));
+        .unwrap_or_else(|| {
+            if is_npc_station(src_station) {
+                format!("Station #{}", src_station)
+            } else {
+                format!("Citadel #{} ({})", src_station, src_system_name)
+            }
+        });
 
     let dst_station_name = sde
         .get_station_name(dst_station)
-        .unwrap_or_else(|| format!("Station #{}", dst_station));
+        .unwrap_or_else(|| {
+            if is_npc_station(dst_station) {
+                format!("Station #{}", dst_station)
+            } else {
+                format!("Citadel #{} ({})", dst_station, dst_system_name)
+            }
+        });
 
     Some(ArbitrageDeal {
         type_id,

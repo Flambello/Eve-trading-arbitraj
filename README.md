@@ -12,6 +12,8 @@
   - **Big Hauler**: 60,000 m³ capacity / 500M ISK budget constraint.
   - **Small Hauler**: 30,000 m³ capacity / 50M ISK budget constraint.
 - 📈 **Enforced 15% Net Profitability**: Filters out low-margin traps. Automatically enforces a minimum 15% net return on capital after all taxes and broker fees (configurable via `--min-roi`).
+- 🛡️ **Highsec Only Space**: Excludes all lowsec and nullsec solar systems (security < 0.45). Only safe high security space is considered for arbitrage deals.
+- 🏛️ **Station Access Pool Toggle**: Toggle between preferred **Only NPC Stations** (guaranteed 100% public docking) or include **Player-Owned Citadels / Upwell Structures** in the trading pool.
 - 🎯 **Profit-Per-Jump Ranking**: Every candidate deal accounts for both the travel jumps from your current location to the pick-up station **and** the delivery jumps to the destination.
 - 🗺️ **Multi-Stop Route Planning**: Greedily chains the best sequential trade deals together, providing step-by-step autopilot waypoints.
 - 🛡️ **Safe Route Option**: Highsec-only pathfinding using `petgraph` Dijkstra over the complete New Eden stargate network (avoids lowsec/nullsec camps).
@@ -112,8 +114,10 @@ eve-trade --ship big --system Jita --export deals.csv
 | `-s, --ship` | `big` | Ship profile (`big` or `small`) |
 | `--system` | `Jita` | Starting solar system name |
 | `--regions` | `10000002` | Comma-separated region IDs |
-| `--safe` | `true` | Avoid lowsec/nullsec gates |
+| `--safe` | `true` | Avoid lowsec/nullsec gates (Highsec only) |
 | `--unsafe-routes` | `false` | Allow lowsec/nullsec gates |
+| `--npc-only` | `true` | Restrict search strictly to NPC stations (preferred) |
+| `--allow-structures` | `false` | Include player-owned Citadels / Upwell structures |
 | `--min-profit` | `1,000,000` | Minimum net profit in ISK |
 | `--min-spread` | `3.0` | Minimum gross price spread (%) |
 | `--min-roi` | `15.0` | **Enforced minimum net profitability (ROI %) after taxes** |

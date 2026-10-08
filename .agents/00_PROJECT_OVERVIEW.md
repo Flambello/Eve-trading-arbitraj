@@ -1,0 +1,137 @@
+# EVE Trade Scout — Project Overview
+
+> **Purpose:** A compiled terminal tool for EVE Online traders that finds the most profitable cross-station arbitrage opportunities, plans a multi-hop route, and respects ship cargo constraints.
+>
+> **Language: Rust** — single compiled binary, zero runtime dependencies, maximum performance.
+
+---
+
+## What the tool does
+
+1. You tell it:
+   - **Ship mode** — Big (60 000 m³ / 500 M ISK budget) or Small (30 000 m³ / 50 M ISK budget)
+   - **Starting solar system** (your current location)
+2. It fetches live market data via the **EVE ESI REST API**
+3. It finds items that can be bought cheaply at a station near you and sold for more at another station
+4. It ranks every opportunity by **profit per jump** (accounting for travel to the source *and* from source to destination)
+5. It presents a **sorted deal list** and optionally builds a **multi-stop trade route** chaining several deals in one trip
+
+---
+
+## High-level user flow
+
+```
+[Start]
+   │
+   ├─ Choose ship profile (Big / Small)
+   ├─ Enter starting system name
+   │
+   ▼
+[Fetch market data for the region(s)]
+   │
+   ▼
+[For each (source-station, dest-station) pair with a spread > 0]
+   │
+   ├─ Calculate total jumps  (home→source + source→dest)
+   ├─ Calculate quantity fitting within volume & ISK limits
+   ├─ Calculate net profit and profit-per-jump
+   │
+   ▼
+[Sort deals by profit-per-jump DESC]
+   │
+   ▼
+[Display ranked results in terminal table]
+   │
+   ├─ Optional: select top deals to build a multi-stop route
+   │
+   ▼
+[Print planned route with waypoints + expected total profit]
+```
+
+---
+
+## Repository layout (planned)
+
+```
+Eve trading arbitraj/
+├── .agents/                        ← planning docs (this folder)
+│   ├── 00_PROJECT_OVERVIEW.md
+│   ├── 01_API_REFERENCE.md
+│   ├── 02_DATA_MODEL.md
+│   ├── 03_ARCHITECTURE.md
+│   ├── 04_MODULES.md
+│   ├── 05_ALGORITHM.md
+│   ├── 06_UI_UX.md
+│   └── 07_SETUP_AND_DEPS.md
+│
+├── src/
+│   ├── main.rs                     ← binary entry point
+│   ├── config.rs                   ← ship profiles, user settings (TOML)
+│   ├── esi/
+│   │   ├── mod.rs
+│   │   ├── client.rs               ← async HTTP layer (reqwest + ETag caching)
+│   │   ├── market.rs               ← market order fetching & parsing
+│   │   └── models.rs               ← ESI response types (serde structs)
+│   ├── sde/
+│   │   ├── mod.rs
+│   │   └── loader.rs               ← SDE SQLite reader (item volumes, system graph)
+│   ├── graph.rs                    ← stargate graph + Dijkstra pathfinding (petgraph)
+│   ├── arbitrage.rs                ← core profit calculation engine
+│   ├── route_planner.rs            ← multi-stop greedy route builder
+│   └── ui/
+│       ├── mod.rs
+│       └── tui.rs                  ← terminal interface (ratatui)
+│
+├── data/                           ← cached SDE SQLite file
+│   └── .gitkeep
+│
+├── tests/
+│   ├── test_arbitrage.rs
+│   └── test_graph.rs
+│
+├── Cargo.toml
+├── Cargo.lock
+└── README.md
+```
+
+---
+
+## Tech stack
+
+| Layer | Crate / Tool | Reason |
+|---|---|---|
+| Language | **Rust 1.78+** (stable) | Single binary, zero runtime, memory-safe |
+| Async runtime | `tokio` | Industry standard async executor |
+| HTTP client | `reqwest` | Async, TLS, gzip, ETag-friendly |
+| JSON parsing | `serde` + `serde_json` | Zero-copy deserialization |
+| SQLite (SDE) | `rusqlite` | Lightweight, bundled SQLite |
+| Graph / pathfinding | `petgraph` | Dijkstra, efficient adjacency list |
+| Terminal UI | `ratatui` + `crossterm` | Rich interactive TUI, tables, spinners |
+| CLI argument parsing | `clap` | Derive-macro based, batteries included |
+| Config files | `toml` crate | Read/write `config.toml` |
+| Progress bars | `indicatif` | Download and processing progress |
+| Error handling | `anyhow` | Ergonomic error propagation |
+| Date/time | `chrono` | Timestamp parsing from ESI |
+| LRU cache | `lru` crate | Jump-count memoization |
+
+---
+
+## Non-goals (explicit out-of-scope)
+
+- No in-game automation (EULA compliance)
+- No capital-ship jump-drive routing (only gate jumps)
+- No Upwell structure market access (requires per-structure auth tokens)
+- No real-time order streaming (poll every 5 min max, ESI cache limit)
+
+---
+
+## Key advantages of Rust for this project
+
+| Feature | Benefit |
+|---|---|
+| Compiled binary | Ship one file — no Python venv, no pip, no runtime |
+| `async`/`await` + tokio | Fetch 5 regions concurrently with zero threads overhead |
+| `serde` | ESI JSON deserialized at native speed |
+| `petgraph` Dijkstra | Pathfinding 10× faster than NetworkX |
+| Type system | Impossible to mix up ISK and m³ if you use newtypes |
+| `anyhow` errors | Propagate context-rich errors from API calls gracefully |

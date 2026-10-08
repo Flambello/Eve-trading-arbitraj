@@ -1,0 +1,5 @@
+/target
+/data/eve_sde.sqlite
+/data/eve_sde.sqlite.bz2
+/cache/
+*.log

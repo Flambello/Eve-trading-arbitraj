@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build_release:
+    name: Build Linux x86_64 Binary
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build Release
+      run: cargo build --release
+
+    - name: Create Tarball
+      run: |
+        mkdir -p package
+        cp target/release/eve-trade package/
+        cp README.md LICENSE package/
+        tar -czf eve-trade-scout-x86_64-linux.tar.gz -C package .
+
+    - name: Upload to GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: eve-trade-scout-x86_64-linux.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

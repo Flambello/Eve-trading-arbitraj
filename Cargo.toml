@@ -1,0 +1,38 @@
+[package]
+name = "eve-trade-scout"
+version = "0.1.0"
+edition = "2021"
+description = "EVE Online arbitrage route planner — find profitable trades between stations"
+authors = ["EVE Trader"]
+license = "MIT"
+
+[[bin]]
+name = "eve-trade"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "rustls-tls", "stream"], default-features = false }
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+rusqlite = { version = "0.31", features = ["bundled"] }
+petgraph = "0.6"
+lru = "0.12"
+ratatui = "0.28"
+crossterm = "0.28"
+clap = { version = "4.5", features = ["derive"] }
+indicatif = "0.17"
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+bzip2 = "0.4"
+flate2 = "1.0"
+dirs = "5.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

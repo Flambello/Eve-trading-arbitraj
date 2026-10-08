@@ -1,8 +1,9 @@
-# UI/UX Design — Terminal Interface
+# UI/UX Design — Desktop GUI & Terminal Interfaces
 
-The tool is a **terminal application** using [`ratatui`](https://ratatui.rs/) (Rust TUI framework) with the `crossterm` backend.
-It is designed to feel fast, readable, and informative without overwhelming the user.
-The TUI runs in raw mode with full keyboard navigation — no mouse required.
+EVE Trade Scout provides **two user interface modes**:
+1. **Native Desktop GUI Window** (built with [`egui`](https://github.com/emilk/egui) / [`eframe`](https://docs.rs/eframe)): A sleek, dark-mode sci-fi desktop window running natively on Linux Fedora (Wayland & X11). Features interactive deal tables, clipboard copy buttons for in-game pasting, visual multi-hop route cards, live market re-scanning, and quick hub presets. This launches automatically when a graphical desktop is detected.
+2. **Terminal Interactive Interface (TUI)** (built with [`ratatui`](https://ratatui.rs/) and `crossterm`): High-performance keyboard-navigated terminal dashboard for terminal enthusiasts and headless/SSH sessions.
+3. **Headless CLI Output**: Scriptable console output (`--no-ui`) with optional CSV export (`--export`).
 
 ---
 
@@ -170,18 +171,22 @@ Current configuration:
 Usage: eve-trade [OPTIONS]
 
 Options:
-  -s, --ship       TEXT    Ship profile: 'big' or 'small' [default: big]
-      --system     TEXT    Starting system name [default: Jita]
-      --regions    TEXT    Comma-separated region IDs [default: 10000002]
-  -t, --top        INT     Number of top deals to show [default: 25]
-      --min-profit FLOAT   Minimum net profit in ISK [default: 1000000]
-      --min-spread FLOAT   Minimum spread percentage [default: 3.0]
-      --min-roi    FLOAT   Minimum net ROI % after taxes [default: 15.0]
-      --safe               Force highsec safe route only (avoid lowsec/nullsec)
-      --unsafe-routes      Allow lowsec/nullsec routes
-      --route              Print planned multi-stop route
-      --no-tui             Disable interactive TUI and print to console
-      --export     PATH    Export results to CSV file
-      --update-sde         Force re-download of SDE database
-  -h, --help               Print help
+  -s, --ship <SHIP>              Ship profile: 'big' (60k m³, 500M) or 'small' (30k m³, 50M)
+      --system <SYSTEM>          Starting solar system name [default: Jita]
+      --regions <REGIONS>        Comma-separated region IDs [default: 10000002]
+      --safe                     Force highsec safe route only (avoid lowsec/nullsec)
+      --unsafe-routes            Allow lowsec and nullsec routes
+      --min-profit <MIN_PROFIT>  Minimum net profit in ISK [default: 1000000]
+      --min-spread <MIN_SPREAD>  Minimum price spread percentage [default: 3.0]
+      --min-roi <MIN_ROI>        Minimum net ROI % after taxes [default: 15.0]
+  -t, --top <TOP>                Number of top deals to display in CLI mode [default: 25]
+      --max-stops <MAX_STOPS>    Maximum stops in route [default: 5]
+      --route                    Print planned multi-stop route
+      --gui                      Force desktop GUI window mode (egui native window)
+      --tui                      Force terminal TUI mode (ratatui)
+      --no-ui                    Disable interactive UI (GUI & TUI) and output directly to console
+      --no-tui                   Disable interactive TUI and output directly to console
+      --export <EXPORT>          Export found deals to CSV file
+      --update-sde               Force update / re-download of SDE database
+  -h, --help                     Print help
 ```

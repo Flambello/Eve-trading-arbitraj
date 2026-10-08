@@ -17,6 +17,7 @@ use sde::SdeLoader;
 use std::fs::File;
 use std::io::{stdout, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -69,6 +70,18 @@ struct Args {
     /// Print planned route in CLI mode
     #[arg(long)]
     route: bool,
+
+    /// Force desktop GUI window mode (egui native window)
+    #[arg(long)]
+    gui: bool,
+
+    /// Force terminal TUI mode (ratatui)
+    #[arg(long)]
+    tui: bool,
+
+    /// Disable interactive UI (both GUI and TUI) and output directly to console
+    #[arg(long)]
+    no_ui: bool,
 
     /// Disable interactive TUI and output directly to console
     #[arg(long)]
@@ -156,6 +169,7 @@ async fn main() -> Result<()> {
     let sde = SdeLoader::open(&sde_path, cfg.cache.sde_max_age_days)
         .await
         .context("Failed to load EVE Static Data Export (SDE)")?;
+    let sde = Arc::new(sde);
 
     // 2. Resolve Starting System ID
     let home_system_id = match sde.get_system_id(&cfg.location.home_system) {
@@ -174,11 +188,13 @@ async fn main() -> Result<()> {
 
     println!(" Building New Eden Stargate Network Graph...");
     let graph = SystemGraph::from_sde(&sde).context("Failed to construct stargate network")?;
+    let graph = Arc::new(graph);
     println!(" Stargate Graph ready.");
 
     // 3. Initialize ESI Client
     let cache_dir = PathBuf::from(&cfg.cache.directory);
     let esi = EsiClient::new(&cache_dir).context("Failed to initialize ESI API client")?;
+    let esi = Arc::new(esi);
 
     // 4. Fetch Market Data
     println!(
@@ -215,7 +231,11 @@ async fn main() -> Result<()> {
     println!(" Found {} profitable trade deals!", deals.len());
     println!();
 
-    if deals.is_empty() {
+    let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
+    let launch_gui = (args.gui || (has_display && !args.tui)) && !args.no_tui && !args.no_ui && args.export.is_none();
+    let is_interactive = stdout().is_terminal() && !args.no_tui && !args.no_ui && args.export.is_none();
+
+    if deals.is_empty() && !launch_gui {
         println!(" No profitable deals met your current filters.");
         println!(" Suggestions:");
         println!("   - Try lowering --min-profit (currently {:.0} ISK)", cfg.filters.min_profit_isk);
@@ -241,9 +261,25 @@ async fn main() -> Result<()> {
     }
 
     // 8. Output Mode
-    let is_interactive = stdout().is_terminal() && !args.no_tui && args.export.is_none();
-
-    if is_interactive {
+    if launch_gui {
+        println!(" Launching EVE Trade Scout Native Desktop GUI Window...");
+        let is_big = ship_profile.name == "Big Hauler";
+        let app = ui::DesktopApp::new(
+            sde,
+            graph,
+            esi,
+            is_big,
+            home_system_name,
+            cfg.scan.safe_route_only,
+            cfg.filters.min_net_profit_pct,
+            cfg.filters.min_profit_isk,
+            cfg.scan.regions.clone(),
+            deals,
+            Some(route),
+        );
+        ui::run_desktop_gui(app)
+            .map_err(|e| anyhow::anyhow!("Desktop GUI runtime error: {}", e))?;
+    } else if is_interactive {
         println!(" Launching Interactive Terminal UI (press [Q] to exit)...");
         ui::run_tui(
             &deals,

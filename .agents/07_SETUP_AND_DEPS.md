@@ -180,8 +180,9 @@ regions = [10000002]     # The Forge; add more region IDs
 safe_route_only = true
 
 [filters]
-min_profit_isk = 1_000_000.0
-min_spread_pct = 5.0
+min_profit_isk     = 1_000_000.0
+min_spread_pct     = 3.0
+min_net_profit_pct = 15.0         # Enforced minimum 15% overall ROI after taxes
 
 [fees]
 broker_fee_pct = 3.0

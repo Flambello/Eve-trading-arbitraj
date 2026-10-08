@@ -11,6 +11,7 @@
 - 🚢 **Ship Profiles**:
   - **Big Hauler**: 60,000 m³ capacity / 500M ISK budget constraint.
   - **Small Hauler**: 30,000 m³ capacity / 50M ISK budget constraint.
+- 📈 **Enforced 15% Net Profitability**: Filters out low-margin traps. Automatically enforces a minimum 15% net return on capital after all taxes and broker fees (configurable via `--min-roi`).
 - 🎯 **Profit-Per-Jump Ranking**: Every candidate deal accounts for both the travel jumps from your current location to the pick-up station **and** the delivery jumps to the destination.
 - 🗺️ **Multi-Stop Route Planning**: Greedily chains the best sequential trade deals together, providing step-by-step autopilot waypoints.
 - 🛡️ **Safe Route Option**: Highsec-only pathfinding using `petgraph` Dijkstra over the complete New Eden stargate network (avoids lowsec/nullsec camps).
@@ -97,7 +98,8 @@ eve-trade --ship big --system Jita --export deals.csv --no-tui
 | `--safe` | `true` | Avoid lowsec/nullsec gates |
 | `--unsafe-routes` | `false` | Allow lowsec/nullsec gates |
 | `--min-profit` | `1,000,000` | Minimum net profit in ISK |
-| `--min-spread` | `3.0` | Minimum price spread (%) |
+| `--min-spread` | `3.0` | Minimum gross price spread (%) |
+| `--min-roi` | `15.0` | **Enforced minimum net profitability (ROI %) after taxes** |
 | `-t, --top` | `25` | Number of deals in CLI summary |
 | `--max-stops` | `5` | Maximum stops in planned route |
 | `--route` | `false` | Print planned route in CLI mode |

@@ -43,16 +43,16 @@ The TUI runs in raw mode with full keyboard navigation — no mouse required.
 ╭──────────────────────────────────────────────────────────────────────────────────────────╮
 │  Top 20 Arbitrage Deals  [Big Hauler · Starting: Jita · Safe Route]                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────╯
- #   Item                  Buy @ System    Sell @ System  Qty   Vol(m³) Cost(M)  Profit(M) PPJ
-─────────────────────────────────────────────────────────────────────────────────────────────
- 1   Pithum C-Type MedSh…  Jita            Amarr           1    100.0    48.2     12.4    4.13
- 2   Tritanium              Jita            Rens        5000k  50 000    25.0      8.1    2.70
- 3   PLEX                   Jita            Dodixie        10      0.5   47.5      5.5    1.83
- 4   Damage Control II      Perimeter       Amarr          50    750.0   30.1      5.1    1.70
- 5   Caldari Navy Raven     Jita            Hek             1  50 000   420.0     20.3    1.69
+ #   Item                  Buy @ System    Sell @ System  Qty   Vol(m³) Cost(M)  Profit(M)  ROI%   PPJ
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1   Pithum C-Type MedSh…  Jita            Amarr           1    100.0    48.2     12.4    +25.7%  4.13
+ 2   Tritanium              Jita            Rens        5000k  50 000    25.0      8.1    +32.4%  2.70
+ 3   PLEX                   Jita            Dodixie        10      0.5   47.5      5.5    +15.8%  1.83
+ 4   Damage Control II      Perimeter       Amarr          50    750.0   30.1      5.1    +16.9%  1.70
+ 5   Caldari Navy Raven     Jita            Hek             1  50 000   420.0     20.3    +17.2%  1.69
  ...
-─────────────────────────────────────────────────────────────────────────────────────────────
- Filters: Spread ≥ 5% · Net profit ≥ 1 M ISK · Max volume: 60 000 m³ · Budget: 500 M ISK
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Filters: Net ROI ≥ 15% after taxes · Spread ≥ 3% · Net profit ≥ 1 M ISK · Max volume: 60 000 m³
 ```
 
 **Column definitions:**
@@ -67,6 +67,7 @@ The TUI runs in raw mode with full keyboard navigation — no mouse required.
 | `Vol(m³)` | Total cargo volume for that quantity |
 | `Cost(M)` | Capital required in millions ISK |
 | `Profit(M)` | Net profit in millions ISK (after taxes) |
+| `ROI%` | **Net Profitability %** after taxes & fees (`net_profit / capital_required * 100`) |
 | `PPJ` | **Profit Per Jump** in millions ISK |
 
 ---
@@ -166,20 +167,21 @@ Current configuration:
 ## CLI Arguments
 
 ```
-Usage: python -m eve_trade_scout [OPTIONS]
+Usage: eve-trade [OPTIONS]
 
 Options:
-  --ship      TEXT    Ship profile: 'big' or 'small' [default: prompt]
-  --system    TEXT    Starting system name [default: prompt]
-  --regions   TEXT    Comma-separated region names [default: The Forge]
-  --top       INT     Number of top deals to show [default: 20]
-  --min-profit FLOAT  Minimum net profit in ISK [default: 1000000]
-  --min-spread FLOAT  Minimum spread percentage [default: 5.0]
-  --safe              Only route through highsec systems
-  --route             Automatically build a multi-stop route
-  --export    PATH    Export results to CSV file
-  --no-cache          Force re-fetch all market data
-  --show-config       Display current configuration and exit
-  --update-sde        Force re-download of SDE database
-  --help              Show this message and exit
+  -s, --ship       TEXT    Ship profile: 'big' or 'small' [default: big]
+      --system     TEXT    Starting system name [default: Jita]
+      --regions    TEXT    Comma-separated region IDs [default: 10000002]
+  -t, --top        INT     Number of top deals to show [default: 25]
+      --min-profit FLOAT   Minimum net profit in ISK [default: 1000000]
+      --min-spread FLOAT   Minimum spread percentage [default: 3.0]
+      --min-roi    FLOAT   Minimum net ROI % after taxes [default: 15.0]
+      --safe               Force highsec safe route only (avoid lowsec/nullsec)
+      --unsafe-routes      Allow lowsec/nullsec routes
+      --route              Print planned multi-stop route
+      --no-tui             Disable interactive TUI and print to console
+      --export     PATH    Export results to CSV file
+      --update-sde         Force re-download of SDE database
+  -h, --help               Print help
 ```

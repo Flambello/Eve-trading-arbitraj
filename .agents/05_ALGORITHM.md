@@ -49,16 +49,23 @@ quantity = min(max_by_volume, max_by_budget, max_by_supply, max_by_demand)
 
 If `quantity < 1`: skip.
 
-#### Step 4 — Calculate profit
+#### Step 4 — Calculate profit & net profitability (ROI)
 
-```python
-gross_profit   = (buy_price - sell_price) * quantity
-broker_cost    = sell_price * quantity * (broker_fee_pct / 100)
-sales_tax_cost = buy_price  * quantity * (sales_tax_pct  / 100)
-net_profit     = gross_profit - broker_cost - sales_tax_cost
+```rust
+gross_revenue        = sell_price * quantity
+capital_required     = buy_price * quantity
+gross_profit         = gross_revenue - capital_required
+
+broker_fee_cost      = capital_required * (broker_fee_pct / 100.0)
+sales_tax_cost       = gross_revenue * (sales_tax_pct / 100.0)
+taxes_and_fees       = broker_fee_cost + sales_tax_cost
+
+net_profit           = gross_profit - taxes_and_fees
+net_profit_pct (ROI) = (net_profit / capital_required) * 100.0
 ```
 
-If `net_profit < min_profit`: skip.
+- If `net_profit < min_profit`: skip.
+- **Enforced Rule:** If `net_profit_pct < 15.0%`: skip (deals must achieve at least 15% net profit after taxes).
 
 #### Step 5 — Calculate jumps
 
@@ -199,8 +206,9 @@ Raw ESI orders
     ├── [F3] Remove items with packaged_volume == 0 or unpublished
     ├── [F4] Remove pairs with spread < min_spread_pct
     ├── [F5] Remove deals with net_profit < min_profit
-    ├── [F6] Remove deals where quantity < 1 (don't fit in ship)
-    └── [F7] Remove deals through lowsec/nullsec (if safe_only)
+    ├── [F6] Enforce minimum net profitability: net_profit_pct >= 15.0% after taxes
+    ├── [F7] Remove deals where quantity < 1 (don't fit in ship)
+    └── [F8] Remove deals through lowsec/nullsec (if safe_only)
 ```
 
 ---

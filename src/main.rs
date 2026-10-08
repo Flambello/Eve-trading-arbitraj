@@ -54,6 +54,10 @@ struct Args {
     #[arg(long)]
     min_spread: Option<f64>,
 
+    /// Minimum overall net profitability (ROI %) after all taxes (enforced default: 15.0%)
+    #[arg(long)]
+    min_roi: Option<f64>,
+
     /// Number of top deals to display in CLI mode
     #[arg(short, long, default_value_t = 25)]
     top: usize,
@@ -103,6 +107,9 @@ async fn main() -> Result<()> {
     if let Some(min_s) = args.min_spread {
         cfg.filters.min_spread_pct = min_s;
     }
+    if let Some(min_r) = args.min_roi {
+        cfg.filters.min_net_profit_pct = min_r;
+    }
     if let Some(ref reg_str) = args.regions {
         let parsed_regions: Vec<u32> = reg_str
             .split(',')
@@ -133,6 +140,10 @@ async fn main() -> Result<()> {
         } else {
             "No (All space)"
         }
+    );
+    println!(
+        " Minimum Profitability After Taxes: {:.1}%",
+        cfg.filters.min_net_profit_pct
     );
     println!();
 
@@ -193,6 +204,7 @@ async fn main() -> Result<()> {
         home_system: home_system_id,
         min_profit: cfg.filters.min_profit_isk,
         min_spread: cfg.filters.min_spread_pct,
+        min_net_profit_pct: cfg.filters.min_net_profit_pct,
         broker_fee: cfg.fees.broker_fee_pct,
         sales_tax: cfg.fees.sales_tax_pct,
         safe_only: cfg.scan.safe_route_only,
@@ -257,21 +269,21 @@ fn print_cli_summary(
     println!(" TOP {} ARBITRAGE OPPORTUNITIES (Ranked by Profit / Jump)", top_limit.min(deals.len()));
     println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
     println!(
-        "{:<3} {:<24} {:<14} {:<14} {:>6} {:>7} {:>9} {:>10} {:>9} {:>12}",
-        "#", "Item", "Buy System", "Sell System", "Qty", "Vol m³", "Cost (M)", "Profit (M)", "Jumps", "Profit/Jump"
+        "{:<3} {:<22} {:<13} {:<13} {:>6} {:>7} {:>9} {:>10} {:>7} {:>9} {:>12}",
+        "#", "Item", "Buy System", "Sell System", "Qty", "Vol m³", "Cost (M)", "Profit (M)", "ROI %", "Jumps", "Profit/Jump"
     );
-    println!("──────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
 
     for (idx, d) in deals.iter().take(top_limit).enumerate() {
         let jumps_str = format!("{}+{}={}", d.jumps_from_home, d.jumps_source_dest, d.total_jumps);
-        let name_truncated = if d.item_name.len() > 23 {
-            format!("{}…", &d.item_name[..22])
+        let name_truncated = if d.item_name.len() > 21 {
+            format!("{}…", &d.item_name[..20])
         } else {
             d.item_name.clone()
         };
 
         println!(
-            "{:<3} {:<24} {:<14} {:<14} {:>6} {:>7.1} {:>8.2}M {:>9.2}M {:>9} {:>10.2}M",
+            "{:<3} {:<22} {:<13} {:<13} {:>6} {:>7.1} {:>8.2}M {:>9.2}M {:>6.1}% {:>9} {:>10.2}M",
             idx + 1,
             name_truncated,
             d.source_system_name,
@@ -280,21 +292,29 @@ fn print_cli_summary(
             d.volume_used,
             d.capital_required / 1_000_000.0,
             d.net_profit / 1_000_000.0,
+            d.net_profit_pct,
             jumps_str,
             d.profit_per_jump / 1_000_000.0,
         );
     }
-    println!("──────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
     println!();
 
     if show_route || deals.len() > 0 {
+        let route_roi = if route.total_capital_required > 0.0 {
+            (route.total_profit / route.total_capital_required) * 100.0
+        } else {
+            0.0
+        };
+
         println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
         println!(" PLANNED MULTI-STOP TRADE ROUTE ({} Stops)", route.stops.len());
         println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
         println!(
-            " Total Jumps: {} │ Total Net Profit: {:.2} M ISK │ Average Profit/Jump: {:.2} M ISK/jump",
+            " Total Jumps: {} │ Total Net Profit: {:.2} M ISK (+{:.1}% ROI) │ Average Profit/Jump: {:.2} M ISK/jump",
             route.total_jumps,
             route.total_profit / 1_000_000.0,
+            route_roi,
             route.avg_profit_per_jump / 1_000_000.0
         );
         println!(
@@ -322,11 +342,12 @@ fn print_cli_summary(
                 stop.deal.jumps_source_dest, stop.deal.dest_system_name
             );
             println!(
-                "   SELL: {}x {} @ {:.2} ISK (Profit: +{:.2}M ISK)",
+                "   SELL: {}x {} @ {:.2} ISK (Profit: +{:.2}M ISK | +{:.1}% ROI)",
                 stop.deal.quantity,
                 stop.deal.item_name,
                 stop.deal.sell_price,
-                stop.deal.net_profit / 1_000_000.0
+                stop.deal.net_profit / 1_000_000.0,
+                stop.deal.net_profit_pct
             );
             println!("   AT:   {}", stop.deal.dest_station_name);
             println!();
@@ -342,7 +363,7 @@ fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
     let mut file = File::create(path)?;
     writeln!(
         file,
-        "type_id,item_name,buy_price,sell_price,spread_pct,source_system,source_station,dest_system,dest_station,quantity,volume_m3,capital_required_isk,net_profit_isk,jumps_from_home,jumps_source_dest,total_jumps,profit_per_jump_isk"
+        "type_id,item_name,buy_price,sell_price,spread_pct,net_profit_pct,source_system,source_station,dest_system,dest_station,quantity,volume_m3,capital_required_isk,net_profit_isk,jumps_from_home,jumps_source_dest,total_jumps,profit_per_jump_isk"
     )?;
 
     for d in deals {
@@ -353,12 +374,13 @@ fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
 
         writeln!(
             file,
-            "{},\"{}\",{:.2},{:.2},{:.2},\"{}\",\"{}\",\"{}\",\"{}\",{},{:.2},{:.2},{:.2},{},{},{},{:.2}",
+            "{},\"{}\",{:.2},{:.2},{:.2},{:.2},\"{}\",\"{}\",\"{}\",\"{}\",{},{:.2},{:.2},{:.2},{},{},{},{:.2}",
             d.type_id,
             safe_name,
             d.buy_price,
             d.sell_price,
             d.spread_pct,
+            d.net_profit_pct,
             d.source_system_name,
             safe_src_sta,
             d.dest_system_name,

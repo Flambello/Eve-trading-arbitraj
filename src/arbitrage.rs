@@ -32,6 +32,7 @@ pub struct ArbitrageDeal {
     pub gross_profit: f64,
     pub taxes_and_fees: f64,
     pub net_profit: f64,
+    pub net_profit_pct: f64, // Net profitability / ROI % after all taxes and fees
 
     pub jumps_from_home: u32,
     pub jumps_source_dest: u32,
@@ -47,6 +48,7 @@ pub struct ArbitrageConfig {
     pub home_system: u32,
     pub min_profit: f64,
     pub min_spread: f64,
+    pub min_net_profit_pct: f64, // Minimum profitability % after taxes (e.g. 15.0%)
     pub broker_fee: f64,
     pub sales_tax: f64,
     pub safe_only: bool,
@@ -251,6 +253,17 @@ pub fn calculate_deal(
         return None;
     }
 
+    let net_profit_pct = if capital_required > 0.0 {
+        (net_profit / capital_required) * 100.0
+    } else {
+        0.0
+    };
+
+    // Enforce minimum overall profitability percentage after taxes
+    if net_profit_pct < cfg.min_net_profit_pct {
+        return None;
+    }
+
     let spread_pct = ((sell_price - buy_price) / buy_price) * 100.0;
     let profit_per_jump = net_profit / (total_jumps as f64);
     let profit_per_m3 = if volume_used > 0.0 {
@@ -299,6 +312,7 @@ pub fn calculate_deal(
         gross_profit,
         taxes_and_fees: total_taxes_and_fees,
         net_profit,
+        net_profit_pct,
         jumps_from_home,
         jumps_source_dest,
         total_jumps,

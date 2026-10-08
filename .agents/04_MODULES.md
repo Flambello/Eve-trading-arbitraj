@@ -214,13 +214,15 @@ impl SystemGraph {
 
 ```rust
 pub struct ArbitrageConfig {
-    pub ship:          ShipProfile,
-    pub home_system:   u32,
-    pub min_profit:    f64,
-    pub min_spread:    f64,
-    pub broker_fee:    f64,
-    pub sales_tax:     f64,
-    pub safe_only:     bool,
+    pub ship:               ShipProfile,
+    pub home_system:        u32,
+    pub min_profit:         f64,
+    pub min_spread:         f64,
+    pub min_net_profit_pct: f64,   // Enforced minimum net profit % after taxes (default: 15.0%)
+    pub broker_fee:         f64,
+    pub sales_tax:          f64,
+    pub safe_only:          bool,
+    pub npc_stations_only:  bool,
 }
 
 /// Main arbitrage engine. Pure computation, no I/O.
@@ -231,9 +233,10 @@ pub struct ArbitrageConfig {
 ///   3. For each (source_station, dest_station) pair where buy > sell:
 ///      a. Calculate quantity (bounded by volume, budget, supply, demand)
 ///      b. Calculate net profit after fees
-///      c. Calculate jump counts via SystemGraph
-///      d. Score as profit_per_jump
-///   4. Filter by min_profit and min_spread
+///      c. Enforce minimum net profitability (ROI >= 15.0% after taxes)
+///      d. Calculate jump counts via SystemGraph
+///      e. Score as profit_per_jump
+///   4. Filter by min_profit, min_spread, and min_net_profit_pct
 ///
 /// Returns Vec<ArbitrageDeal> sorted by profit_per_jump DESC.
 pub fn find_deals(

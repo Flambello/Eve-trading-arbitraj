@@ -102,6 +102,7 @@ pub struct ArbitrageDeal {
     pub gross_profit:       f64,
     pub taxes_and_fees:     f64,
     pub net_profit:         f64,
+    pub net_profit_pct:     f64,   // (net_profit / capital_required) * 100 (enforced >= 15%)
 
     pub jumps_from_home:    u32,   // home → source
     pub jumps_source_dest:  u32,   // source → destination
@@ -165,8 +166,9 @@ pub struct ScanConfig {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FilterConfig {
-    pub min_profit_isk: f64,
-    pub min_spread_pct: f64,
+    pub min_profit_isk:     f64,
+    pub min_spread_pct:     f64,
+    pub min_net_profit_pct: f64,   // Default: 15.0% enforced minimum ROI after taxes
 }
 
 #[derive(Debug, Deserialize, Serialize)]

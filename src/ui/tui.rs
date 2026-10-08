@@ -230,6 +230,7 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
         "Vol(m³)",
         "Cost(M)",
         "Net Prof(M)",
+        "ROI%",
         "Jumps",
         "Profit/Jump",
     ]
@@ -276,6 +277,8 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
             Cell::from(format!("{:.2}M", d.capital_required / 1_000_000.0)),
             Cell::from(format!("{:.2}M", d.net_profit / 1_000_000.0))
                 .style(Style::default().fg(Color::Green)),
+            Cell::from(format!("+{:.1}%", d.net_profit_pct))
+                .style(Style::default().fg(Color::Rgb(0, 255, 128)).add_modifier(Modifier::BOLD)),
             Cell::from(jumps_text).style(Style::default().fg(Color::Gray)),
             Cell::from(format!("{:.2}M", d.profit_per_jump / 1_000_000.0))
                 .style(Style::default().fg(ppj_color).add_modifier(Modifier::BOLD)),
@@ -284,13 +287,14 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
 
     let widths = [
         Constraint::Length(4),  // #
-        Constraint::Length(24), // Item
-        Constraint::Length(14), // Buy system
-        Constraint::Length(14), // Sell system
+        Constraint::Length(22), // Item
+        Constraint::Length(13), // Buy system
+        Constraint::Length(13), // Sell system
         Constraint::Length(7),  // Qty
         Constraint::Length(8),  // Vol
         Constraint::Length(9),  // Cost
         Constraint::Length(12), // Net Profit
+        Constraint::Length(8),  // ROI%
         Constraint::Length(9),  // Jumps
         Constraint::Length(12), // Profit/Jump
     ];

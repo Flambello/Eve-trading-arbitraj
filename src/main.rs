@@ -1,19 +1,12 @@
-mod arbitrage;
-mod config;
-mod esi;
-mod graph;
-mod route_planner;
-mod sde;
-mod ui;
-
 use anyhow::{bail, Context, Result};
-use arbitrage::{find_deals, ArbitrageConfig, ArbitrageDeal};
 use clap::Parser;
-use config::{profile_from_str, UserConfig};
-use esi::{fetch_markets, EsiClient};
-use graph::SystemGraph;
-use route_planner::{plan_route, TradeRoute};
-use sde::SdeLoader;
+use eve_trade_scout::arbitrage::{find_deals, ArbitrageConfig, ArbitrageDeal};
+use eve_trade_scout::config::{profile_from_str, UserConfig};
+use eve_trade_scout::esi::{fetch_markets, EsiClient};
+use eve_trade_scout::graph::SystemGraph;
+use eve_trade_scout::route_planner::{plan_route, TradeRoute};
+use eve_trade_scout::sde::SdeLoader;
+use eve_trade_scout::ui;
 use std::fs::File;
 use std::io::{stdout, IsTerminal, Write};
 use std::path::{Path, PathBuf};

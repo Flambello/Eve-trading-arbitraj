@@ -5,117 +5,103 @@
 ## Component Diagram
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        USER INTERFACE                         │
-│  ui/tui.rs  ──  ratatui terminal (tables, spinners, input)   │
-└─────────────────────────┬────────────────────────────────────┘
-                           │ calls
-┌─────────────────────────▼────────────────────────────────────┐
-│                       ORCHESTRATOR                            │
-│  main.rs  ──  clap CLI args → async tokio::main entry point  │
-└────┬────────────┬──────────────────┬─────────────────────────┘
-     │            │                  │
-     ▼            ▼                  ▼
-┌─────────┐ ┌──────────┐  ┌────────────────────┐
-│config.rs│ │sde/      │  │esi/client.rs        │
-│         │ │loader.rs │  │                     │
-│ Loads   │ │          │  │ reqwest async client│
-│ config  │ │ SQLite   │  │ ETag cache on disk  │
-│ .toml   │ │ reader   │  │ rate-limit backoff  │
-└─────────┘ └──────────┘  └──────────┬──────────┘
-                                       │ raw JSON
-                           ┌───────────▼──────────────┐
-                           │  esi/market.rs             │
-                           │                           │
-                           │  - Paginates all pages    │
-                           │  - Groups sell/buy orders │
-                           │  - Enriches with system   │
-                           └───────────┬───────────────┘
-                                       │ HashMap<TypeId, orders>
-                           ┌───────────▼───────────────┐
-                           │     arbitrage.rs            │
-                           │                            │
-                           │  - Pairs sell→buy          │
-                           │  - Calculates profit       │
-                           │  - Applies constraints     │
-                           │  - Sorts by PPJ            │
-                           └───────────┬────────────────┘
-                                       │ Vec<ArbitrageDeal>
-          ┌────────────────────────────▼─────────────────────────┐
-          │         graph.rs  +  route_planner.rs                 │
-          │                                                       │
-          │  graph.rs         — petgraph Dijkstra, LRU cache      │
-          │  route_planner.rs — greedy multi-stop route builder   │
-          └───────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             USER INTERFACES                                 │
+│  ui/gui.rs ── egui/eframe desktop window (live scan, clipboard, styling)    │
+│  ui/tui.rs ── ratatui terminal dashboard (tabs, scrollable tables, hotkeys) │
+│  Headless  ── clap formatted console table, CSV exporter                    │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │ calls
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                    ORCHESTRATOR & BINARY ENTRY POINT                         │
+│  src/main.rs (eve-trade bin) ── parses CLI args, initializes runtime        │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │ invokes
+┌──────────────────────────────────────▼──────────────────────────────────────┐
+│                    SHARED CRATE LIBRARY (eve_trade_scout)                   │
+│  src/lib.rs ── exposes modules to bin and to `tests/` integration suites    │
+└──────────────┬───────────────────────┬─────────────────────────┬────────────┘
+               │                       │                         │
+               ▼                       ▼                         ▼
+        ┌─────────────┐         ┌─────────────┐           ┌─────────────┐
+        │  config.rs  │         │ sde/loader  │           │ esi/client  │
+        │ ShipProfile │         │ SQLite dump │           │ HTTP client │
+        │ UserConfig  │         │ map/items   │           │ ETag cache  │
+        └─────────────┘         └─────────────┘           └──────┬──────┘
+                                                                 │
+                                                       ┌─────────▼─────────┐
+                                                       │   esi/market.rs   │
+                                                       │ Region pagination │
+                                                       │ Order grouping    │
+                                                       └─────────┬─────────┘
+                                                                 │
+                                                       ┌─────────▼─────────┐
+                                                       │   arbitrage.rs    │
+                                                       │ Quantity solver   │
+                                                       │ 15% ROI invariant │
+                                                       │ Highsec/NPC filter│
+                                                       │ PPJ ranking       │
+                                                       └─────────┬─────────┘
+                                                                 │
+                         ┌───────────────────────────────────────▼─────────┐
+                         │           graph.rs  +  route_planner.rs         │
+                         │ graph.rs         — petgraph Dijkstra, LRU cache │
+                         │ route_planner.rs — greedy multi-stop builder    │
+                         └─────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Module Responsibilities
 
-### `main.rs`
-- Parse CLI args via `clap` derive macros
-- Load `UserConfig` from TOML
-- Ensure SDE is present (download if needed)
-- Spawn `tokio::main` async runtime
-- Coordinate the full pipeline
-- Hand results to the TUI
+### `src/lib.rs`
+- Root of the `eve_trade_scout` library crate.
+- Re-exports `arbitrage`, `config`, `esi`, `graph`, `route_planner`, `sde`, and `ui`.
+- Enables complete integration test suites in `tests/` to run against clean crate interfaces without private coupling or SQLite mocking issues.
 
-### `config.rs`
-- `ShipProfile` constants (`BIG_HAULER`, `SMALL_HAULER`)
-- `UserConfig` struct with `serde` derives for `toml` read/write
-- Default config generation
-- Config file path: `~/.config/eve-trade-scout/config.toml`
+### `src/main.rs`
+- Executable binary (`eve-trade`).
+- Parse CLI arguments via `clap` (`--ship`, `--system`, `--regions`, `--safe`, `--unsafe-routes`, `--npc-only`, `--allow-structures`, `--min-roi`, `--gui`, `--tui`, `--no-ui`, `--export`).
+- Detects environment (launches Desktop GUI by default when DISPLAY/WAYLAND_DISPLAY is present and stdout is a terminal, falls back to TUI or console).
+- Orchestrates SDE check, graph creation, market fetching, deal analysis, and UI launching.
 
-### `sde/loader.rs`
-- Download + decompress Fuzzwork SDE SQLite (`bzip2` crate) if absent or stale
-- Open `rusqlite::Connection` to local `data/eve_sde.sqlite`
-- Exposes:
-  - `get_item_info(type_id: u32) -> Option<ItemInfo>`
-  - `get_system_id(name: &str) -> Option<u32>`
-  - `get_system_name(system_id: u32) -> Option<String>`
-  - `get_station_system(station_id: u64) -> Option<u32>`
-  - `build_system_graph() -> petgraph::Graph<SystemNode, ()>`
+### `src/config.rs`
+- `ShipProfile` constants: `BIG_HAULER` (60k m³ / 500M ISK) and `SMALL_HAULER` (30k m³ / 50M ISK).
+- `UserConfig` TOML persistence at `~/.config/eve-trade-scout/config.toml`.
+- Configures default parameters: 15.0% minimum ROI (`min_net_profit_pct`), safe highsec routing (`safe_route_only = true`), and NPC station filtering (`npc_stations_only = true`).
 
-### `esi/client.rs`
-- `reqwest::Client` configured with:
-  - `User-Agent` header
-  - gzip decoding enabled
-  - connection pool (max 10 connections)
-- ETag cache: `HashMap<String, CacheEntry>` persisted to `cache/etags.json`
-- `async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T>`
-- `async fn get_all_pages<T>(&self, path: &str) -> Result<Vec<T>>`
-  - Reads `X-Pages` header, fetches pages concurrently via `tokio::spawn` + `JoinSet`
-- Exponential backoff on 5xx and 420 errors (`tokio::time::sleep`)
+### `src/sde/loader.rs`
+- Automated download + decompression of Fuzzwork SDE SQLite (`eve_sde.sqlite`) via `bzip2`.
+- Reads item volumes (`packaged_volume`), solar system details, security ratings, and stargate links.
+- Helper queries: `get_item_info`, `get_system_id`, `get_system_name`, `get_station_system`, `all_systems`, `all_jumps`.
 
-### `esi/market.rs`
-- `async fn fetch_region_market(client, sde, region_id) -> Result<RegionMarket>`
-- `async fn fetch_markets(client, sde, region_ids) -> Result<HashMap<u32, RegionMarket>>`
-  - Concurrently fetches all regions via `tokio::task::JoinSet`
+### `src/esi/client.rs` & `src/esi/market.rs`
+- Bounded async HTTP client (`reqwest`) with disk ETag caching in `cache/etags.json`.
+- Concurrent pagination via `tokio::task::JoinSet` (bounded concurrency with rate-limiting backoff).
+- Grouping orders into buy vs. sell books and selecting `cheapest_sell` and `best_buy`.
 
-### `arbitrage.rs`
-- Pure sync computation (no I/O) — fast enough to run on the main thread
-- `fn find_deals(markets, sde, graph, ship, home_system, config) -> Vec<ArbitrageDeal>`
-- `fn calculate_deal(...) -> Option<ArbitrageDeal>`
+### `src/arbitrage.rs`
+- Core arbitrage calculation engine (100% deterministic, memory-pure).
+- Quantity constraint solver (constrained by ship cargo volume, capital budget, sell volume remaining, buy volume remaining).
+- Strict invariant enforcement:
+  - Minimum 15.0% net profitability after taxes and broker fees (`min_net_profit_pct`).
+  - Highsec only filtering: source and dest must have security $\ge 0.45$.
+  - Station pool toggle: `npc_stations_only` filters out stations with ID $\ge 10^{12}$ (Upwell structures).
+  - Profit-per-jump: $\text{net\_profit} / (\text{jumps\_from\_home} + \text{jumps\_source\_dest})$.
 
-### `graph.rs`
-- Wraps `petgraph::Graph<SystemNode, ()>`
-- `fn jump_count(&self, origin: u32, dest: u32, safe_only: bool) -> u32`
-  - Uses `petgraph::algo::dijkstra`
-  - Memoized with `lru::LruCache<(u32, u32, bool), u32>`
+### `src/graph.rs`
+- Wraps `petgraph::Graph<SystemNode, ()>`.
+- In-memory graph constructor `SystemGraph::from_nodes_and_jumps` enabling fast zero-disk testing.
+- Dijkstra pathfinding with `LruCache<(u32, u32, bool), u32>` memoization.
+- Safe routing mode: lowsec/nullsec gates penalized with weight 1000, unreachable endpoints return 9999.
 
-### `route_planner.rs`
-- `fn plan_route(deals, ship, home_system, max_stops) -> TradeRoute`
-- Greedy selection loop (details in `05_ALGORITHM.md`)
+### `src/route_planner.rs`
+- Greedy multi-stop sequential trade chaining.
+- Continually re-evaluates remaining capacity and jumps from current stop to the next deal.
 
-### `ui/tui.rs`
-- Full `ratatui` terminal UI
-- `crossterm` backend for raw mode input
-- Renders:
-  - Deal table with scrolling
-  - Route panel
-  - Settings panel
-  - Progress overlay during fetch
+### `src/ui/gui.rs` & `src/ui/tui.rs`
+- `gui.rs`: Native desktop GUI window powered by `eframe` / `egui`. Includes live scanning thread, item search, clipboard copy buttons, and visual route display.
+- `tui.rs`: Interactive terminal interface built with `ratatui` / `crossterm` for SSH or terminal power users.
 
 ---
 

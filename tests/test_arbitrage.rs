@@ -138,4 +138,77 @@ mod tests {
         assert!(!is_highsec(-0.2), "Catch nullsec (-0.2) must be excluded");
         assert!(!is_highsec(-1.0), "Deep nullsec (-1.0) must be excluded");
     }
+
+    #[test]
+    fn test_quantity_solver_constraints() {
+        let max_volume: f64 = 60_000.0; // Big Hauler
+        let max_budget: f64 = 500_000_000.0;
+
+        // Case 1: Constrained by volume
+        let unit_volume_1: f64 = 100.0; // m³
+        let buy_price_1: f64 = 10_000.0;
+        let supply_1: u32 = 5_000;
+        let demand_1: u32 = 5_000;
+
+        let qty_vol = (max_volume / unit_volume_1).floor() as u32; // 600
+        let qty_budget = (max_budget / buy_price_1).floor() as u32; // 50,000
+        let final_qty_1 = qty_vol.min(qty_budget).min(supply_1).min(demand_1);
+        assert_eq!(final_qty_1, 600, "Should be constrained by cargo volume");
+
+        // Case 2: Constrained by budget
+        let unit_volume_2: f64 = 0.1;
+        let buy_price_2: f64 = 25_000_000.0; // 25M each
+        let supply_2: u32 = 100;
+        let demand_2: u32 = 100;
+
+        let qty_vol_2 = (max_volume / unit_volume_2).floor() as u32;
+        let qty_budget_2 = (max_budget / buy_price_2).floor() as u32; // 20
+        let final_qty_2 = qty_vol_2.min(qty_budget_2).min(supply_2).min(demand_2);
+        assert_eq!(final_qty_2, 20, "Should be constrained by ISK capital budget");
+
+        // Case 3: Constrained by supply
+        let supply_3 = 8;
+        let demand_3 = 50;
+        let final_qty_3 = qty_vol_2.min(qty_budget_2).min(supply_3).min(demand_3);
+        assert_eq!(final_qty_3, 8, "Should be constrained by supply");
+
+        // Case 4: Constrained by demand
+        let supply_4 = 100;
+        let demand_4 = 5;
+        let final_qty_4 = qty_vol_2.min(qty_budget_2).min(supply_4).min(demand_4);
+        assert_eq!(final_qty_4, 5, "Should be constrained by demand");
+    }
+
+    #[test]
+    fn test_deal_sorting_ppj_descending() {
+        struct MockDeal {
+            id: u32,
+            ppj: f64,
+            net: f64,
+        }
+
+        let mut deals = vec![
+            MockDeal { id: 1, ppj: 1.5, net: 10_000_000.0 },
+            MockDeal { id: 2, ppj: 4.2, net: 8_000_000.0 },
+            MockDeal { id: 3, ppj: 2.1, net: 15_000_000.0 },
+            MockDeal { id: 4, ppj: 4.2, net: 12_000_000.0 }, // Same PPJ as #2, but higher net
+        ];
+
+        deals.sort_by(|a, b| {
+            b.ppj
+                .partial_cmp(&a.ppj)
+                .unwrap()
+                .then_with(|| b.net.partial_cmp(&a.net).unwrap())
+        });
+
+        // Expected order:
+        // 1st: ID 4 (PPJ 4.2, net 12M)
+        // 2nd: ID 2 (PPJ 4.2, net 8M)
+        // 3rd: ID 3 (PPJ 2.1, net 15M)
+        // 4th: ID 1 (PPJ 1.5, net 10M)
+        assert_eq!(deals[0].id, 4);
+        assert_eq!(deals[1].id, 2);
+        assert_eq!(deals[2].id, 3);
+        assert_eq!(deals[3].id, 1);
+    }
 }

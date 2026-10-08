@@ -160,8 +160,9 @@ pub struct LocationConfig {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ScanConfig {
-    pub regions:         Vec<u32>,
-    pub safe_route_only: bool,
+    pub regions:           Vec<u32>,
+    pub safe_route_only:   bool,
+    pub npc_stations_only: bool,   // Default: true (restrict search strictly to NPC stations vs allow player citadels)
 }
 
 #[derive(Debug, Deserialize, Serialize)]

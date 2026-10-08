@@ -17,10 +17,7 @@ pub struct SystemGraph {
 }
 
 impl SystemGraph {
-    pub fn from_sde(sde: &SdeLoader) -> Result<Self> {
-        let systems = sde.all_systems()?;
-        let jumps = sde.all_jumps()?;
-
+    pub fn from_nodes_and_jumps(systems: Vec<SystemNode>, jumps: Vec<(u32, u32)>) -> Self {
         let mut graph = UnGraph::new_undirected();
         let mut id_to_idx = HashMap::with_capacity(systems.len());
 
@@ -41,11 +38,17 @@ impl SystemGraph {
 
         let cache = LruCache::new(NonZeroUsize::new(20_000).unwrap());
 
-        Ok(Self {
+        Self {
             graph,
             id_to_idx,
             jump_cache: Mutex::new(cache),
-        })
+        }
+    }
+
+    pub fn from_sde(sde: &SdeLoader) -> Result<Self> {
+        let systems = sde.all_systems()?;
+        let jumps = sde.all_jumps()?;
+        Ok(Self::from_nodes_and_jumps(systems, jumps))
     }
 
     pub fn security(&self, system_id: u32) -> Option<f64> {

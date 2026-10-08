@@ -50,11 +50,11 @@
 
 ---
 
-## Repository layout (planned)
+## Repository layout
 
 ```
 Eve trading arbitraj/
-├── .agents/                        ← planning docs (this folder)
+├── .agents/                        ← planning & architecture docs
 │   ├── 00_PROJECT_OVERVIEW.md
 │   ├── 01_API_REFERENCE.md
 │   ├── 02_DATA_MODEL.md
@@ -68,7 +68,8 @@ Eve trading arbitraj/
 │   └── rules/session_start.md
 │
 ├── src/
-│   ├── main.rs                     ← binary entry point
+│   ├── lib.rs                      ← library root (eve_trade_scout crate)
+│   ├── main.rs                     ← binary entry point (eve-trade executable)
 │   ├── config.rs                   ← ship profiles, user settings (TOML)
 │   ├── esi/
 │   │   ├── mod.rs
@@ -79,21 +80,26 @@ Eve trading arbitraj/
 │   │   ├── mod.rs
 │   │   └── loader.rs               ← SDE SQLite reader (item volumes, system graph)
 │   ├── graph.rs                    ← stargate graph + Dijkstra pathfinding (petgraph)
-│   ├── arbitrage.rs                ← core profit calculation engine
+│   ├── arbitrage.rs                ← core profit calculation engine & quantity solver
 │   ├── route_planner.rs            ← multi-stop greedy route builder
 │   └── ui/
-│       ├── mod.rs
-│       └── tui.rs                  ← terminal interface (ratatui)
+│       ├── mod.rs                  ← UI dispatcher (GUI vs TUI vs CLI)
+│       ├── gui.rs                  ← native desktop GUI (egui / eframe)
+│       └── tui.rs                  ← terminal interface (ratatui / crossterm)
 │
-├── data/                           ← cached SDE SQLite file
+├── data/                           ← cached SDE SQLite database
 │   └── .gitkeep
 │
-├── tests/
-│   ├── test_arbitrage.rs
-│   └── test_graph.rs
+├── tests/                          ← comprehensive automated test suites (19 tests)
+│   ├── test_arbitrage.rs           ← 15% ROI, station filter, highsec filter, PPJ, hauler limits
+│   ├── test_config.rs              ← ship profile parser, user config defaults & TOML roundtrip
+│   ├── test_graph.rs               ← highsec security tags, safe route bypass, Dijkstra jumps
+│   ├── test_route_planner.rs       ← greedy trade chaining, multi-stop constraints
+│   └── test_esi_models.rs          ← JSON order deserialization, best buy/sell matching
 │
 ├── Cargo.toml
 ├── Cargo.lock
+├── Makefile                        ← Fedora build, check, test, and release targets
 └── README.md
 ```
 
@@ -104,16 +110,18 @@ Eve trading arbitraj/
 | Layer | Crate / Tool | Reason |
 |---|---|---|
 | Language | **Rust 1.78+** (stable) | Single binary, zero runtime, memory-safe |
+| Library & Binary | `eve_trade_scout` / `eve-trade` | Modular crate exposes lib for integration testing |
 | Async runtime | `tokio` | Industry standard async executor |
 | HTTP client | `reqwest` | Async, TLS, gzip, ETag-friendly |
 | JSON parsing | `serde` + `serde_json` | Zero-copy deserialization |
-| SQLite (SDE) | `rusqlite` | Lightweight, bundled SQLite |
+| SQLite (SDE) | `rusqlite` (bundled) | Zero dynamic dependencies, embedded C SQLite |
 | Graph / pathfinding | `petgraph` | Dijkstra, efficient adjacency list |
+| Desktop GUI | `eframe` + `egui` | Native Linux window (Wayland & X11), dark theme |
 | Terminal UI | `ratatui` + `crossterm` | Rich interactive TUI, tables, spinners |
-| CLI argument parsing | `clap` | Derive-macro based, batteries included |
+| CLI argument parsing | `clap` | Derive-macro based, flags and headless mode |
 | Config files | `toml` crate | Read/write `config.toml` |
 | Progress bars | `indicatif` | Download and processing progress |
-| Error handling | `anyhow` | Ergonomic error propagation |
+| Error handling | `anyhow` + `thiserror` | Contextual and typed error propagation |
 | Date/time | `chrono` | Timestamp parsing from ESI |
 | LRU cache | `lru` crate | Jump-count memoization |
 

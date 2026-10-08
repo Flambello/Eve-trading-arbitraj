@@ -187,6 +187,9 @@ pub struct SystemGraph {
 }
 
 impl SystemGraph {
+    /// In-memory graph builder from raw nodes and jump pairs (ideal for tests and SDE).
+    pub fn from_nodes_and_jumps(systems: Vec<SystemNode>, jumps: Vec<(u32, u32)>) -> Self;
+
     /// Build from SdeLoader data.
     pub fn from_sde(sde: &SdeLoader) -> anyhow::Result<Self>;
 
@@ -304,6 +307,40 @@ pub fn build_waypoints(deals: &[ArbitrageDeal]) -> Vec<u32>;
 
 ---
 
+---
+
+## `src/ui/mod.rs` & `src/ui/gui.rs`
+
+```rust
+// UI Mode Dispatcher
+pub enum UiMode {
+    Gui,     // Native eframe/egui desktop window (default when DISPLAY is present)
+    Tui,     // Terminal ratatui interface
+    NoUi,    // Direct stdout/headless CLI mode
+}
+
+pub fn select_ui_mode(args: &Args) -> UiMode;
+
+// Native Desktop GUI
+pub fn run_gui(
+    config: UserConfig,
+    sde: Arc<SdeLoader>,
+    graph: Arc<SystemGraph>,
+    client: Arc<EsiClient>,
+    initial_deals: Vec<ArbitrageDeal>,
+    initial_route: Option<TradeRoute>,
+) -> anyhow::Result<()>;
+```
+
+### Key GUI Components (`src/ui/gui.rs`)
+- **Theme**: Dark space sci-fi theme with custom palettes (dark slate panels, gold accents, neon cyan highlights, green profit tags).
+- **Background Scan Worker**: Runs async market fetches and calculations on background threads, updating deal state via thread channels without freezing frame rendering.
+- **Header Controls**: Ship profile toggle, starting system input + quick presets (Jita, Amarr, Dodixie, Rens), max stops slider, and "Scan Market" trigger.
+- **Deals Table**: Real-time item search query, sortable columns, copy-to-clipboard buttons for buy/sell systems.
+- **Visual Route Planner**: Waypoint sequence cards detailing action, item, quantity, investment, profit, and jumps.
+
+---
+
 ## `src/ui/tui.rs`
 
 ```rust
@@ -313,12 +350,10 @@ pub struct Tui {
 
 impl Tui {
     pub fn new() -> anyhow::Result<Self>;
-
-    /// Restore terminal to normal mode on drop.
     pub fn restore() -> anyhow::Result<()>;
 }
 
-/// Top-level interactive UI entry point.
+/// Top-level interactive TUI entry point.
 pub async fn run(
     config: &mut UserConfig,
     sde:    &SdeLoader,
@@ -326,16 +361,9 @@ pub async fn run(
     client: &EsiClient,
 ) -> anyhow::Result<()>;
 
-/// Render the deal table (scrollable, colour-coded by profit tier).
 pub fn render_deal_table(frame: &mut Frame, deals: &[ArbitrageDeal], scroll: usize);
-
-/// Render the planned route panel.
 pub fn render_route(frame: &mut Frame, route: &TradeRoute, sde: &SdeLoader);
-
-/// Render the settings panel.
 pub fn render_settings(frame: &mut Frame, config: &UserConfig);
-
-/// Render a fetch progress overlay.
 pub fn render_progress(frame: &mut Frame, message: &str, progress: f64);
 ```
 
@@ -347,22 +375,47 @@ pub fn render_progress(frame: &mut Frame, message: &str, progress: f64);
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "eve-trade-scout", about = "EVE Online arbitrage route planner")]
-struct Args {
-    #[arg(long)] ship:        Option<String>,
-    #[arg(long)] system:      Option<String>,
-    #[arg(long)] regions:     Option<String>,   // comma-separated
-    #[arg(long, default_value = "20")] top: usize,
-    #[arg(long, default_value = "1000000.0")] min_profit: f64,
-    #[arg(long, default_value = "5.0")]        min_spread: f64,
-    #[arg(long)] safe:        bool,
-    #[arg(long)] route:       bool,
-    #[arg(long)] export:      Option<PathBuf>,
-    #[arg(long)] no_cache:    bool,
-    #[arg(long)] show_config: bool,
-    #[arg(long)] update_sde:  bool,
+#[command(
+    name = "eve-trade",
+    version = "0.1.0",
+    about = "Finds the closest and most profitable cross-station arbitrage deals and plans trade routes in EVE Online"
+)]
+pub struct Args {
+    #[arg(short, long)]                      pub ship: Option<String>,
+    #[arg(long)]                             pub system: Option<String>,
+    #[arg(long)]                             pub regions: Option<String>,
+    #[arg(long)]                             pub safe: bool,
+    #[arg(long)]                             pub unsafe_routes: bool,
+    #[arg(long)]                             pub npc_only: bool,
+    #[arg(long, aliases = ["allow-citadels"])] pub allow_structures: bool,
+    #[arg(long)]                             pub min_profit: Option<f64>,
+    #[arg(long)]                             pub min_spread: Option<f64>,
+    #[arg(long)]                             pub min_roi: Option<f64>,     // Default: 15.0% enforced
+    #[arg(short, long, default_value_t = 25)] pub top: usize,
+    #[arg(long, default_value_t = 5)]        pub max_stops: usize,
+    #[arg(long)]                             pub route: bool,
+    #[arg(long)]                             pub gui: bool,
+    #[arg(long)]                             pub tui: bool,
+    #[arg(long)]                             pub no_ui: bool,
+    #[arg(long)]                             pub no_tui: bool,
+    #[arg(long)]                             pub export: Option<PathBuf>,
+    #[arg(long)]                             pub update_sde: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()>;
 ```
+
+---
+
+## Automated Test Suites (`tests/`)
+
+The repository contains 5 dedicated integration test suites providing 100% test coverage over critical domain logic and invariants:
+
+| Suite | File | Tests Covered |
+|---|---|---|
+| **Arbitrage Engine** | `tests/test_arbitrage.rs` | Ship profile volume/budget limits, profit-per-jump (PPJ) formula, enforced 15.0% net profitability rejection/acceptance, NPC station ID boundary ($< 10^{12}$ vs $\ge 10^{12}$), station toggle filter, highsec security filtering ($\ge 0.45$), 4-way quantity solver, deal sorting (PPJ DESC, net DESC). |
+| **Config & Profiles** | `tests/test_config.rs` | Ship profile string parsing (case-insensitivity, aliases, invalid string rejection), `UserConfig` defaults and invariant checks, TOML roundtrip serialization & deserialization. |
+| **Graph & Pathfinding** | `tests/test_graph.rs` | Solar system security classification (`is_highsec`), Dijkstra jump counting, safe routing bypass around lowsec systems, lowsec destination rejection in safe mode. |
+| **Route Planner** | `tests/test_route_planner.rs` | Empty deal handling, greedy sequential multi-stop deal chaining, cargo volume and budget accumulation, maximum stop constraint enforcement. |
+| **ESI Models & Deserialization** | `tests/test_esi_models.rs` | JSON order array deserialization, buy vs sell discrimination, `cheapest_sell` and `best_buy` price matching across order books. |

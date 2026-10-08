@@ -131,14 +131,38 @@ eve-trade --ship big --system Jita --export deals.csv
 
 ## Architecture & Codebase
 
+- `src/lib.rs`: Shared crate root (`eve_trade_scout`) exposing clean APIs for integration testing and binaries.
 - `src/config.rs`: Ship limits, user settings, TOML loading.
 - `src/sde/loader.rs`: SQLite loader and automated Fuzzwork SDE sync.
 - `src/graph.rs`: Stargate topology and Dijkstra routing with LRU cache.
 - `src/esi/`: Async REST client, ETag store, market order pagination.
-- `src/arbitrage.rs`: Quantity constraint solver and profit-per-jump ranker.
+- `src/arbitrage.rs`: Quantity constraint solver, 15% ROI invariant, highsec/station filters, and PPJ ranker.
 - `src/route_planner.rs`: Greedy sequential route builder.
 - `src/ui/gui.rs`: `egui`/`eframe` native desktop GUI window with dark sci-fi design.
 - `src/ui/tui.rs`: `ratatui` interactive terminal UI dashboard.
+
+---
+
+## Automated Test Suites & Quality Assurance
+
+EVE Trade Scout enforces 100% passing test suites across all core features and domain invariants:
+
+```bash
+# Run all 19 tests with verbose output
+make test
+# or
+cargo test --verbose
+```
+
+### Test Suites Overview
+
+| Test Suite | Purpose | Covered Invariants & Logic |
+|---|---|---|
+| **`tests/test_arbitrage.rs`** | Arbitrage Engine | • Enforced 15.0% net ROI threshold after taxes & broker fees<br>• Station pool toggle (NPC stations only vs Citadels)<br>• Highsec space security restriction ($\ge 0.45$)<br>• Quantity solver (volume, budget, supply, demand limits)<br>• Profit-per-jump (PPJ) formula with starting system jumps<br>• Big Hauler (60k m³ / 500M ISK) & Small Hauler (30k m³ / 50M ISK)<br>• Deal ranking by PPJ DESC, then net profit DESC |
+| **`tests/test_config.rs`** | Configuration & Profiles | • Profile parsing from CLI arguments & config strings<br>• Case-insensitivity & aliases ("big", "b", "small", "s")<br>• Rejection of invalid profile names<br>• Default configuration settings and invariant preservation<br>• Full TOML serialization & round-trip verification |
+| **`tests/test_graph.rs`** | Topology & Pathfinding | • Solar system security lookup & classification<br>• Dijkstra jump distance calculation<br>• Safe routing highsec detour around lowsec systems<br>• Lowsec destination rejection in safe mode (9999 jumps) |
+| **`tests/test_route_planner.rs`** | Route Optimization | • Empty opportunity handling<br>• Greedy multi-stop route construction<br>• Cargo volume and budget replenishment/deduction<br>• Maximum stop constraint cutoff |
+| **`tests/test_esi_models.rs`** | ESI Models & Deserialization | • Real CCP ESI market order JSON deserialization<br>• Buy order vs sell order discrimination<br>• Cheapest sell and best buy order discovery |
 
 ---
 

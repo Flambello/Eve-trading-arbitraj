@@ -6,6 +6,10 @@ description = "EVE Online arbitrage route planner — find profitable trades bet
 authors = ["EVE Trader"]
 license = "MIT"
 
+[lib]
+name = "eve_trade_scout"
+path = "src/lib.rs"
+
 [[bin]]
 name = "eve-trade"
 path = "src/main.rs"

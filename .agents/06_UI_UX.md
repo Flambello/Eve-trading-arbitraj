@@ -7,7 +7,57 @@ EVE Trade Scout provides **two user interface modes**:
 
 ---
 
-## Startup Flow
+## 1. Native Desktop GUI Window (`egui` / `eframe`)
+
+The graphical desktop application provides an immersive, high-contrast dark sci-fi workstation tuned for active EVE Online trading:
+
+### A. Persistent Controls & Executive Telemetry Header
+- **⚡ "SCAN MARKET NOW" Action Button**: Launches live asynchronous order book fetch from CCP's ESI API in a background thread. Keeps the UI at 60 FPS without hanging or freezing.
+- **Ship Profile Segmented Switcher**: Instant 1-click toggle between:
+  - 🚢 **Big Hauler**: `60,000 m³` volume cap · `500,000,000 ISK` capital budget.
+  - 🚀 **Small Hauler**: `30,000 m³` volume cap · `50,000,000 ISK` capital budget.
+- **Starting System Input & Quick Hub Chips**: Quick-select buttons for `Jita`, `Amarr`, `Dodixie`, `Rens`, or type any system in New Eden.
+- **Safety Switch**: `🛡️ Safe Highsec Only` toggle enforces Dijkstra avoidance of systems with security $<0.45$.
+- **Min ROI % Drag Slider**: Live adjustments starting at the enforced minimum of $15.0\%$.
+- **Executive KPI Strip**: Real-time badges displaying Top Deal Profit (`+XX.XX M ISK`) and Top Profit Per Jump (`XX.XX M / jump`).
+
+### B. Deals Table & Interactive Dossier
+- **Search & Multi-Key Sorting**:
+  - Live substring filter by item name with an instant `✖ Clear` button.
+  - Sorting criteria: `Profit / Jump`, `Total Profit`, `Net ROI %`, `Fewest Jumps`, `Lowest Cost`.
+  - Direction toggle: `▼ Descending` / `▲ Ascending`.
+  - Minimum Net Profit threshold slider (in Millions ISK).
+- **Deals Grid**:
+  - Gold (`#1`), Silver (`#2`), Bronze (`#3`) visual rank highlights.
+  - Colored system pills: Cyan for Buy System, Magenta for Sell System.
+  - Glowing Emerald Net Profit and Net ROI % tags.
+  - 1-click `📋 Buy` and `📋 Sell` clipboard copy buttons.
+- **Expandable Deal Dossier**:
+  - Clicking any row expands a detailed 3-column trade breakdown:
+    - **Purchase Column**: Exact station name, system, unit price, quantity, capital required, and 1-click copy station button.
+    - **Sale Column**: Destination station name, system, unit price, gross revenue, spread %, and copy station button.
+    - **Financials Column**: Net profit, ROI %, profit per jump, cargo volume used, and travel telemetry.
+
+### C. Visual Multi-Stop Route Flight Plan
+- **Overall Route KPI Card**: Total jumps, total net profit, average profit per jump, peak cargo space filled, and capital required.
+- **1-Click Autopilot Trail Copy**: Formats the entire route chain (`Jita -> Perimeter -> Amarr`) into the clipboard for immediate pasting into in-game chat or route planner.
+- **Step-by-Step Flight Cards**: Visual leg timeline displaying pickup action, flight jumps, and delivery action.
+
+### D. Settings & Tax Skill Customizer
+- **Skill Sliders**:
+  - Broker Fee % (default 3.0%, adjustable down to 1.0% for pilots with *Broker Relations*).
+  - Sales Tax % (default 8.0%, adjustable down to 3.6% for pilots with *Accounting*).
+- **Active Scan Regions**: Checkbox toggles for the 5 major empire regions:
+  - The Forge (Jita IV-4) — Region 10000002
+  - Domain (Amarr VIII) — Region 10000043
+  - Sinq Laison (Dodixie IX-20) — Region 10000032
+  - Heimatar (Rens VI-8) — Region 10000030
+  - Metropolis (Hek VIII-12) — Region 10000042
+- **Feedback Toasts**: Temporary cyan status banners providing tactile confirmation when items/systems are copied.
+
+---
+
+## 2. Terminal Interactive Interface (TUI)
 
 ```
 ╔══════════════════════════════════════════════╗

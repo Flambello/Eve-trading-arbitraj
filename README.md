@@ -61,11 +61,13 @@ eve-trade
 ## Usage
 
 ### 1. Native Desktop GUI Window (Default on Linux Desktop)
-Simply run without arguments on your Fedora desktop (Wayland or X11) to open the native graphical application:
+Launch the graphical interface using the startup script or desktop shortcut:
 ```bash
-./target/release/eve-trade
+./start-gui.sh
+# or: ./start.sh
 # or: make run
 ```
+You can also launch **EVE Trade Scout** from your Fedora application launcher (Super key / Activities menu) via the installed `eve-trade.desktop` shortcut, or double-click `eve-trade.desktop` in your file manager.
 **Desktop GUI Features:**
 - 🔄 **Live "Scan Market" Button**: Fetches live orders from CCP's ESI API in a background worker thread without freezing the UI.
 - 🚢 **Interactive Ship Selector**: Instantly toggle between Big Hauler (60k m³ / 500M) and Small Hauler (30k m³ / 50M).

@@ -62,7 +62,10 @@ Eve trading arbitraj/
 │   ├── 04_MODULES.md
 │   ├── 05_ALGORITHM.md
 │   ├── 06_UI_UX.md
-│   └── 07_SETUP_AND_DEPS.md
+│   ├── 07_SETUP_AND_DEPS.md
+│   ├── 08_PACKAGING_AND_PUBLISHING.md
+│   ├── 09_RUST_BEST_PRACTICES_AND_TESTING.md
+│   └── rules/session_start.md
 │
 ├── src/
 │   ├── main.rs                     ← binary entry point

@@ -1,4 +1,4 @@
-name: Release
+name: Release (Fedora Linux)
 
 on:
   push:
@@ -6,28 +6,33 @@ on:
       - "v*"
 
 jobs:
-  build_release:
-    name: Build Linux x86_64 Binary
+  build_release_fedora:
+    name: Build Fedora Linux x86_64 Binary
     runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+
     steps:
-    - uses: actions/checkout@v4
+    - name: Install Fedora System Dependencies
+      run: |
+        dnf install -y git gcc pkg-config rust cargo tar gzip
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
 
-    - name: Build Release
+    - name: Build Optimized Release Binary
       run: cargo build --release
 
-    - name: Create Tarball
+    - name: Package Fedora Release Archive
       run: |
         mkdir -p package
         cp target/release/eve-trade package/
         cp README.md LICENSE package/
-        tar -czf eve-trade-scout-x86_64-linux.tar.gz -C package .
+        tar -czf eve-trade-scout-fedora-x86_64.tar.gz -C package .
 
     - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: eve-trade-scout-x86_64-linux.tar.gz
+        files: eve-trade-scout-fedora-x86_64.tar.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

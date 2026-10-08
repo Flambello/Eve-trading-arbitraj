@@ -31,15 +31,19 @@
 
 ### Build & Run
 
+You can use standard `cargo` commands or the provided `Makefile`:
+
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/eve-trade-scout.git
-cd eve-trade-scout
+# Using Makefile on Fedora
+make check        # Verify compilation
+make test         # Run unit tests
+make release      # Build optimized release binary
+make run          # Launch the tool
+```
 
-# Build release binary
+Or using `cargo` directly:
+```bash
 cargo build --release
-
-# Run
 ./target/release/eve-trade
 ```
 

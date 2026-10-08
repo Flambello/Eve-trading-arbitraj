@@ -1,4 +1,4 @@
-name: CI
+name: CI (Fedora Linux)
 
 on:
   push:
@@ -10,22 +10,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
+  build_and_test_fedora:
+    name: Fedora Linux Build & Test
     runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+
     steps:
-    - uses: actions/checkout@v4
+    - name: Install Fedora System Dependencies
+      run: |
+        dnf install -y git gcc pkg-config rust cargo
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
 
-    - name: Rust Cache
-      uses: Swatinem/rust-cache@v2
+    - name: Verify Fedora Environment
+      run: |
+        cat /etc/fedora-release
+        gcc --version
+        rustc --version
+        cargo --version
 
-    - name: Check
+    - name: Cargo Check
       run: cargo check --verbose
 
     - name: Run Tests
       run: cargo test --verbose
 
-    - name: Build Release
+    - name: Build Optimized Release Binary
       run: cargo build --release --verbose

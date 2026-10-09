@@ -307,6 +307,84 @@ pub fn build_waypoints(deals: &[ArbitrageDeal]) -> Vec<u32>;
 
 ---
 
+## `src/chain_route_planner.rs`
+
+```rust
+pub struct CargoSlot {
+    pub deal:        ArbitrageDeal,
+    pub sell_system: u32,
+    pub sell_name:   String,
+    pub volume:      f64,
+    pub capital:     f64,
+    pub net_profit:  f64,
+}
+
+pub struct PickupStop {
+    pub system_id:       u32,
+    pub system_name:     String,
+    pub jumps_from_prev: u32,
+    pub detour_jumps:    u32,
+    pub cargo_loaded:    Vec<CargoSlot>,
+    pub volume_loaded:   f64,
+    pub capital_spent:   f64,
+}
+
+pub struct SellStop {
+    pub system_id:       u32,
+    pub system_name:     String,
+    pub jumps_from_prev: u32,
+    pub cargo_sold:      Vec<CargoSlot>,
+    pub total_profit:    f64,
+    pub volume_freed:    f64,
+}
+
+pub struct ChainLeg {
+    pub pickups:          Vec<PickupStop>,
+    pub sell:             SellStop,
+    pub leg_total_jumps:  u32,
+    pub leg_total_profit: f64,
+}
+
+pub struct ChainRoute {
+    pub legs:            Vec<ChainLeg>,
+    pub total_jumps:     u32,
+    pub total_profit:    f64,
+    pub total_capital:   f64,
+    pub peak_volume_m3:  f64,
+    pub profit_per_jump: f64,
+    pub overall_roi_pct: f64,
+    pub waypoints:       Vec<u32>,
+    pub waypoint_names:  Vec<String>,
+}
+
+pub struct ChainConfig {
+    pub home_system:      u32,
+    pub max_legs:         usize,
+    pub beam_width:       usize,
+    pub detour_enabled:   bool,
+    pub max_detour_jumps: u32,
+    pub ship_max_volume:  f64,
+    pub ship_max_budget:  f64,
+    pub safe_only:        bool,
+}
+
+/// Optimizes multi-leg chained trade routes with knapsack cargo packing and detour tolerance.
+pub fn find_chain_routes(
+    deals:  &[ArbitrageDeal],
+    graph:  &SystemGraph,
+    config: &ChainConfig,
+) -> Vec<ChainRoute>;
+
+pub fn knapsack_pack(
+    deals:         &[&ArbitrageDeal],
+    remaining_vol: f64,
+    remaining_isk: f64,
+    used_keys:     &HashSet<(u32, u64, u64)>,
+) -> (Vec<CargoSlot>, f64, f64, f64);
+
+pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe: bool) -> u32;
+```
+
 ---
 
 ## `src/ui/mod.rs` & `src/ui/gui.rs`

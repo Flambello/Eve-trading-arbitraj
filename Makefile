@@ -21,7 +21,7 @@ release:
 	cargo build --release
 
 run:
-	./target/release/eve-trade
+	./target/release/eve-merchant
 
 clean:
 	cargo clean

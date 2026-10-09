@@ -11,7 +11,7 @@ name = "eve_trade_scout"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eve-trade"
+name = "eve-merchant"
 path = "src/main.rs"
 
 [dependencies]

@@ -123,3 +123,20 @@ fn test_shortest_path_safe_highsec_only() {
     let invalid_path = graph.shortest_path(jita, niarja_lowsec, true);
     assert!(invalid_path.is_empty(), "Path to lowsec must be empty in safe mode");
 }
+
+#[test]
+fn test_adjacent_regions() {
+    let graph = create_test_stargate_network();
+
+    let the_forge = 10000002;
+    let domain = 10000043;
+
+    let neighbors_safe = graph.adjacent_regions(the_forge, true);
+    assert_eq!(neighbors_safe, vec![domain]);
+
+    let domain_neighbors = graph.adjacent_regions(domain, true);
+    assert_eq!(domain_neighbors, vec![the_forge]);
+
+    let nonexistent = graph.adjacent_regions(99999999, true);
+    assert!(nonexistent.is_empty());
+}

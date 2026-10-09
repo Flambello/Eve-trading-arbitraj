@@ -30,6 +30,126 @@ pub struct SystemNode {
     pub region_id: u32,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SystemSearchResult {
+    pub system_id: u32,
+    pub system_name: String,
+    pub security_status: f64,
+    pub region_id: u32,
+    pub region_name: String,
+}
+
+/// Convert an integer to Roman numerals (e.g. 1 -> "I", 4 -> "IV", 10 -> "X", 18 -> "XVIII").
+pub fn arabic_to_roman(mut n: u32) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    const TABLE: &[(u32, &str)] = &[
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for &(val, sym) in TABLE {
+        while n >= val {
+            out.push_str(sym);
+            n -= val;
+        }
+    }
+    out
+}
+
+/// Parse a Roman numeral string case-insensitively (e.g. "IV" -> 4, "x" -> 10, "VIII" -> 8).
+pub fn roman_to_arabic(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut total = 0u32;
+    let mut prev = 0u32;
+    for ch in s.chars().rev() {
+        let val = match ch {
+            'I' | 'i' => 1,
+            'V' | 'v' => 5,
+            'X' | 'x' => 10,
+            'L' | 'l' => 50,
+            'C' | 'c' => 100,
+            'D' | 'd' => 500,
+            'M' | 'm' => 1000,
+            _ => return None,
+        };
+        if val < prev {
+            total = total.checked_sub(val)?;
+        } else {
+            total = total.checked_add(val)?;
+            prev = val;
+        }
+    }
+    if total == 0 {
+        None
+    } else {
+        Some(total)
+    }
+}
+
+/// Format an SDE station name into canonical in-game format:
+/// Planets are Roman numerals (e.g. "IV"), moons are Arabic numbers (e.g. "Moon 4").
+///
+/// Examples:
+/// - "Jita 4 - Moon 4 - Caldari Navy Assembly Plant" -> "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+/// - "Annaro 1 - CBD Corporation Storage" -> "Annaro I - CBD Corporation Storage"
+/// - "Amarr VIII (Oris) - Emperor Family Academy" -> "Amarr VIII (Oris) - Emperor Family Academy"
+pub fn format_station_name(name: &str) -> String {
+    if let Some((first, rest)) = name.split_once(" - ") {
+        if let Some((sys_name, token)) = first.rsplit_once(' ') {
+            if let Ok(planet_num) = token.parse::<u32>() {
+                return format!("{} {} - {}", sys_name, arabic_to_roman(planet_num), rest);
+            }
+        }
+    }
+    name.to_string()
+}
+
+/// Convert an in-game station name with Roman planet numeral back to SDE format:
+///
+/// Examples:
+/// - "Jita IV - Moon 4 - Caldari Navy Assembly Plant" -> "Jita 4 - Moon 4 - Caldari Navy Assembly Plant"
+/// - "Annaro I - CBD Corporation Storage" -> "Annaro 1 - CBD Corporation Storage"
+pub fn station_name_to_sde(name: &str) -> String {
+    if let Some((first, rest)) = name.split_once(" - ") {
+        if let Some((sys_name, token)) = first.rsplit_once(' ') {
+            if let Some(planet_num) = roman_to_arabic(token) {
+                return format!("{} {} - {}", sys_name, planet_num, rest);
+            }
+        }
+    }
+    name.to_string()
+}
+
+/// Strip enclosing quotes and optional security rating prefix like "[1.0] " from user input.
+fn clean_location_input(s: &str) -> &str {
+    let mut trimmed = s.trim().trim_matches(|c| c == '"' || c == '\'');
+    if trimmed.starts_with('[') {
+        if let Some(close_idx) = trimmed.find(']') {
+            let inside = &trimmed[1..close_idx];
+            if inside.parse::<f64>().is_ok() {
+                trimmed = trimmed[close_idx + 1..].trim();
+            }
+        }
+    }
+    trimmed
+}
+
 pub struct SdeLoader {
     conn: Mutex<Connection>,
     has_inv_volumes: bool,
@@ -195,12 +315,72 @@ impl SdeLoader {
         .ok()
     }
 
+    /// Resolve a user input string to a solar system ID.
+    ///
+    /// Handles:
+    /// 1. Exact system names: "Jita", "New Caldari", "Old Man Star"
+    /// 2. In-game station names with Roman numerals: "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+    /// 3. SDE station names with Arabic numbers: "Jita 4 - Moon 4 - Caldari Navy Assembly Plant"
+    /// 4. Shorthands: "Jita 4-4", "Jita IV-4", "Jita IV - 4", "Jita IV", "Jita 4", "Dodixie IX-20", "Rens VI-8"
+    /// 5. Input with security rating prefixes: "[1.0] Jita" or "[1.0] Jita IV - Moon 4..."
+    /// 6. Structure / station prefixes: "Perimeter - Tranquility Trading Tower"
     pub fn get_system_id(&self, name: &str) -> Option<u32> {
+        let cleaned = clean_location_input(name);
+        if cleaned.is_empty() {
+            return None;
+        }
+
         let conn = self.conn.lock().ok()?;
-        let mut stmt = conn
-            .prepare("SELECT solarSystemID FROM mapSolarSystems WHERE LOWER(solarSystemName) = LOWER(?1)")
+
+        // 1. Exact match on mapSolarSystems
+        let mut stmt_sys = conn
+            .prepare_cached("SELECT solarSystemID FROM mapSolarSystems WHERE LOWER(solarSystemName) = LOWER(?1)")
             .ok()?;
-        stmt.query_row(params![name.trim()], |row| row.get(0)).ok()
+        if let Ok(id) = stmt_sys.query_row(params![cleaned], |row| row.get(0)) {
+            return Some(id);
+        }
+
+        // 2. Direct or converted match on staStations
+        let sde_name = station_name_to_sde(cleaned);
+        let mut stmt_sta = conn
+            .prepare_cached("SELECT solarSystemID FROM staStations WHERE LOWER(stationName) = LOWER(?1)")
+            .ok()?;
+        if let Ok(id) = stmt_sta.query_row(params![sde_name], |row| row.get(0)) {
+            return Some(id);
+        }
+        if let Ok(id) = stmt_sta.query_row(params![cleaned], |row| row.get(0)) {
+            return Some(id);
+        }
+
+        // 3. Progressive word-prefix scan against mapSolarSystems
+        // For inputs like "New Caldari IV - Moon 1...", checks "New Caldari", "New"
+        // Also handles hyphenated shorthand like "Jita 4-4" or "Jita IV-4"
+        let words: Vec<&str> = cleaned.split_whitespace().collect();
+        for k in (1..=words.len()).rev() {
+            let cand = words[..k].join(" ");
+            let trimmed_cand = cand.trim_end_matches(['-', ':', ',']);
+            if let Ok(id) = stmt_sys.query_row(params![trimmed_cand], |row| row.get(0)) {
+                return Some(id);
+            }
+
+            // Check if last word is hyphenated shorthand e.g. "4-4" in "Jita 4-4"
+            if let Some(last) = words.get(k - 1) {
+                if let Some((sub, _)) = last.split_once('-') {
+                    let mut sub_words: Vec<&str> = words[..k - 1].to_vec();
+                    if !sub.is_empty() {
+                        sub_words.push(sub);
+                    }
+                    if !sub_words.is_empty() {
+                        let sub_cand = sub_words.join(" ");
+                        if let Ok(id) = stmt_sys.query_row(params![sub_cand], |row| row.get(0)) {
+                            return Some(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     pub fn get_system_name(&self, system_id: u32) -> Option<String> {
@@ -219,6 +399,78 @@ impl SdeLoader {
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
+    pub fn get_system_region(&self, system_id: u32) -> Option<u32> {
+        let conn = self.conn.lock().ok()?;
+        let mut stmt = conn
+            .prepare("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .ok()?;
+        stmt.query_row(params![system_id], |row| row.get(0)).ok()
+    }
+
+    pub fn search_systems(&self, query: &str, limit: usize) -> Vec<SystemSearchResult> {
+        let cleaned = clean_location_input(query).to_lowercase();
+        if cleaned.is_empty() {
+            return Vec::new();
+        }
+
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        // If the user typed something with a Roman or Arabic planet token, e.g. "Jita IV" or "Jita 4"
+        // also extract candidate base system name e.g. "jita"
+        let base_cand = if let Some((first, _)) = cleaned.split_once(" - ") {
+            first.rsplit_once(' ').map(|(s, _)| s).unwrap_or(first)
+        } else if let Some((first, token)) = cleaned.rsplit_once(' ') {
+            if token.parse::<u32>().is_ok() || roman_to_arabic(token).is_some() {
+                first
+            } else {
+                &cleaned
+            }
+        } else {
+            &cleaned
+        };
+
+        let trimmed = base_cand.trim();
+        let prefix_pattern = format!("{}%", trimmed);
+        let contains_pattern = format!("%{}%", trimmed);
+
+        let sql = "SELECT s.solarSystemID, s.solarSystemName, s.security, s.regionID, COALESCE(r.regionName, 'Unknown')
+                   FROM mapSolarSystems s
+                   LEFT JOIN mapRegions r ON s.regionID = r.regionID
+                   WHERE LOWER(s.solarSystemName) LIKE ?1 OR LOWER(s.solarSystemName) LIKE ?2
+                   ORDER BY 
+                       CASE WHEN LOWER(s.solarSystemName) = ?3 THEN 0
+                            WHEN LOWER(s.solarSystemName) LIKE ?1 THEN 1
+                            ELSE 2 END,
+                       s.security DESC
+                   LIMIT ?4";
+
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let rows = stmt.query_map(
+            params![prefix_pattern, contains_pattern, trimmed, limit as i64],
+            |row| {
+                Ok(SystemSearchResult {
+                    system_id: row.get(0)?,
+                    system_name: row.get(1)?,
+                    security_status: row.get(2)?,
+                    region_id: row.get(3)?,
+                    region_name: row.get(4)?,
+                })
+            },
+        );
+
+        match rows {
+            Ok(mapped) => mapped.filter_map(Result::ok).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn get_station_system(&self, station_id: u64) -> Option<u32> {
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
@@ -232,7 +484,8 @@ impl SdeLoader {
         let mut stmt = conn
             .prepare("SELECT stationName FROM staStations WHERE stationID = ?1")
             .ok()?;
-        stmt.query_row(params![station_id], |row| row.get(0)).ok()
+        let raw_name: String = stmt.query_row(params![station_id], |row| row.get(0)).ok()?;
+        Some(format_station_name(&raw_name))
     }
 
     pub fn get_region_name(&self, region_id: u32) -> Option<String> {

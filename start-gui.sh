@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EVE Trade Scout - GUI Launcher Script
+# EVE Traveling Merchant - GUI Launcher Script
 set -e
 
 # Resolve script directory (handles symlinks and spaces in paths)
@@ -11,13 +11,10 @@ if [ -f "$HOME/.cargo/env" ]; then
     source "$HOME/.cargo/env"
 fi
 
-BINARY="$SCRIPT_DIR/target/release/eve-trade"
+BINARY="$SCRIPT_DIR/target/release/eve-merchant"
 
-# Automatically compile release binary if missing
-if [ ! -f "$BINARY" ]; then
-    echo "Release binary not found. Building EVE Trade Scout..."
-    cargo build --release
-fi
+# Ensure release binary is always compiled and up to date
+cargo build --release --bin eve-merchant
 
 # Launch the native desktop graphical interface (GUI window)
 exec "$BINARY" --gui "$@"

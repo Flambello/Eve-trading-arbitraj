@@ -1,8 +1,8 @@
-# EVE Trade Scout — Project Overview
+# EVE Traveling Merchant — Project Overview
 
-> **Purpose:** A compiled terminal tool for EVE Online traders that finds the most profitable cross-station arbitrage opportunities, plans a multi-hop route, and respects ship cargo constraints.
+> **Purpose:** A compiled location-centric trading engine and multi-item corridor route planner for EVE Online that finds the most profitable cross-station arbitrage opportunities from the player's current system, scans adjacent neighbor regions, consolidates cargo via knapsack optimization, and plans high-ROI trade routes.
 >
-> **Language: Rust** — single compiled binary, zero runtime dependencies, maximum performance.
+> **Language: Rust** — single compiled binary (`eve-merchant`), zero runtime dependencies, maximum performance.
 
 ---
 
@@ -10,11 +10,12 @@
 
 1. You tell it:
    - **Ship mode** — Big (60 000 m³ / 500 M ISK budget) or Small (30 000 m³ / 50 M ISK budget)
-   - **Starting solar system** (your current location)
-2. It fetches live market data via the **EVE ESI REST API**
-3. It finds items that can be bought cheaply at a station near you and sold for more at another station
-4. It ranks every opportunity by **profit per jump** (accounting for travel to the source *and* from source to destination)
-5. It presents a **sorted deal list** and optionally builds a **multi-stop trade route** chaining several deals in one trip
+   - **Starting solar system** (your current location, with real-time autocomplete)
+2. It fetches live market data for your **Home Region PLUS stargate-connected adjacent neighbor regions** via CCP's **EVE ESI REST API**
+3. It finds items that can be bought cheaply at a station near you and sold for more at another station, enforcing $\ge 15.0\%$ net ROI
+4. It groups multiple profitable deals on identical origin-to-destination corridors using **multi-item cargo packing (knapsack)** to fully utilize ship hold and budget
+5. It prioritizes high-ROI routes and dead ends ($\ge 40\%$) and ranks every opportunity by **profit per jump** (accounting for travel to the source *and* from source to destination)
+6. It presents a **sorted deal list**, **packed cargo corridor manifests**, and an optimized **multi-stop trade route**
 
 ---
 

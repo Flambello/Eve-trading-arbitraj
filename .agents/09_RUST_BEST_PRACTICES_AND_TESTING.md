@@ -97,6 +97,19 @@ The codebase enforces full automated test suites across all domain components an
    - `test_market_order_json_deserialization`: Verifies correct deserialization of live CCP ESI JSON responses.
    - `test_cheapest_sell_and_best_buy_selection`: Validates picking lowest sell price and highest buy price from order arrays.
 
+6. **`tests/test_chain_route_planner.rs` (Multi-Leg Chained Optimizer)**
+   - `test_chain_no_deals_returns_empty`: Empty deal handling.
+   - `test_chain_basic_single_leg`: Verifies single leg buy/sell sequence and profit calculation.
+   - `test_chain_knapsack_packs_multiple_deals_at_one_stop`: Multi-item knapsack packing at station.
+   - `test_chain_knapsack_respects_volume_cap` & `test_chain_knapsack_respects_budget_cap`: Exact boundary enforcement on volume & ISK.
+   - `test_chain_cargo_freed_after_sell`: Volume replenishment and cargo lifecycle on delivery.
+   - `test_chain_enroute_pickup_skipped_when_cargo_full`: Saturation check skipping en-route stops when hold is full.
+   - `test_chain_strict_en_route_only` & `test_chain_detour_filter_excludes_too_far`: Verifies strict vs tolerance detour jump gating.
+   - `test_chain_detour_zero_equals_strict_mode`: Confirms equivalence between 0-detour and strict mode.
+   - `test_chain_safe_only_excludes_lowsec_paths`: Avoidance of dangerous systems in safe mode.
+   - `test_chain_max_legs_respected`: Respect of maximum legs slider.
+   - `test_chain_15pct_roi_invariant_maintained`: Strict 15.0% net ROI invariant preservation across all chained deals.
+
 ### Adding New Features
 Whenever adding a new trading filter, formula, or routing mode:
 1. Write the corresponding test in `tests/` FIRST or alongside the feature.

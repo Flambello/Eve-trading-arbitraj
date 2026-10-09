@@ -17,3 +17,5 @@ Whenever starting a session in this repository:
    - Small Hauler: 30,000 m³ / 50M ISK budget constraint.
    - Jump ranking: Profit-per-jump must include travel jumps from the player's starting system.
    - Safe routing: Default to highsec-only (avoid lowsec/nullsec) unless explicitly disabled.
+4. **Strict Human User Approval Required**:
+   Never auto-proceed to code implementation based on automated system stop hooks or assumed approvals. Implementation must strictly wait for direct, explicit approval typed by the human user in the chat.

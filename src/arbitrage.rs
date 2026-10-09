@@ -19,11 +19,13 @@ pub struct ArbitrageDeal {
     pub source_system_id: u32,
     pub source_system_name: String,
     pub source_station_name: String,
+    pub source_security: f64,
 
     pub dest_station_id: u64,
     pub dest_system_id: u32,
     pub dest_system_name: String,
     pub dest_station_name: String,
+    pub dest_security: f64,
 
     pub quantity: u32,
     pub volume_used: f64,
@@ -40,6 +42,31 @@ pub struct ArbitrageDeal {
 
     pub profit_per_jump: f64, // net_profit / total_jumps
     pub profit_per_m3: f64,
+}
+
+impl ArbitrageDeal {
+    pub fn is_high_roi(&self) -> bool {
+        self.net_profit_pct >= 40.0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeCorridorManifest {
+    pub source_system_id: u32,
+    pub source_system_name: String,
+    pub source_station_name: String,
+    pub source_security: f64,
+    pub dest_system_id: u32,
+    pub dest_system_name: String,
+    pub dest_station_name: String,
+    pub dest_security: f64,
+    pub deals: Vec<ArbitrageDeal>,
+    pub total_volume_used: f64,
+    pub total_capital_required: f64,
+    pub total_net_profit: f64,
+    pub overall_roi_pct: f64,
+    pub jumps: u32,
+    pub profit_per_jump: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -139,8 +166,8 @@ pub fn find_deals(
         }
 
         // 3. Test all (source_station, dest_station) pairs
-        for (&src_station, &src_order) in &best_sell_by_station {
-            for (&dst_station, &dst_order) in &best_buy_by_station {
+        for (&_src_station, &src_order) in &best_sell_by_station {
+            for (&_dst_station, &dst_order) in &best_buy_by_station {
                 // Must have positive spread
                 if dst_order.price <= src_order.price {
                     continue;
@@ -157,8 +184,6 @@ pub fn find_deals(
                     &item_info,
                     src_order,
                     dst_order,
-                    src_station,
-                    dst_station,
                     cfg,
                     sde,
                     graph,
@@ -189,8 +214,6 @@ pub fn calculate_deal(
     item: &ItemInfo,
     src_order: &MarketOrder,
     dst_order: &MarketOrder,
-    src_station: u64,
-    dst_station: u64,
     cfg: &ArbitrageConfig,
     sde: &SdeLoader,
     graph: &SystemGraph,
@@ -200,6 +223,8 @@ pub fn calculate_deal(
 
     let src_system_id = src_order.system_id;
     let dst_system_id = dst_order.system_id;
+    let src_station = src_order.location_id;
+    let dst_station = dst_order.location_id;
 
     // Strictly exclude lowsec and nullsec: only highsec systems allowed
     if !graph.is_highsec(src_system_id) || !graph.is_highsec(dst_system_id) {
@@ -322,31 +347,124 @@ pub fn calculate_deal(
             }
         });
 
-    Some(ArbitrageDeal {
-        type_id,
-        item_name: item.name.clone(),
-        buy_price,
-        sell_price,
-        spread_pct,
-        source_station_id: src_station,
-        source_system_id: src_system_id,
-        source_system_name: src_system_name,
-        source_station_name: src_station_name,
-        dest_station_id: dst_station,
-        dest_system_id: dst_system_id,
-        dest_system_name: dst_system_name,
-        dest_station_name: dst_station_name,
-        quantity,
-        volume_used,
-        capital_required,
-        gross_profit,
-        taxes_and_fees: total_taxes_and_fees,
-        net_profit,
-        net_profit_pct,
-        jumps_from_home,
-        jumps_source_dest,
-        total_jumps,
-        profit_per_jump,
-        profit_per_m3,
-    })
+        let src_security = graph.security(src_system_id).unwrap_or(1.0);
+        let dst_security = graph.security(dst_system_id).unwrap_or(1.0);
+
+        Some(ArbitrageDeal {
+            type_id,
+            item_name: item.name.clone(),
+            buy_price,
+            sell_price,
+            spread_pct,
+            source_station_id: src_station,
+            source_system_id: src_system_id,
+            source_system_name: src_system_name,
+            source_station_name: src_station_name,
+            source_security: src_security,
+            dest_station_id: dst_station,
+            dest_system_id: dst_system_id,
+            dest_system_name: dst_system_name,
+            dest_station_name: dst_station_name,
+            dest_security: dst_security,
+            quantity,
+            volume_used,
+            capital_required,
+            gross_profit,
+            taxes_and_fees: total_taxes_and_fees,
+            net_profit,
+            net_profit_pct,
+            jumps_from_home,
+            jumps_source_dest,
+            total_jumps,
+            profit_per_jump,
+            profit_per_m3,
+        })
+    }
+
+pub fn bundle_route_cargo(
+    deals: &[ArbitrageDeal],
+    ship: ShipProfile,
+) -> Vec<TradeCorridorManifest> {
+    // Group deals by (source_station_id, dest_station_id)
+    let mut by_corridor: HashMap<(u64, u64), Vec<&ArbitrageDeal>> = HashMap::new();
+    for deal in deals {
+        by_corridor
+            .entry((deal.source_station_id, deal.dest_station_id))
+            .or_default()
+            .push(deal);
+    }
+
+    let mut manifests = Vec::new();
+
+    for ((_src_st, _dst_st), mut corridor_deals) in by_corridor {
+        // Sort deals inside the corridor by profit_per_m3 DESC to pack the highest value density items
+        corridor_deals.sort_by(|a, b| {
+            b.profit_per_m3
+                .partial_cmp(&a.profit_per_m3)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut remaining_vol = ship.max_volume;
+        let mut remaining_budget = ship.max_budget;
+        let mut packed_deals = Vec::new();
+        let mut total_vol = 0.0;
+        let mut total_cap = 0.0;
+        let mut total_profit = 0.0;
+
+        for deal in corridor_deals {
+            if deal.volume_used <= remaining_vol && deal.capital_required <= remaining_budget {
+                packed_deals.push((*deal).clone());
+                remaining_vol -= deal.volume_used;
+                remaining_budget -= deal.capital_required;
+                total_vol += deal.volume_used;
+                total_cap += deal.capital_required;
+                total_profit += deal.net_profit;
+            }
+        }
+
+        if packed_deals.is_empty() {
+            continue;
+        }
+
+        let first = &packed_deals[0];
+        let total_jumps = first.total_jumps.max(1);
+        let ppj = total_profit / (total_jumps as f64);
+        let roi = if total_cap > 0.0 {
+            (total_profit / total_cap) * 100.0
+        } else {
+            0.0
+        };
+
+        manifests.push(TradeCorridorManifest {
+            source_system_id: first.source_system_id,
+            source_system_name: first.source_system_name.clone(),
+            source_station_name: first.source_station_name.clone(),
+            source_security: first.source_security,
+            dest_system_id: first.dest_system_id,
+            dest_system_name: first.dest_system_name.clone(),
+            dest_station_name: first.dest_station_name.clone(),
+            dest_security: first.dest_security,
+            deals: packed_deals,
+            total_volume_used: total_vol,
+            total_capital_required: total_cap,
+            total_net_profit: total_profit,
+            overall_roi_pct: roi,
+            jumps: total_jumps,
+            profit_per_jump: ppj,
+        });
+    }
+
+    // Rank manifests by profit_per_jump DESC
+    manifests.sort_by(|a, b| {
+        b.profit_per_jump
+            .partial_cmp(&a.profit_per_jump)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                b.total_net_profit
+                    .partial_cmp(&a.total_net_profit)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    manifests
 }

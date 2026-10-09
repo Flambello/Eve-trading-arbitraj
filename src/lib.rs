@@ -1,4 +1,6 @@
 pub mod arbitrage;
+pub mod audio;
+pub mod chain_route_planner;
 pub mod config;
 pub mod esi;
 pub mod graph;

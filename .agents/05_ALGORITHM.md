@@ -225,3 +225,41 @@ Raw ESI orders
 | Route planning | <0.1 s | Greedy, <50 iterations typically |
 | Total first run | ~20–30 s | Mostly network |
 | Total cached run | ~5–10 s | Only re-fetches if ESI cache expired |
+
+---
+
+## 7. Multi-Item Knapsack Cargo Consolidation & High-ROI Detours
+
+### Multi-Item Cargo Packing (Knapsack on Corridors)
+Single-item hauling often under-utilizes large cargo holds (e.g., 60,000 m³ hauler carrying only 200 m³ of a high-margin module). The engine groups deals by identical corridor:
+```
+Corridor Key = (source_system_id, dest_system_id)
+```
+For each corridor, candidate deals are sorted by **Profit Density (`ISK/m³`) DESC**:
+```
+profit_density = net_profit / volume_used
+```
+A greedy knapsack solver then packs commodities until `ship.max_volume` or `ship.max_budget` is saturated, resulting in a single high-value corridor flight consolidating 25M–60M+ ISK profit in one run.
+
+### High-ROI Dead-End & Detour Recognition ($\ge 40\%$)
+- Deals achieving $\ge 40.0\%$ net ROI after all taxes are badged as High-ROI (`🔥 40%+`).
+- Dead-end solar systems (systems with 1 stargate) and remote detours are explicitly allowed and prioritized if their payout meets the high-ROI threshold, ensuring lucrative opportunities in regional pockets are never filtered out.
+
+---
+
+## 8. Multi-Leg Chained Route Optimizer (Beam Search + Knapsack Tracking)
+
+### Overview
+Chains multiple buy-fill-sell legs together starting from the player's home system. At each pickup stop, the engine **knapsack-packs** the cargo hold with profitable deals. When flying to destination systems, intermediate and detour systems are scanned for bonus cargo pickups if hold space remains.
+
+### Detour Formulation
+For route $P \to S$ with waypoint $W$:
+$$\text{detour} = \text{jumps}(P, W) + \text{jumps}(W, S) - \text{jumps}(P, S)$$
+- When `detour_enabled = false`: strictly $\text{detour} = 0$ (intermediate systems on shortest path).
+- When `detour_enabled = true`: $\text{detour} \le \text{max\_detour\_jumps}$ (configurable 0–5 extra jumps).
+
+### Cargo Model & Invariants
+1. **Saturation Check**: En-route pickups are skipped if $\text{remaining\_volume} \le 0.001\text{ m}^3$ or budget is exhausted.
+2. **Volume Lifecycle**: Cargo volume is freed and capital recouped upon reaching each item's destination sell stop.
+3. **15.0% Net ROI**: Guaranteed across every individual item batch and whole route.
+

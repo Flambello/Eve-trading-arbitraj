@@ -54,7 +54,7 @@ impl EsiClient {
             client,
             cache_dir,
             etags: Arc::new(Mutex::new(etags)),
-            concurrency_sem: Arc::new(Semaphore::new(10)),
+            concurrency_sem: Arc::new(Semaphore::new(6)),
         })
     }
 
@@ -190,22 +190,44 @@ impl EsiClient {
             format!("{}{}", ESI_BASE, endpoint)
         };
 
-        // Fetch page 1
+        // Fetch page 1 with retry on rate limit
         let mut p1_query = extra_query.to_vec();
         p1_query.push(("page", "1".to_string()));
 
-        let _permit = self.concurrency_sem.acquire().await?;
-        let mut req = self.client.get(&url);
-        for (k, v) in &p1_query {
-            req = req.query(&[(*k, v)]);
-        }
+        let mut backoff = Duration::from_millis(500);
+        let resp = loop {
+            let _permit = self.concurrency_sem.acquire().await?;
+            let mut req = self.client.get(&url);
+            for (k, v) in &p1_query {
+                req = req.query(&[(*k, v)]);
+            }
 
-        let resp = req.send().await?;
-        drop(_permit);
-
-        if !resp.status().is_success() {
-            bail!("Failed to fetch page 1: status {}", resp.status());
-        }
+            match req.send().await {
+                Ok(r) => {
+                    let status = r.status();
+                    if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                        eprintln!(
+                            " [ESI] Page 1 rate limited ({}). Backing off for {:?}...",
+                            status, backoff
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(10));
+                        continue;
+                    } else if status.is_server_error() {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(10));
+                        continue;
+                    } else if !status.is_success() {
+                        bail!("Failed to fetch page 1: status {}", status);
+                    }
+                    break r;
+                }
+                Err(_e) => {
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(10));
+                }
+            }
+        };
 
         let total_pages = resp
             .headers()
@@ -222,7 +244,7 @@ impl EsiClient {
             return Ok(all_items);
         }
 
-        // Fetch pages 2..=total_pages
+        // Fetch pages 2..=total_pages with retry & backoff on rate limits
         let mut tasks = Vec::new();
         let owned_query: Vec<(String, String)> = extra_query
             .iter()
@@ -237,16 +259,39 @@ impl EsiClient {
             q.push(("page".to_string(), page.to_string()));
 
             tasks.push(tokio::spawn(async move {
-                let _p = sem.acquire().await.map_err(|e| anyhow::anyhow!("{}", e))?;
-                let mut req = client.get(&u);
-                for (k, v) in &q {
-                    req = req.query(&[(k.as_str(), v.as_str())]);
-                }
-                let r = req.send().await?;
-                if !r.status().is_success() {
-                    bail!("Page {} failed with status {}", page, r.status());
-                }
-                let text = r.text().await?;
+                let mut page_backoff = Duration::from_millis(500);
+                let text = loop {
+                    let _p = sem.acquire().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+                    let mut req = client.get(&u);
+                    for (k, v) in &q {
+                        req = req.query(&[(k.as_str(), v.as_str())]);
+                    }
+                    match req.send().await {
+                        Ok(r) => {
+                            let status = r.status();
+                            if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                                eprintln!(
+                                    " [ESI] Page {} rate limited ({}). Retrying in {:?}...",
+                                    page, status, page_backoff
+                                );
+                                tokio::time::sleep(page_backoff).await;
+                                page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                continue;
+                            } else if status.is_server_error() {
+                                tokio::time::sleep(page_backoff).await;
+                                page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                continue;
+                            } else if !status.is_success() {
+                                bail!("Page {} failed with status {}", page, status);
+                            }
+                            break r.text().await?;
+                        }
+                        Err(_e) => {
+                            tokio::time::sleep(page_backoff).await;
+                            page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                        }
+                    }
+                };
                 let page_items: Vec<T> = serde_json::from_str(&text)?;
                 Ok::<Vec<T>, anyhow::Error>(page_items)
             }));

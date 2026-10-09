@@ -47,7 +47,7 @@ pub fn plan_route(
         }
 
         // Re-score candidate deals based on current position
-        let mut best_idx = None;
+        let mut best_idx: Option<usize> = None;
         let mut best_score = -1.0;
         let mut best_leg_jumps = 0;
 
@@ -61,7 +61,11 @@ pub fn plan_route(
             let leg_jumps = (jumps_to_src + jumps_src_to_dst).max(1);
             let score = deal.net_profit / (leg_jumps as f64);
 
-            if score > best_score {
+            if score > best_score
+                || (best_idx.is_some()
+                    && (score - best_score).abs() < 1e-4
+                    && deal.net_profit_pct > unused_deals[best_idx.unwrap()].net_profit_pct)
+            {
                 best_score = score;
                 best_idx = Some(idx);
                 best_leg_jumps = leg_jumps;
@@ -74,13 +78,14 @@ pub fn plan_route(
         };
 
         let chosen_deal = unused_deals.remove(chosen_idx);
+        let departure_system = current_system;
         let prev_name = graph
-            .system_name(current_system)
+            .system_name(departure_system)
             .unwrap_or("Unknown")
             .to_string();
 
         // Trace detailed waypoints for in-game autopilot
-        let path_to_src = graph.shortest_path(current_system, chosen_deal.source_system_id, safe_only);
+        let path_to_src = graph.shortest_path(departure_system, chosen_deal.source_system_id, safe_only);
         for &sys in path_to_src.iter().skip(1) {
             waypoints.push(sys);
         }
@@ -103,7 +108,7 @@ pub fn plan_route(
             step,
             deal: chosen_deal,
             jumps_from_prev: best_leg_jumps,
-            prev_system_id: current_system,
+            prev_system_id: departure_system,
             prev_system_name: prev_name,
         });
     }

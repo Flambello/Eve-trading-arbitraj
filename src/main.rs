@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use eve_trade_scout::arbitrage::{find_deals, ArbitrageConfig, ArbitrageDeal};
+use eve_trade_scout::arbitrage::{bundle_route_cargo, find_deals, ArbitrageConfig, ArbitrageDeal};
 use eve_trade_scout::config::{profile_from_str, UserConfig};
 use eve_trade_scout::esi::{fetch_markets, EsiClient};
 use eve_trade_scout::graph::SystemGraph;
@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "eve-trade",
-    author = "EVE Online Arbitrage Scout",
+    name = "eve-merchant",
+    author = "EVE Traveling Merchant",
     version = "0.1.0",
-    about = "Finds the closest and most profitable cross-station arbitrage deals and plans trade routes in EVE Online"
+    about = "EVE Traveling Merchant — High-profit cross-station arbitrage engine & multi-stop route planner"
 )]
 struct Args {
     /// Ship profile to use: 'big' (60k m³, 500M ISK) or 'small' (30k m³, 50M ISK)
@@ -31,6 +31,10 @@ struct Args {
     /// Comma-separated region IDs to scan (e.g. 10000002 for The Forge)
     #[arg(long)]
     regions: Option<String>,
+
+    /// Automatically scan stargate-connected neighbor regions of your starting system (default: true)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    adjacent_regions: bool,
 
     /// Force highsec safe route only (avoid lowsec/nullsec)
     #[arg(long)]
@@ -75,6 +79,10 @@ struct Args {
     /// Force desktop GUI window mode (egui native window)
     #[arg(long)]
     gui: bool,
+
+    /// Automatically refresh market data every 5 minutes in GUI mode
+    #[arg(long)]
+    auto_refresh: bool,
 
     /// Force terminal TUI mode (ratatui)
     #[arg(long)]
@@ -138,11 +146,14 @@ async fn main() -> Result<()> {
             cfg.scan.regions = parsed_regions;
         }
     }
+    if args.auto_refresh {
+        cfg.scan.auto_refresh = true;
+    }
 
     let ship_profile = profile_from_str(&cfg.ship.profile)?;
 
     println!("╔═══════════════════════════════════════════════════════════════╗");
-    println!("║                   EVE ONLINE TRADE SCOUT                      ║");
+    println!("║                 EVE TRAVELING MERCHANT                        ║");
     println!("║       Arbitrage Engine & Multi-Stop Route Planner             ║");
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!(
@@ -212,17 +223,44 @@ async fn main() -> Result<()> {
         );
     }
 
-    // 3. Initialize ESI Client
+    // 3. Resolve Scan Regions (Home Region + stargate-connected adjacent neighbor regions)
+    let scan_regions = if let Some(ref reg_str) = args.regions {
+        reg_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<u32>().ok())
+            .collect()
+    } else {
+        let mut reg_set = std::collections::HashSet::new();
+        if let Some(home_reg) = sde.get_system_region(home_system_id) {
+            reg_set.insert(home_reg);
+            if args.adjacent_regions && cfg.scan.scan_adjacent_regions {
+                for adj in graph.adjacent_regions(home_reg, cfg.scan.safe_route_only) {
+                    reg_set.insert(adj);
+                }
+            }
+        } else {
+            for &r in &cfg.scan.regions {
+                reg_set.insert(r);
+            }
+        }
+        if reg_set.is_empty() {
+            reg_set.insert(10000002);
+        }
+        let mut list: Vec<u32> = reg_set.into_iter().collect();
+        list.sort_unstable();
+        list
+    };
+
+    // 4. Initialize ESI Client & Fetch Market Data
     let cache_dir = PathBuf::from(&cfg.cache.directory);
     let esi = EsiClient::new(&cache_dir).context("Failed to initialize ESI API client")?;
     let esi = Arc::new(esi);
 
-    // 4. Fetch Market Data
     println!(
         " Fetching live market orders from ESI for {} region(s)...",
-        cfg.scan.regions.len()
+        scan_regions.len()
     );
-    let markets = fetch_markets(&esi, &cfg.scan.regions)
+    let markets = fetch_markets(&esi, &scan_regions)
         .await
         .context("Failed to fetch market data from EVE ESI")?;
     let _ = esi.save_cache().await;
@@ -283,7 +321,7 @@ async fn main() -> Result<()> {
 
     // 8. Output Mode
     if launch_gui {
-        println!(" Launching EVE Trade Scout Native Desktop GUI Window...");
+        println!(" Launching EVE Traveling Merchant Native Desktop GUI Window...");
         let is_big = ship_profile.name == "Big Hauler";
         let app = ui::DesktopApp::new(
             sde,
@@ -295,9 +333,12 @@ async fn main() -> Result<()> {
             cfg.scan.npc_stations_only,
             cfg.filters.min_net_profit_pct,
             cfg.filters.min_profit_isk,
-            cfg.scan.regions.clone(),
+            scan_regions,
             deals,
             Some(route),
+            cfg.scan.auto_refresh,
+            cfg.scan.sound_alerts,
+            cfg.scan.sound_min_roi_pct,
         );
         ui::run_desktop_gui(app)
             .map_err(|e| anyhow::anyhow!("Desktop GUI runtime error: {}", e))?;
@@ -312,41 +353,63 @@ async fn main() -> Result<()> {
             cfg.scan.npc_stations_only,
         )?;
     } else {
-        print_cli_summary(&deals, &route, args.top, args.route);
+        print_cli_summary(&deals, &route, ship_profile, args.top, args.route);
     }
 
     Ok(())
 }
 
+fn format_unit_price(val: f64) -> String {
+    if val >= 1_000_000_000.0 {
+        format!("{:.2}B", val / 1_000_000_000.0)
+    } else if val >= 1_000_000.0 {
+        format!("{:.2}M", val / 1_000_000.0)
+    } else if val >= 1_000.0 {
+        format!("{:.2}k", val / 1_000.0)
+    } else {
+        format!("{:.2}", val)
+    }
+}
+
 fn print_cli_summary(
     deals: &[ArbitrageDeal],
     route: &TradeRoute,
+    ship: eve_trade_scout::config::ShipProfile,
     top_limit: usize,
     show_route: bool,
 ) {
-    println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
     println!(" TOP {} ARBITRAGE OPPORTUNITIES (Ranked by Profit / Jump)", top_limit.min(deals.len()));
-    println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
     println!(
-        "{:<3} {:<22} {:<13} {:<13} {:>6} {:>7} {:>9} {:>10} {:>7} {:>9} {:>12}",
-        "#", "Item", "Buy System", "Sell System", "Qty", "Vol m³", "Cost (M)", "Profit (M)", "ROI %", "Jumps", "Profit/Jump"
+        "{:<3} {:<24} {:<15} {:>10} {:<15} {:>10} {:>6} {:>7} {:>9} {:>10} {:>7} {:>9} {:>12}",
+        "#", "Item", "Buy System", "Buy Price", "Sell System", "Sell Price", "Qty", "Vol m³", "Cost (M)", "Profit (M)", "ROI %", "Jumps", "Profit/Jump"
     );
-    println!("─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
 
     for (idx, d) in deals.iter().take(top_limit).enumerate() {
         let jumps_str = format!("{}+{}={}", d.jumps_from_home, d.jumps_source_dest, d.total_jumps);
-        let name_truncated = if d.item_name.len() > 21 {
-            format!("{}…", &d.item_name[..20])
+        let name_display = if d.is_high_roi() {
+            format!("🔥 {}", d.item_name)
         } else {
             d.item_name.clone()
         };
+        let name_truncated = if name_display.len() > 23 {
+            format!("{}…", &name_display[..22])
+        } else {
+            name_display
+        };
+        let src_str = format!("[{:.1}] {}", d.source_security, d.source_system_name);
+        let dst_str = format!("[{:.1}] {}", d.dest_security, d.dest_system_name);
 
         println!(
-            "{:<3} {:<22} {:<13} {:<13} {:>6} {:>7.1} {:>8.2}M {:>9.2}M {:>6.1}% {:>9} {:>10.2}M",
+            "{:<3} {:<24} {:<15} {:>10} {:<15} {:>10} {:>6} {:>7.1} {:>8.2}M {:>9.2}M {:>6.1}% {:>9} {:>10.2}M",
             idx + 1,
             name_truncated,
-            d.source_system_name,
-            d.dest_system_name,
+            src_str,
+            format_unit_price(d.buy_price),
+            dst_str,
+            format_unit_price(d.sell_price),
             d.quantity,
             d.volume_used,
             d.capital_required / 1_000_000.0,
@@ -356,10 +419,56 @@ fn print_cli_summary(
             d.profit_per_jump / 1_000_000.0,
         );
     }
-    println!("─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
     println!();
 
-    if show_route || deals.len() > 0 {
+    // Packed Cargo Corridor Manifests
+    let manifests = bundle_route_cargo(deals, ship);
+    if !manifests.is_empty() {
+        println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+        println!(" PACKED TRADE CORRIDOR MANIFESTS (Multi-Item Knapsack Cargo Consolidation)");
+        println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+        for (i, m) in manifests.iter().take(5).enumerate() {
+            let vol_pct = (m.total_volume_used / ship.max_volume) * 100.0;
+            let budget_pct = (m.total_capital_required / ship.max_budget) * 100.0;
+            println!(
+                " [MANIFEST #{}] [{:.1}] {} -> [{:.1}] {} ({} jumps) │ +{:.2}M ISK Net Profit (+{:.1}% ROI) │ {:.2}M/jump",
+                i + 1,
+                m.source_security,
+                m.source_system_name,
+                m.dest_security,
+                m.dest_system_name,
+                m.jumps,
+                m.total_net_profit / 1_000_000.0,
+                m.overall_roi_pct,
+                m.profit_per_jump / 1_000_000.0,
+            );
+            println!(
+                "   Cargo: {:.1} / {:.0} m³ ({:.1}%) │ Budget: {:.2}M / {:.0}M ISK ({:.1}%) │ {} packed items",
+                m.total_volume_used,
+                ship.max_volume,
+                vol_pct,
+                m.total_capital_required / 1_000_000.0,
+                ship.max_budget / 1_000_000.0,
+                budget_pct,
+                m.deals.len(),
+            );
+            for d in &m.deals {
+                println!(
+                    "     • {}x {} (Vol: {:.1} m³, Cost: {:.2}M, Profit: +{:.2}M, +{:.1}%)",
+                    d.quantity,
+                    d.item_name,
+                    d.volume_used,
+                    d.capital_required / 1_000_000.0,
+                    d.net_profit / 1_000_000.0,
+                    d.net_profit_pct,
+                );
+            }
+            println!();
+        }
+    }
+
+    if show_route || !deals.is_empty() {
         let route_roi = if route.total_capital_required > 0.0 {
             (route.total_profit / route.total_capital_required) * 100.0
         } else {

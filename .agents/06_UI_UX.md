@@ -1,7 +1,7 @@
 # UI/UX Design — Desktop GUI & Terminal Interfaces
 
-EVE Trade Scout provides **two user interface modes**:
-1. **Native Desktop GUI Window** (built with [`egui`](https://github.com/emilk/egui) / [`eframe`](https://docs.rs/eframe)): A sleek, dark-mode sci-fi desktop window running natively on Linux Fedora (Wayland & X11). Features interactive deal tables, clipboard copy buttons for in-game pasting, visual multi-hop route cards, live market re-scanning, and quick hub presets. This launches automatically when a graphical desktop is detected.
+EVE Traveling Merchant provides **two user interface modes**:
+1. **Native Desktop GUI Window** (built with [`egui`](https://github.com/emilk/egui) / [`eframe`](https://docs.rs/eframe)): A sleek, dark-mode sci-fi desktop window running natively on Linux Fedora (Wayland & X11). Features interactive deal tables, real-time starting system autocomplete, packed corridor manifests, clipboard copy buttons for in-game pasting, visual multi-hop route cards, live market re-scanning, and quick hub presets. This launches automatically when a graphical desktop is detected.
 2. **Terminal Interactive Interface (TUI)** (built with [`ratatui`](https://ratatui.rs/) and `crossterm`): High-performance keyboard-navigated terminal dashboard for terminal enthusiasts and headless/SSH sessions.
 3. **Headless CLI Output**: Scriptable console output (`--no-ui`) with optional CSV export (`--export`).
 
@@ -16,37 +16,67 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
 - **Ship Profile Segmented Switcher**: Instant 1-click toggle between:
   - 🚢 **Big Hauler**: `60,000 m³` volume cap · `500,000,000 ISK` capital budget.
   - 🚀 **Small Hauler**: `30,000 m³` volume cap · `50,000,000 ISK` capital budget.
-- **Starting System Input & Quick Hub Chips**: Quick-select buttons for `Jita`, `Amarr`, `Dodixie`, `Rens`, or type any system in New Eden.
+- **Starting System Input with Real-Time Autocomplete**:
+  - Live system name resolution from SQLite SDE database as you type.
+  - Active suggestion pills for instant 1-click selection of matching systems.
+  - Real-time security rating pill (`[1.0]`) and parent region indicator (`The Forge`).
+  - Quick-select buttons for major trade hubs: `Jita`, `Amarr`, `Dodixie`, `Rens`.
+- **🌐 Stargate-Connected Adjacent Regions Toggle**:
+  - Automatically identifies all stargate-connected highsec neighbor regions adjacent to your starting region (e.g. Lonetrek, Citadel, Black Rise from The Forge).
+  - Active region counter tag (`(X regions)`).
 - **Safety Switch**: `🛡️ Safe Highsec Only` toggle enforces Dijkstra avoidance of systems with security $<0.45$. Lowsec and Nullsec space is strictly excluded.
 - **Station Access Pool Switch**: Instant 1-click toggle between:
   - 🏛️ **NPC Stations Only** (Preferred & Default): Strictly targets NPC stations with guaranteed 100% public docking.
   - 🏰 **+ Citadels Included**: Adds player-owned Citadels / Upwell Structures to the arbitrage search pool.
 - **Min ROI % Drag Slider**: Live adjustments starting at the enforced minimum of $15.0\%$.
+- **Max Jumps Filter**: Slider to restrict maximum travel jumps (or set to 0 for unlimited).
 - **Executive KPI Strip**: Real-time badges displaying Top Deal Profit (`+XX.XX M ISK`) and Top Profit Per Jump (`XX.XX M / jump`).
 
 ### B. Deals Table & Interactive Dossier
 - **Search & Multi-Key Sorting**:
   - Live substring filter by item name with an instant `✖ Clear` button.
-  - Sorting criteria: `Profit / Jump`, `Total Profit`, `Net ROI %`, `Fewest Jumps`, `Lowest Cost`.
+  - Sorting criteria: `Profit / Jump`, `Profit / m³`, `Total Profit`, `Net ROI %`, `Fewest Jumps`, `Lowest Cost`.
   - Direction toggle: `▼ Descending` / `▲ Ascending`.
   - Minimum Net Profit threshold slider (in Millions ISK).
 - **Deals Grid**:
   - Gold (`#1`), Silver (`#2`), Bronze (`#3`) visual rank highlights.
-  - Colored system pills: Cyan for Buy System, Magenta for Sell System.
+  - Security rating badges on system names (`[1.0] Jita`, `[0.9] Amarr`).
   - Glowing Emerald Net Profit and Net ROI % tags.
-  - 1-click `📋 Buy` and `📋 Sell` clipboard copy buttons.
+  - High-yield badges (`🔥 40%+ ROI`) highlighting profitable regional dead ends and remote pockets.
+  - **PROFIT/m³** density column for maximizing cargo hold value.
+  - **SHIP UTIL** telemetry showing percentage of ship hold (`% v`) and wallet budget (`% isk`) utilized.
+  - 1-click `📋 Item`, `📋 Buy`, and `📋 Sell` clipboard copy buttons.
 - **Expandable Deal Dossier**:
   - Clicking any row expands a detailed 3-column trade breakdown:
     - **Purchase Column**: Exact station name, system, unit price, quantity, capital required, and 1-click copy station button.
     - **Sale Column**: Destination station name, system, unit price, gross revenue, spread %, and copy station button.
-    - **Financials Column**: Net profit, ROI %, profit per jump, cargo volume used, and travel telemetry.
+    - **Financials Column**: Net profit, ROI %, profit per jump, profit per m³, cargo volume used, and travel telemetry.
 
-### C. Visual Multi-Stop Route Flight Plan
+### C. 📦 Packed Manifests (Knapsack Multi-Item Trade Corridors)
+- Consolidates multiple high-margin items flying along identical origin-to-destination system corridors into single packed hauler trips.
+- Respects the 60,000 m³ / 500M ISK (Big Hauler) or 30,000 m³ / 50M ISK (Small Hauler) knapsack constraints.
+- Multi-item shopping list view with item quantities, volumes, capital, and individual profits.
+- 1-Click `📋 Shopping List` clipboard copy button formatted for easy in-game multi-buy pasting.
+
+### D. Visual Multi-Stop Route Flight Plan
 - **Overall Route KPI Card**: Total jumps, total net profit, average profit per jump, peak cargo space filled, and capital required.
 - **1-Click Autopilot Trail Copy**: Formats the entire route chain (`Jita -> Perimeter -> Amarr`) into the clipboard for immediate pasting into in-game chat or route planner.
 - **Step-by-Step Flight Cards**: Visual leg timeline displaying pickup action, flight jumps, and delivery action.
 
-### D. Settings & Tax Skill Customizer
+### E. 🔗 Chain Route Plotter (Multi-Leg Optimizer)
+- **Interactive Controls**:
+  - `Max Legs` slider: Configurable 1 to 8 legs (default 4).
+  - `En-Route Pickups` toggle: Enable/disable searching for intermediate pickups.
+  - `Detour Tolerance` slider: 0 to 5 extra jumps allowed for pickups off the direct path (disabled when strict mode is active).
+  - `🔗 FIND CHAIN ROUTES` button: Launches async background thread beam search.
+- **Top Chains Strip**: Horizontal selector showing discovered chain routes ranked by net profit and profit per jump.
+- **Visual Dossier**:
+  - Executive telemetry: Total Jumps, Net Profit, Net ROI %, Profit/Jump, Capital Invested, Peak Cargo hold utilized.
+  - Step-by-step visual leg timeline with distinct badges for primary pickups, en-route pickups (`+N detour jumps`), and sell deliveries.
+  - Detailed knapsack cargo tracking: item quantities, volumes, capital, destinations, and freed cargo on sell.
+  - 1-Click `📋 Copy Autopilot Route` button for immediate in-game trail navigation.
+
+### F. Settings & Tax Skill Customizer
 - **Skill Sliders**:
   - Broker Fee % (default 3.0%, adjustable down to 1.0% for pilots with *Broker Relations*).
   - Sales Tax % (default 8.0%, adjustable down to 3.6% for pilots with *Accounting*).
@@ -56,7 +86,7 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
   - Sinq Laison (Dodixie IX-20) — Region 10000032
   - Heimatar (Rens VI-8) — Region 10000030
   - Metropolis (Hek VIII-12) — Region 10000042
-- **Feedback Toasts**: Temporary cyan status banners providing tactile confirmation when items/systems are copied.
+- **Feedback Toasts**: Temporary cyan status banners providing tactile confirmation when items/systems/manifests/chains are copied.
 
 ---
 
@@ -94,18 +124,18 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
 ## Main Results Table
 
 ```
-╭──────────────────────────────────────────────────────────────────────────────────────────╮
-│  Top 20 Arbitrage Deals  [Big Hauler · Starting: Jita · Safe Route]                      │
-╰──────────────────────────────────────────────────────────────────────────────────────────╯
- #   Item                  Buy @ System    Sell @ System  Qty   Vol(m³) Cost(M)  Profit(M)  ROI%   PPJ
-────────────────────────────────────────────────────────────────────────────────────────────────────
- 1   Pithum C-Type MedSh…  Jita            Amarr           1    100.0    48.2     12.4    +25.7%  4.13
- 2   Tritanium              Jita            Rens        5000k  50 000    25.0      8.1    +32.4%  2.70
- 3   PLEX                   Jita            Dodixie        10      0.5   47.5      5.5    +15.8%  1.83
- 4   Damage Control II      Perimeter       Amarr          50    750.0   30.1      5.1    +16.9%  1.70
- 5   Caldari Navy Raven     Jita            Hek             1  50 000   420.0     20.3    +17.2%  1.69
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Top 20 Arbitrage Deals  [Big Hauler · Starting: Jita · Safe Route]                                    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ #   Item                  Buy System      Buy Price  Sell System     Sell Price  Qty   Vol(m³) Cost(M)  Profit(M)  ROI%   PPJ
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 1   Pithum C-Type MedSh…  Jita               48.2M   Amarr              60.6M      1    100.0    48.2     12.4    +25.7%  4.13
+ 2   Tritanium              Jita                5.00   Rens                6.62  5000k  50 000    25.0      8.1    +32.4%  2.70
+ 3   PLEX                   Jita               4.75M   Dodixie            5.30M     10      0.5   47.5      5.5    +15.8%  1.83
+ 4   Damage Control II      Perimeter        602.0k   Amarr             704.0k     50    750.0   30.1      5.1    +16.9%  1.70
+ 5   Caldari Navy Raven     Jita             420.0M   Hek               440.3M      1  50 000   420.0     20.3    +17.2%  1.69
  ...
-────────────────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Filters: Net ROI ≥ 15% after taxes · Spread ≥ 3% · Net profit ≥ 1 M ISK · Max volume: 60 000 m³
 ```
 
@@ -115,8 +145,10 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
 |---|---|
 | `#` | Rank by profit-per-jump |
 | `Item` | Item name (truncated to 22 chars) |
-| `Buy @ System` | System where you buy (cheapest sell order) |
-| `Sell @ System` | System where you sell (highest buy order) |
+| `Buy System` | System where you buy (cheapest sell order) |
+| `Buy Price` | Unit purchase price at source order |
+| `Sell System` | System where you sell (highest buy order) |
+| `Sell Price` | Unit sale price at destination order |
 | `Qty` | Units you can buy (respecting volume + budget) |
 | `Vol(m³)` | Total cargo volume for that quantity |
 | `Cost(M)` | Capital required in millions ISK |
@@ -207,13 +239,13 @@ All long-running operations show a Rich spinner:
 Current configuration:
   Ship profile:    Big Hauler (60 000 m³ / 500 M ISK)
   Home system:     Jita
-  Regions:         The Forge, Domain
+  Regions:         The Forge (and adjacent regions)
   Min profit:      1 000 000 ISK
   Min spread:      5.0%
   Broker fee:      3.0%
   Sales tax:       8.0%
   Safe route only: Yes
-  Config file:     ~/.config/eve-trade-scout/config.toml
+  Config file:     ~/.config/eve-traveling-merchant/config.toml
 ```
 
 ---
@@ -221,12 +253,14 @@ Current configuration:
 ## CLI Arguments
 
 ```
-Usage: eve-trade [OPTIONS]
+Usage: eve-merchant [OPTIONS]
 
 Options:
   -s, --ship <SHIP>              Ship profile: 'big' (60k m³, 500M) or 'small' (30k m³, 50M)
       --system <SYSTEM>          Starting solar system name [default: Jita]
       --regions <REGIONS>        Comma-separated region IDs [default: 10000002]
+      --no-adjacent              Disable automatic scanning of stargate-adjacent neighbor regions
+      --max-jumps <MAX_JUMPS>    Maximum travel jumps allowed from starting system
       --safe                     Force highsec safe route only (avoid lowsec/nullsec)
       --unsafe-routes            Allow lowsec and nullsec routes
       --npc-only                 Restrict search strictly to NPC stations (guaranteed public docking)

@@ -59,7 +59,7 @@ fn test_market_order_json_deserialization() {
 
 #[test]
 fn test_cheapest_sell_and_best_buy_selection() {
-    let sells = vec![
+    let sells = [
         MarketOrder {
             order_id: 1,
             type_id: 34,
@@ -90,7 +90,7 @@ fn test_cheapest_sell_and_best_buy_selection() {
         },
     ];
 
-    let buys = vec![
+    let buys = [
         MarketOrder {
             order_id: 3,
             type_id: 34,

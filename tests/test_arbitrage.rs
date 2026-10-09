@@ -187,7 +187,7 @@ mod tests {
             net: f64,
         }
 
-        let mut deals = vec![
+        let mut deals = [
             MockDeal { id: 1, ppj: 1.5, net: 10_000_000.0 },
             MockDeal { id: 2, ppj: 4.2, net: 8_000_000.0 },
             MockDeal { id: 3, ppj: 2.1, net: 15_000_000.0 },
@@ -210,5 +210,105 @@ mod tests {
         assert_eq!(deals[1].id, 2);
         assert_eq!(deals[2].id, 3);
         assert_eq!(deals[3].id, 1);
+    }
+
+    #[test]
+    fn test_is_high_roi() {
+        use eve_trade_scout::arbitrage::ArbitrageDeal;
+
+        let mut deal = ArbitrageDeal {
+            type_id: 34,
+            item_name: "Tritanium".to_string(),
+            buy_price: 5.0,
+            sell_price: 10.0,
+            spread_pct: 100.0,
+            source_station_id: 60003760,
+            source_system_id: 30000142,
+            source_system_name: "Jita".to_string(),
+            source_station_name: "Jita IV-4".to_string(),
+            source_security: 1.0,
+            dest_station_id: 60008494,
+            dest_system_id: 30002187,
+            dest_system_name: "Amarr".to_string(),
+            dest_station_name: "Amarr VIII-4".to_string(),
+            dest_security: 0.9,
+            quantity: 1000,
+            volume_used: 10.0,
+            capital_required: 5000.0,
+            gross_profit: 5000.0,
+            taxes_and_fees: 500.0,
+            net_profit: 4500.0,
+            net_profit_pct: 35.0,
+            jumps_from_home: 0,
+            jumps_source_dest: 9,
+            total_jumps: 9,
+            profit_per_jump: 500.0,
+            profit_per_m3: 450.0,
+        };
+
+        assert!(!deal.is_high_roi(), "35% should not be high ROI");
+
+        deal.net_profit_pct = 40.0;
+        assert!(deal.is_high_roi(), "40% should qualify as high ROI");
+
+        deal.net_profit_pct = 85.5;
+        assert!(deal.is_high_roi(), "85.5% should qualify as high ROI");
+    }
+
+    #[test]
+    fn test_bundle_route_cargo_knapsack_manifest() {
+        use eve_trade_scout::arbitrage::{bundle_route_cargo, ArbitrageDeal};
+        use eve_trade_scout::config::BIG_HAULER;
+
+        let make_deal = |id: u32, name: &str, vol: f64, cost: f64, profit: f64, ppm3: f64| ArbitrageDeal {
+            type_id: id,
+            item_name: name.to_string(),
+            buy_price: cost / 100.0,
+            sell_price: (cost + profit) / 100.0,
+            spread_pct: 50.0,
+            source_station_id: 60003760,
+            source_system_id: 30000142,
+            source_system_name: "Jita".to_string(),
+            source_station_name: "Jita IV-4".to_string(),
+            source_security: 1.0,
+            dest_station_id: 60008494,
+            dest_system_id: 30002187,
+            dest_system_name: "Amarr".to_string(),
+            dest_station_name: "Amarr VIII-4".to_string(),
+            dest_security: 0.9,
+            quantity: 100,
+            volume_used: vol,
+            capital_required: cost,
+            gross_profit: profit * 1.1,
+            taxes_and_fees: profit * 0.1,
+            net_profit: profit,
+            net_profit_pct: (profit / cost) * 100.0,
+            jumps_from_home: 0,
+            jumps_source_dest: 9,
+            total_jumps: 9,
+            profit_per_jump: profit / 9.0,
+            profit_per_m3: ppm3,
+        };
+
+        let deals = vec![
+            make_deal(1, "Item A", 20_000.0, 100_000_000.0, 25_000_000.0, 1250.0),
+            make_deal(2, "Item B", 25_000.0, 150_000_000.0, 40_000_000.0, 1600.0),
+            make_deal(3, "Item C", 30_000.0, 200_000_000.0, 30_000_000.0, 1000.0), // Won't fit with A & B (exceeds 60k m³)
+        ];
+
+        let manifests = bundle_route_cargo(&deals, BIG_HAULER);
+        assert!(!manifests.is_empty(), "Should generate at least one packed corridor manifest");
+
+        let m = &manifests[0];
+        assert_eq!(m.source_system_name, "Jita");
+        assert_eq!(m.dest_system_name, "Amarr");
+        assert_eq!(m.deals.len(), 2, "Should pack exactly Item B and Item A (highest profit density)");
+        assert_eq!(m.deals[0].item_name, "Item B"); // higher ppm3
+        assert_eq!(m.deals[1].item_name, "Item A");
+        assert_eq!(m.total_volume_used, 45_000.0);
+        assert!(m.total_volume_used <= BIG_HAULER.max_volume);
+        assert_eq!(m.total_capital_required, 250_000_000.0);
+        assert!(m.total_capital_required <= BIG_HAULER.max_budget);
+        assert_eq!(m.total_net_profit, 65_000_000.0);
     }
 }

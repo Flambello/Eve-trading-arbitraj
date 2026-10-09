@@ -61,6 +61,37 @@ impl SystemGraph {
         Some(self.graph[*idx].name.as_str())
     }
 
+    pub fn region_id(&self, system_id: u32) -> Option<u32> {
+        let idx = self.id_to_idx.get(&system_id)?;
+        Some(self.graph[*idx].region_id)
+    }
+
+    pub fn adjacent_regions(&self, region_id: u32, safe_only: bool) -> Vec<u32> {
+        let mut adj = std::collections::HashSet::new();
+
+        for node_idx in self.graph.node_indices() {
+            let node = &self.graph[node_idx];
+            if node.region_id == region_id {
+                if safe_only && node.security_status < 0.45 {
+                    continue;
+                }
+
+                for neighbor_idx in self.graph.neighbors(node_idx) {
+                    let neighbor = &self.graph[neighbor_idx];
+                    if neighbor.region_id != region_id
+                        && (!safe_only || neighbor.security_status >= 0.45)
+                    {
+                        adj.insert(neighbor.region_id);
+                    }
+                }
+            }
+        }
+
+        let mut res: Vec<u32> = adj.into_iter().collect();
+        res.sort_unstable();
+        res
+    }
+
     pub fn is_highsec(&self, system_id: u32) -> bool {
         self.security(system_id).map(|s| s >= 0.45).unwrap_or(false)
     }

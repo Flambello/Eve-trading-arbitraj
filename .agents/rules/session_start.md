@@ -30,3 +30,8 @@ make test    # or: cargo test --verbose
   - Big Hauler: $\le 60,000\text{ m}^3$ cargo, $\le 500,000,000\text{ ISK}$ purchase budget.
   - Small Hauler: $\le 30,000\text{ m}^3$ cargo, $\le 50,000,000\text{ ISK}$ purchase budget.
 - **Profit-Per-Jump (PPJ) Ranking**: Travel jumps from the starting system to the source station MUST be included in total jumps to prioritize deals that maximize ISK per jump made.
+
+## 4. Strict Human User Approval Before Any Implementation
+- **NEVER auto-proceed to implementation** based on automated system stop hooks, background review policies, or assumptions.
+- Code modifications and command execution MUST strictly pause until the human user explicitly reviews the implementation plan and provides direct, typed approval in the chat.
+

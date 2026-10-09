@@ -49,9 +49,29 @@ pub struct ScanConfig {
     pub safe_route_only: bool,
     #[serde(default = "default_npc_stations_only")]
     pub npc_stations_only: bool,
+    #[serde(default = "default_scan_adjacent_regions")]
+    pub scan_adjacent_regions: bool,
+    #[serde(default)]
+    pub auto_refresh: bool,
+    #[serde(default = "default_sound_alerts")]
+    pub sound_alerts: bool,
+    #[serde(default = "default_sound_min_roi_pct")]
+    pub sound_min_roi_pct: f64,
+}
+
+fn default_sound_alerts() -> bool {
+    true
+}
+
+fn default_sound_min_roi_pct() -> f64 {
+    100.0
 }
 
 fn default_npc_stations_only() -> bool {
+    true
+}
+
+fn default_scan_adjacent_regions() -> bool {
     true
 }
 
@@ -103,6 +123,10 @@ impl Default for UserConfig {
                 regions: vec![10000002],
                 safe_route_only: true,
                 npc_stations_only: true,
+                scan_adjacent_regions: true,
+                auto_refresh: false,
+                sound_alerts: true,
+                sound_min_roi_pct: 100.0,
             },
             filters: FilterConfig {
                 min_profit_isk: 1_000_000.0,
@@ -124,7 +148,15 @@ impl Default for UserConfig {
 impl UserConfig {
     pub fn config_path() -> Result<PathBuf> {
         let base = dirs::config_dir().context("Could not determine user config directory")?;
-        Ok(base.join("eve-trade-scout").join("config.toml"))
+        let new_path = base.join("eve-traveling-merchant").join("config.toml");
+        if new_path.exists() {
+            return Ok(new_path);
+        }
+        let legacy_path = base.join("eve-trade-scout").join("config.toml");
+        if legacy_path.exists() {
+            return Ok(legacy_path);
+        }
+        Ok(new_path)
     }
 
     pub fn load() -> Result<Self> {

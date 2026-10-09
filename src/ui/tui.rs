@@ -193,7 +193,7 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let title_line = format!(
-        " EVE Trade Scout │ Ship: {} ({} m³ / {} M ISK) │ Home: {} │ Safe: {} │ Stations: {} ",
+        " EVE Traveling Merchant │ Ship: {} ({} m³ / {} M ISK) │ Home: {} │ Safe: {} │ Stations: {} ",
         state.ship.name,
         state.ship.max_volume,
         state.ship.max_budget / 1_000_000.0,
@@ -225,12 +225,26 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState) {
     f.render_widget(tabs, area);
 }
 
+fn format_unit_price(val: f64) -> String {
+    if val >= 1_000_000_000.0 {
+        format!("{:.2}B", val / 1_000_000_000.0)
+    } else if val >= 1_000_000.0 {
+        format!("{:.2}M", val / 1_000_000.0)
+    } else if val >= 1_000.0 {
+        format!("{:.2}k", val / 1_000.0)
+    } else {
+        format!("{:.2}", val)
+    }
+}
+
 fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
     let header_cells = [
         "#",
         "Item",
         "Buy @ System",
+        "Buy Price",
         "Sell @ System",
+        "Sell Price",
         "Qty",
         "Vol(m³)",
         "Cost(M)",
@@ -254,7 +268,11 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
 
     let rows = state.deals.iter().enumerate().map(|(idx, d)| {
         let is_top3 = idx < 3;
-        let item_style = if is_top3 {
+        let item_style = if d.is_high_roi() {
+            Style::default()
+                .fg(Color::Rgb(255, 140, 0))
+                .add_modifier(Modifier::BOLD)
+        } else if is_top3 {
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD)
@@ -270,13 +288,23 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
             Color::Yellow
         };
 
+        let item_display = if d.is_high_roi() {
+            format!("🔥 {}", d.item_name)
+        } else {
+            d.item_name.clone()
+        };
+
+        let buy_sys_text = format!("[{:.1}] {}", d.source_security, d.source_system_name);
+        let sell_sys_text = format!("[{:.1}] {}", d.dest_security, d.dest_system_name);
         let jumps_text = format!("{}+{}={}", d.jumps_from_home, d.jumps_source_dest, d.total_jumps);
 
         Row::new(vec![
             Cell::from(format!("{}", idx + 1)).style(Style::default().fg(Color::DarkGray)),
-            Cell::from(d.item_name.clone()).style(item_style),
-            Cell::from(d.source_system_name.clone()).style(Style::default().fg(Color::LightBlue)),
-            Cell::from(d.dest_system_name.clone()).style(Style::default().fg(Color::Magenta)),
+            Cell::from(item_display).style(item_style),
+            Cell::from(buy_sys_text).style(Style::default().fg(Color::LightBlue)),
+            Cell::from(format_unit_price(d.buy_price)).style(Style::default().fg(Color::Cyan)),
+            Cell::from(sell_sys_text).style(Style::default().fg(Color::Magenta)),
+            Cell::from(format_unit_price(d.sell_price)).style(Style::default().fg(Color::Rgb(255, 160, 240))),
             Cell::from(format!("{}", d.quantity)),
             Cell::from(format!("{:.1}", d.volume_used)),
             Cell::from(format!("{:.2}M", d.capital_required / 1_000_000.0)),
@@ -292,9 +320,11 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
 
     let widths = [
         Constraint::Length(4),  // #
-        Constraint::Length(22), // Item
-        Constraint::Length(13), // Buy system
-        Constraint::Length(13), // Sell system
+        Constraint::Length(24), // Item
+        Constraint::Length(15), // Buy system
+        Constraint::Length(10), // Buy price
+        Constraint::Length(15), // Sell system
+        Constraint::Length(10), // Sell price
         Constraint::Length(7),  // Qty
         Constraint::Length(8),  // Vol
         Constraint::Length(9),  // Cost
@@ -413,7 +443,7 @@ fn render_route_view(f: &mut Frame, area: Rect, state: &AppState) {
 
 fn render_help_view(f: &mut Frame, area: Rect) {
     let help_text = vec![
-        Line::from(Span::styled("EVE Trade Scout - Quick Reference", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("EVE Traveling Merchant - Quick Reference", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from("Keybindings:"),
         Line::from("  [Tab]       Switch between Deals Table, Route Plan, and Help"),

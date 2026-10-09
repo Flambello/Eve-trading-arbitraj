@@ -52,6 +52,9 @@ fn test_user_config_defaults_and_invariants() {
     assert!(cfg.scan.regions.contains(&10000002), "Default regions must include The Forge (Jita)");
     assert!(cfg.scan.safe_route_only, "Safe routing must default to true");
     assert!(cfg.scan.npc_stations_only, "NPC stations only must default to true");
+    assert!(!cfg.scan.auto_refresh, "Auto-refresh must default to false");
+    assert!(cfg.scan.sound_alerts, "Sound alerts must default to true");
+    assert_eq!(cfg.scan.sound_min_roi_pct, 100.0, "Sound alert threshold must default to 100.0%");
 
     // Filter invariants: 15% minimum net ROI
     assert_eq!(
@@ -72,6 +75,9 @@ fn test_user_config_toml_roundtrip() {
     cfg.ship.profile = "small".to_string();
     cfg.location.home_system = "Amarr".to_string();
     cfg.scan.npc_stations_only = false;
+    cfg.scan.auto_refresh = true;
+    cfg.scan.sound_alerts = true;
+    cfg.scan.sound_min_roi_pct = 150.0;
     cfg.filters.min_net_profit_pct = 20.0;
 
     let toml_str = toml::to_string(&cfg).expect("Serialization to TOML must succeed");
@@ -79,6 +85,9 @@ fn test_user_config_toml_roundtrip() {
 
     assert_eq!(parsed.ship.profile, "small");
     assert_eq!(parsed.location.home_system, "Amarr");
-    assert_eq!(parsed.scan.npc_stations_only, false);
+    assert!(!parsed.scan.npc_stations_only);
+    assert!(parsed.scan.auto_refresh);
+    assert!(parsed.scan.sound_alerts);
+    assert_eq!(parsed.scan.sound_min_roi_pct, 150.0);
     assert_eq!(parsed.filters.min_net_profit_pct, 20.0);
 }

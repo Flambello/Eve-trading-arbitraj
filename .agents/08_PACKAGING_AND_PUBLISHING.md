@@ -45,7 +45,7 @@ name        = "eve-trade-scout"
 version     = "1.0.0"
 edition     = "2021"
 description = "EVE Online arbitrage route planner — find profitable trades between stations"
-license     = "MIT"
+license     = "GPL-3.0-or-later"
 repository  = "https://github.com/YOUR_USERNAME/eve-trade-scout"
 homepage    = "https://github.com/YOUR_USERNAME/eve-trade-scout"
 readme      = "README.md"
@@ -281,7 +281,7 @@ eve-trade --route --top 10
 \`\`\`
 
 ## License
-MIT — see [LICENSE](LICENSE)
+GPL-3.0 — see [LICENSE](LICENSE)
 
 ## Disclaimer
 This tool is a read-only market analysis aid. It does not automate in-game actions
@@ -292,8 +292,8 @@ and complies with the EVE Online EULA and ESI Developer Licence.
 
 ## 6. License File
 
-For open source, add a `LICENSE` file to the repo root. **MIT** is the most permissive
-and standard for Rust tools:
+For open source, add a `LICENSE` file to the repo root. **GNU General Public License v3.0 (GPL-3.0)** provides
+strong copyleft protection:
 
 ```
 MIT License
@@ -359,7 +359,7 @@ eve-trade-scout/          ← GitHub repo root
 │   └── icon.png          ← 128x128 app icon
 ├── Cargo.toml
 ├── Cargo.lock            ← ALWAYS commit this for binaries
-├── LICENSE               ← MIT
+├── LICENSE               ← GPL-3.0
 ├── README.md
 └── .gitignore
 ```
@@ -373,7 +373,7 @@ eve-trade-scout/          ← GitHub repo root
 ## Summary: Recommended Publishing Checklist
 
 - [ ] Push to GitHub (public repo)
-- [ ] Add `LICENSE` (MIT)
+- [ ] Add `LICENSE` (GPL-3.0)
 - [ ] Write `README.md` with install instructions + screenshot/demo
 - [ ] Add `.github/workflows/ci.yml` (auto-test on push)
 - [ ] Add `.github/workflows/release.yml` (auto-build binaries on tag)

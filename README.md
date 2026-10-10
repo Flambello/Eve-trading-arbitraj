@@ -3,7 +3,7 @@
 [![CI](https://github.com/Flambello/eve-traveling-merchant/actions/workflows/ci.yml/badge.svg)](https://github.com/Flambello/eve-traveling-merchant/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Flambello/eve-traveling-merchant?color=orange&logo=github)](https://github.com/Flambello/eve-traveling-merchant/releases)
 [![Flathub](https://img.shields.io/badge/Flathub-io.github.flambello.eve__merchant-blue?logo=flathub)](https://flathub.org/apps/io.github.flambello.eve_merchant)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust](https://img.shields.io/badge/Rust-1.78%2B-blue.svg?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%28Wayland%20%2F%20X11%29-green.svg?logo=linux)](https://kernel.org/)
 
@@ -217,4 +217,4 @@ This software is an external market analysis aid that interacts strictly with CC
 
 ## License
 
-Distributed under the **MIT License**. See [LICENSE](LICENSE) for full text.
+Distributed under the **GNU General Public License v3.0** (GPL-3.0). See [LICENSE](LICENSE) for full text.

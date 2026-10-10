@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-10-10
 
+### Changed
+- **License**: Re-licensed project under the GNU General Public License v3.0 (`GPL-3.0-or-later`) for copyleft open-source software distribution.
+
 ### Added
 - **Native Desktop GUI**: Dark-mode sci-fi interface powered by `egui` and `eframe` with instant startup, real-time SDE autocomplete, telemetry pills, and 1-click clipboard actions.
 - **Knapsack Cargo Manifests**: Multi-item cargo consolidation engine grouping commodities onto identical station corridors to pack the cargo hold and wallet budget.

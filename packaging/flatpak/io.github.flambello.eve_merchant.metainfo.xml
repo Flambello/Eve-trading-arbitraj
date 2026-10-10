@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>io.github.flambello.eve_merchant</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT</project_license>
+  <project_license>GPL-3.0-or-later</project_license>
   <name>EVE Traveling Merchant</name>
   <summary>Location-centric arbitrage engine and multi-item route planner for EVE Online</summary>
   

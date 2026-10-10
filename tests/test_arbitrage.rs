@@ -47,32 +47,32 @@ mod tests {
     }
 
     #[test]
-    fn test_minimum_15_percent_net_profitability_enforced() {
+    fn test_minimum_10_percent_net_profitability_enforced() {
         let broker_fee_pct = 3.0;
         let sales_tax_pct = 8.0;
-        let min_net_profit_pct = 15.0;
+        let min_net_profit_pct = 10.0;
 
         // Deal A: 100 buy, 120 sell (Gross spread is 20%, but after fees:)
         // Broker fee: 100 * 0.03 = 3.0
         // Sales tax: 120 * 0.08 = 9.6
         // Net profit per unit: 20 - 3.0 - 9.6 = 7.4
-        // Net ROI%: 7.4 / 100 = 7.4% (Below 15%, should be rejected)
+        // Net ROI%: 7.4 / 100 = 7.4% (Below 10%, should be rejected)
         let buy_a = 100.0;
         let sell_a = 120.0;
         let net_a = (sell_a - buy_a) - (buy_a * broker_fee_pct / 100.0) - (sell_a * sales_tax_pct / 100.0);
         let roi_a = (net_a / buy_a) * 100.0;
-        assert!(roi_a < min_net_profit_pct, "Deal A should fail the 15% net threshold");
+        assert!(roi_a < min_net_profit_pct, "Deal A should fail the 10% net threshold");
 
-        // Deal B: 100 buy, 135 sell (Gross spread is 35%)
+        // Deal B: 100 buy, 125 sell (Gross spread is 25%)
         // Broker fee: 100 * 0.03 = 3.0
-        // Sales tax: 135 * 0.08 = 10.8
-        // Net profit per unit: 35 - 3.0 - 10.8 = 21.2
-        // Net ROI%: 21.2 / 100 = 21.2% (Above 15%, should be accepted)
+        // Sales tax: 125 * 0.08 = 10.0
+        // Net profit per unit: 25 - 3.0 - 10.0 = 12.0
+        // Net ROI%: 12.0 / 100 = 12.0% (Above 10%, should be accepted)
         let buy_b = 100.0;
-        let sell_b = 135.0;
+        let sell_b = 125.0;
         let net_b = (sell_b - buy_b) - (buy_b * broker_fee_pct / 100.0) - (sell_b * sales_tax_pct / 100.0);
         let roi_b = (net_b / buy_b) * 100.0;
-        assert!(roi_b >= min_net_profit_pct, "Deal B should pass the 15% net threshold");
+        assert!(roi_b >= min_net_profit_pct, "Deal B should pass the 10% net threshold");
     }
 
     #[test]
@@ -219,6 +219,12 @@ mod tests {
         let mut deal = ArbitrageDeal {
             type_id: 34,
             item_name: "Tritanium".to_string(),
+            source_order_id: 1001,
+            dest_order_id: 2001,
+            source_order_volume_remain: 1000,
+            dest_order_volume_remain: 1000,
+            dest_order_min_volume: 1,
+            is_npc_trade: false,
             buy_price: 5.0,
             sell_price: 10.0,
             spread_pct: 100.0,
@@ -263,6 +269,12 @@ mod tests {
         let make_deal = |id: u32, name: &str, vol: f64, cost: f64, profit: f64, ppm3: f64| ArbitrageDeal {
             type_id: id,
             item_name: name.to_string(),
+            source_order_id: 100_000 + id as u64,
+            dest_order_id: 200_000 + id as u64,
+            source_order_volume_remain: 100,
+            dest_order_volume_remain: 100,
+            dest_order_min_volume: 1,
+            is_npc_trade: false,
             buy_price: cost / 100.0,
             sell_price: (cost + profit) / 100.0,
             spread_pct: 50.0,
@@ -310,5 +322,299 @@ mod tests {
         assert_eq!(m.total_capital_required, 250_000_000.0);
         assert!(m.total_capital_required <= BIG_HAULER.max_budget);
         assert_eq!(m.total_net_profit, 65_000_000.0);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_deal_same_station_and_min_volume() {
+        use eve_trade_scout::arbitrage::{calculate_deal, ArbitrageConfig};
+        use eve_trade_scout::config::BIG_HAULER;
+        use eve_trade_scout::esi::models::MarketOrder;
+        use eve_trade_scout::graph::SystemGraph;
+        use eve_trade_scout::sde::{ItemInfo, SdeLoader, SystemNode};
+        use std::path::PathBuf;
+
+        let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
+        if !sde_path.exists() {
+            return;
+        }
+
+        let sde = SdeLoader::open(&sde_path, 30).await.expect("Failed to open SDE");
+
+        let systems = vec![
+            SystemNode {
+                system_id: 30000142,
+                name: "Jita".to_string(),
+                security_status: 0.95,
+                region_id: 10000002,
+            },
+            SystemNode {
+                system_id: 30000144,
+                name: "Perimeter".to_string(),
+                security_status: 0.90,
+                region_id: 10000002,
+            },
+        ];
+        let jumps = vec![(30000142, 30000144)];
+        let graph = SystemGraph::from_nodes_and_jumps(systems, jumps);
+
+        let cfg = ArbitrageConfig {
+            home_system: 30000142,
+            ship: BIG_HAULER,
+            min_profit: 0.0,
+            min_spread: 5.0,
+            min_net_profit_pct: 10.0,
+            broker_fee: 1.0,
+            sales_tax: 3.6,
+            safe_only: true,
+            npc_stations_only: false,
+        };
+
+        let item = ItemInfo {
+            type_id: 34,
+            name: "Tritanium".to_string(),
+            packaged_volume: 0.01,
+            group_id: 18,
+            category_id: 4,
+            published: true,
+        };
+
+        let src_order = MarketOrder {
+            order_id: 101,
+            type_id: 34,
+            location_id: 60003760, // Jita IV-4
+            system_id: 30000142,
+            price: 5.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        // 1. Same-station buy & sell: MUST be rejected immediately
+        let same_station_dst = MarketOrder {
+            order_id: 102,
+            type_id: 34,
+            location_id: 60003760, // Same station!
+            system_id: 30000142,
+            price: 8.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let same_station_res = calculate_deal(34, &item, &src_order, &same_station_dst, &cfg, &sde, &graph);
+        assert!(same_station_res.is_none(), "Same station trade must be strictly rejected");
+
+        // 2. Cross-station trade where dest min_volume > available volume
+        let unmet_min_vol_dst = MarketOrder {
+            order_id: 103,
+            type_id: 34,
+            location_id: 60003761, // Different station in Perimeter
+            system_id: 30000144,
+            price: 8.0,
+            volume_total: 50_000,
+            volume_remain: 10_000,
+            min_volume: 50_000, // Requires 50,000, but supply is only 10,000
+            is_buy_order: true,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let unmet_min_res = calculate_deal(34, &item, &src_order, &unmet_min_vol_dst, &cfg, &sde, &graph);
+        assert!(unmet_min_res.is_none(), "Deal must be rejected when buyer min_volume cannot be fulfilled");
+
+        // 3. Cross-station trade where dest min_volume is satisfied (<= available volume)
+        let satisfied_min_vol_dst = MarketOrder {
+            order_id: 104,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 8.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 5_000, // Requires 5,000, supply is 10,000
+            is_buy_order: true,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let ok_res = calculate_deal(34, &item, &src_order, &satisfied_min_vol_dst, &cfg, &sde, &graph);
+        assert!(ok_res.is_some(), "Deal must be accepted when buyer min_volume is fulfilled");
+        let deal = ok_res.unwrap();
+        assert_eq!(deal.dest_order_min_volume, 5_000);
+        assert_eq!(deal.quantity, 10_000);
+        assert!(!deal.is_npc_trade, "Regular player mineral deal must not be flagged as NPC trade");
+    }
+
+    #[tokio::test]
+    async fn test_npc_trade_deal_detection_and_filtering() {
+        use eve_trade_scout::arbitrage::{calculate_deal, ArbitrageConfig, ArbitrageDeal};
+        use eve_trade_scout::config::BIG_HAULER;
+        use eve_trade_scout::esi::models::MarketOrder;
+        use eve_trade_scout::graph::SystemGraph;
+        use eve_trade_scout::sde::{ItemInfo, SdeLoader, SystemNode};
+        use std::path::PathBuf;
+
+        let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
+        if !sde_path.exists() {
+            return;
+        }
+
+        let sde = SdeLoader::open(&sde_path, 30).await.expect("Failed to open SDE");
+
+        let systems = vec![
+            SystemNode {
+                system_id: 30000142,
+                name: "Jita".to_string(),
+                security_status: 0.95,
+                region_id: 10000002,
+            },
+            SystemNode {
+                system_id: 30000144,
+                name: "Perimeter".to_string(),
+                security_status: 0.90,
+                region_id: 10000002,
+            },
+        ];
+        let jumps = vec![(30000142, 30000144)];
+        let graph = SystemGraph::from_nodes_and_jumps(systems, jumps);
+
+        let cfg = ArbitrageConfig {
+            home_system: 30000142,
+            ship: BIG_HAULER,
+            min_profit: 0.0,
+            min_spread: 5.0,
+            min_net_profit_pct: 10.0,
+            broker_fee: 1.0,
+            sales_tax: 3.6,
+            safe_only: true,
+            npc_stations_only: false,
+        };
+
+        // 1. Spirits (Type ID 9850, Group 280, Category 17: Commodity) -> NPC trade good
+        let spirits_info = sde.get_item_info(9850).expect("Spirits should exist in SDE");
+        assert!(spirits_info.is_npc_trade_commodity(), "Spirits must be detected as an NPC trade commodity");
+
+        let src_spirits = MarketOrder {
+            order_id: 501,
+            type_id: 9850,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 50.0,
+            volume_total: 1000,
+            volume_remain: 1000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let dst_spirits = MarketOrder {
+            order_id: 502,
+            type_id: 9850,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 100.0,
+            volume_total: 1000,
+            volume_remain: 1000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let deal_spirits = calculate_deal(9850, &spirits_info, &src_spirits, &dst_spirits, &cfg, &sde, &graph);
+        assert!(deal_spirits.is_some());
+        let deal_spirits = deal_spirits.unwrap();
+        assert!(deal_spirits.is_npc_trade, "Spirits deal must be flagged as an NPC trade");
+
+        // 2. Regular item with a 365-day NPC seeded buy order (duration = 365)
+        let tritanium_info = ItemInfo {
+            type_id: 34,
+            name: "Tritanium".to_string(),
+            packaged_volume: 0.01,
+            group_id: 18,
+            category_id: 4,
+            published: true,
+        };
+
+        let src_player = MarketOrder {
+            order_id: 601,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 5.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let dst_npc_order = MarketOrder {
+            order_id: 602,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 8.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 365, // NPC seeded order!
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let deal_npc_seeded = calculate_deal(34, &tritanium_info, &src_player, &dst_npc_order, &cfg, &sde, &graph);
+        assert!(deal_npc_seeded.is_some());
+        let deal_npc_seeded = deal_npc_seeded.unwrap();
+        assert!(deal_npc_seeded.is_npc_trade, "Deal with 365-day NPC order must be flagged as an NPC trade");
+
+        // 3. Regular player-to-player deal (duration = 90, non-commodity item)
+        let dst_player_order = MarketOrder {
+            order_id: 603,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 8.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let deal_player = calculate_deal(34, &tritanium_info, &src_player, &dst_player_order, &cfg, &sde, &graph);
+        assert!(deal_player.is_some());
+        let deal_player = deal_player.unwrap();
+        assert!(!deal_player.is_npc_trade, "Player-to-player deal must not be flagged as NPC trade");
+
+        // 4. Test filtering: with hide_npc_trades = true, NPC deals are excluded while player deals remain
+        let all_deals = [deal_spirits, deal_npc_seeded, deal_player];
+        let hide_npc_trades = true;
+        let filtered: Vec<&ArbitrageDeal> = all_deals
+            .iter()
+            .filter(|d| !hide_npc_trades || !d.is_npc_trade)
+            .collect();
+
+        assert_eq!(filtered.len(), 1, "Only the 1 player deal should pass when hide_npc_trades is active");
+        assert_eq!(filtered[0].item_name, "Tritanium");
+        assert!(!filtered[0].is_npc_trade);
     }
 }

@@ -101,9 +101,11 @@ impl SystemGraph {
             return 0;
         }
 
+        let cache_key = (origin.min(dest), origin.max(dest), safe_only);
+
         // Check LRU cache
         if let Ok(mut cache) = self.jump_cache.lock() {
-            if let Some(&jumps) = cache.get(&(origin, dest, safe_only)) {
+            if let Some(&jumps) = cache.get(&cache_key) {
                 return jumps;
             }
         }
@@ -148,7 +150,7 @@ impl SystemGraph {
         };
 
         if let Ok(mut cache) = self.jump_cache.lock() {
-            cache.put((origin, dest, safe_only), result);
+            cache.put(cache_key, result);
         }
 
         result

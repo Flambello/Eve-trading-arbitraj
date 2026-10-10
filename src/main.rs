@@ -60,7 +60,7 @@ struct Args {
     #[arg(long)]
     min_spread: Option<f64>,
 
-    /// Minimum overall net profitability (ROI %) after all taxes (enforced default: 15.0%)
+    /// Minimum overall net profitability (ROI %) after all taxes (enforced default: 10.0%)
     #[arg(long)]
     min_roi: Option<f64>,
 
@@ -185,8 +185,200 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    // 1. Initialize SDE
+    let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
+    let launch_gui = (args.gui || (has_display && !args.tui)) && !args.no_tui && !args.no_ui && args.export.is_none();
+
     let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
+    let cache_dir = PathBuf::from(&cfg.cache.directory);
+
+    if launch_gui {
+        println!(" Launching EVE Traveling Merchant Native Desktop GUI Window (Instant Startup & Splash Screen)...");
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        let is_big = ship_profile.name == "Big Hauler";
+
+        let sde_path_clone = sde_path.clone();
+        let cache_dir_clone = cache_dir.clone();
+        let home_system_clone = cfg.location.home_system.clone();
+        let update_sde = args.update_sde;
+        let safe_only = cfg.scan.safe_route_only;
+        let npc_only = cfg.scan.npc_stations_only;
+        let min_profit_isk = cfg.filters.min_profit_isk;
+        let min_spread_pct = cfg.filters.min_spread_pct;
+        let min_net_profit_pct = cfg.filters.min_net_profit_pct;
+        let broker_fee_pct = cfg.fees.broker_fee_pct;
+        let sales_tax_pct = cfg.fees.sales_tax_pct;
+        let scan_adjacent = args.adjacent_regions && cfg.scan.scan_adjacent_regions;
+        let explicit_regions = args.regions.clone();
+        let max_stops = args.max_stops;
+        let sde_max_age_days = cfg.cache.sde_max_age_days;
+
+        tokio::spawn(async move {
+            let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
+                stage_index: 1,
+                total_stages: 5,
+                stage_name: "Static Universe Data (SDE)".to_string(),
+                detail: "Opening EVE Static Data Export (SDE) SQLite universe maps...".to_string(),
+                percent: 0.15,
+                completed: false,
+                error: None,
+            }));
+
+            if update_sde && sde_path_clone.exists() {
+                let _ = std::fs::remove_file(&sde_path_clone);
+            }
+
+            let sde = match SdeLoader::open(&sde_path_clone, sde_max_age_days).await {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to load SDE database: {}", e)));
+                    return;
+                }
+            };
+
+            let home_system_id = sde.get_system_id(&home_system_clone).unwrap_or(30000142);
+            let home_system_name = sde
+                .get_system_name(home_system_id)
+                .unwrap_or_else(|| home_system_clone.clone());
+
+            let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
+                stage_index: 2,
+                total_stages: 5,
+                stage_name: "Stargate Topology Network".to_string(),
+                detail: "Compiling New Eden stargate graph (8,490 solar systems)...".to_string(),
+                percent: 0.35,
+                completed: false,
+                error: None,
+            }));
+
+            let graph = match SystemGraph::from_sde(&sde) {
+                Ok(g) => Arc::new(g),
+                Err(e) => {
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to construct stargate network: {}", e)));
+                    return;
+                }
+            };
+
+            let scan_regions = if let Some(ref reg_str) = explicit_regions {
+                reg_str
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<u32>().ok())
+                    .collect()
+            } else {
+                let mut reg_set = std::collections::HashSet::new();
+                if let Some(home_reg) = sde.get_system_region(home_system_id) {
+                    reg_set.insert(home_reg);
+                    if scan_adjacent {
+                        for adj in graph.adjacent_regions(home_reg, safe_only) {
+                            reg_set.insert(adj);
+                        }
+                    }
+                }
+                if reg_set.is_empty() {
+                    reg_set.insert(10000002);
+                }
+                let mut list: Vec<u32> = reg_set.into_iter().collect();
+                list.sort_unstable();
+                list
+            };
+
+            let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
+                stage_index: 3,
+                total_stages: 5,
+                stage_name: "Live Regional Order Books".to_string(),
+                detail: format!("Connecting to CCP ESI: fetching order books for {} region(s)...", scan_regions.len()),
+                percent: 0.55,
+                completed: false,
+                error: None,
+            }));
+
+            let esi = match EsiClient::new(&cache_dir_clone) {
+                Ok(c) => Arc::new(c),
+                Err(e) => {
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to initialize ESI API client: {}", e)));
+                    return;
+                }
+            };
+
+            let markets = match fetch_markets(&esi, &scan_regions).await {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to fetch ESI market data: {}", e)));
+                    return;
+                }
+            };
+            let _ = esi.save_cache().await;
+
+            let total_sells: usize = markets.values().map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>()).sum();
+            let total_buys: usize = markets.values().map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>()).sum();
+
+            let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
+                stage_index: 4,
+                total_stages: 5,
+                stage_name: "Cross-Station Arbitrage Solver".to_string(),
+                detail: format!("Parsed {} sell & {} buy orders. Calculating cross-station deals ({:.0}% ROI)...", total_sells, total_buys, min_net_profit_pct),
+                percent: 0.80,
+                completed: false,
+                error: None,
+            }));
+
+            let arb_cfg = ArbitrageConfig {
+                ship: ship_profile,
+                home_system: home_system_id,
+                min_profit: min_profit_isk,
+                min_spread: min_spread_pct,
+                min_net_profit_pct,
+                broker_fee: broker_fee_pct,
+                sales_tax: sales_tax_pct,
+                safe_only,
+                npc_stations_only: npc_only,
+            };
+
+            let deals = find_deals(&markets, &sde, &graph, &arb_cfg);
+
+            let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
+                stage_index: 5,
+                total_stages: 5,
+                stage_name: "Corridor Manifests & Route Planning".to_string(),
+                detail: format!("Found {} profitable trade deals! Consolidating corridors & planning route...", deals.len()),
+                percent: 0.95,
+                completed: false,
+                error: None,
+            }));
+
+            let manifests = bundle_route_cargo(&deals, ship_profile);
+            let route = plan_route(&deals, ship_profile, home_system_id, &graph, safe_only, max_stops);
+
+            let _ = startup_tx.send(ui::StartupMsg::Ready {
+                sde,
+                graph,
+                esi,
+                home_system_name,
+                scan_regions,
+                deals,
+                manifests,
+                route: Some(route),
+            });
+        });
+
+        let app = ui::DesktopApp::new_loading(
+            is_big,
+            cfg.location.home_system.clone(),
+            cfg.scan.safe_route_only,
+            cfg.scan.npc_stations_only,
+            cfg.filters.min_net_profit_pct,
+            cfg.filters.min_profit_isk,
+            cfg.scan.auto_refresh,
+            cfg.scan.sound_alerts,
+            cfg.scan.sound_min_roi_pct,
+            startup_rx,
+        );
+
+        ui::run_desktop_gui(app)
+            .map_err(|e| anyhow::anyhow!("Desktop GUI runtime error: {}", e))?;
+        return Ok(());
+    }
+
+    // 1. Initialize SDE (Terminal / CLI / Headless mode)
     if args.update_sde && sde_path.exists() {
         let _ = std::fs::remove_file(&sde_path);
     }
@@ -319,30 +511,8 @@ async fn main() -> Result<()> {
         println!(" Exported {} deals to {:?}", deals.len(), csv_path);
     }
 
-    // 8. Output Mode
-    if launch_gui {
-        println!(" Launching EVE Traveling Merchant Native Desktop GUI Window...");
-        let is_big = ship_profile.name == "Big Hauler";
-        let app = ui::DesktopApp::new(
-            sde,
-            graph,
-            esi,
-            is_big,
-            home_system_name,
-            cfg.scan.safe_route_only,
-            cfg.scan.npc_stations_only,
-            cfg.filters.min_net_profit_pct,
-            cfg.filters.min_profit_isk,
-            scan_regions,
-            deals,
-            Some(route),
-            cfg.scan.auto_refresh,
-            cfg.scan.sound_alerts,
-            cfg.scan.sound_min_roi_pct,
-        );
-        ui::run_desktop_gui(app)
-            .map_err(|e| anyhow::anyhow!("Desktop GUI runtime error: {}", e))?;
-    } else if is_interactive {
+    // 8. Output Mode (Terminal / CLI)
+    if is_interactive {
         println!(" Launching Interactive Terminal UI (press [Q] to exit)...");
         ui::run_tui(
             &deals,

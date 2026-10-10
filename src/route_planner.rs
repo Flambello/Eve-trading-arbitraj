@@ -78,6 +78,21 @@ pub fn plan_route(
         };
 
         let chosen_deal = unused_deals.remove(chosen_idx);
+        let chosen_src_order = chosen_deal.source_order_id;
+        let chosen_src_station = chosen_deal.source_station_id;
+        let chosen_type = chosen_deal.type_id;
+
+        // Prune alternative deals sharing the same exhausted source order or station stock
+        unused_deals.retain(|d| {
+            if chosen_src_order > 0 && d.source_order_id == chosen_src_order {
+                return false;
+            }
+            if d.type_id == chosen_type && d.source_station_id == chosen_src_station {
+                return false;
+            }
+            true
+        });
+
         let departure_system = current_system;
         let prev_name = graph
             .system_name(departure_system)
@@ -97,7 +112,9 @@ pub fn plan_route(
 
         total_jumps += best_leg_jumps;
         total_profit += chosen_deal.net_profit;
-        total_capital_required += chosen_deal.capital_required;
+        if chosen_deal.capital_required > total_capital_required {
+            total_capital_required = chosen_deal.capital_required;
+        }
         if chosen_deal.volume_used > max_volume_used {
             max_volume_used = chosen_deal.volume_used;
         }

@@ -12,7 +12,7 @@ Whenever starting a session in this repository:
    ```
    Do not report work as done until both pass with zero warnings and zero test failures.
 3. **Preserve Domain Invariants**:
-   - Minimum 15.0% net profitability after taxes and broker fees enforced across all deals.
+   - Minimum 10.0% net profitability after taxes and broker fees enforced across all deals.
    - Big Hauler: 60,000 m³ / 500M ISK budget constraint.
    - Small Hauler: 30,000 m³ / 50M ISK budget constraint.
    - Jump ranking: Profit-per-jump must include travel jumps from the player's starting system.

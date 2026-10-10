@@ -19,7 +19,31 @@ pub struct ItemInfo {
     pub name: String,
     pub packaged_volume: f64,
     pub group_id: u32,
+    pub category_id: u32,
     pub published: bool,
+}
+
+impl ItemInfo {
+    /// Detect if the item is an NPC trade commodity or NPC seeded trade good.
+    pub fn is_npc_trade_commodity(&self) -> bool {
+        self.category_id == 17 // Commodity
+            || self.category_id == 43 // Planetary Commodities
+            || matches!(
+                self.group_id,
+                280 // General (Wheat, Spirits, Antibiotics, Tobacco, etc.)
+                | 281 // Frozen (Dairy Products, etc.)
+                | 282 // Radioactive (Enriched Uranium, etc.)
+                | 283 // Livestock
+                | 284 // Biohazard
+                | 493 // Overseer Personal Effects
+                | 526 // Commodities
+                | 1034 // Refined Commodities - Tier 2
+                | 1040 // Specialized Commodities - Tier 3
+                | 1041 // Advanced Commodities - Tier 4
+                | 1042 // Basic Commodities - Tier 1
+                | 4575 // Homefront Operations Commodity
+            )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,26 +313,29 @@ impl SdeLoader {
         let conn = self.conn.lock().ok()?;
 
         let query = if self.has_packaged_col {
-            "SELECT typeID, typeName, COALESCE(packagedVolume, volume, 0.01), groupID, published 
-             FROM invTypes WHERE typeID = ?1"
+            "SELECT t.typeID, t.typeName, COALESCE(t.packagedVolume, t.volume, 0.01), t.groupID, COALESCE(g.categoryID, 0), t.published 
+             FROM invTypes t LEFT JOIN invGroups g ON t.groupID = g.groupID 
+             WHERE t.typeID = ?1"
         } else if self.has_inv_volumes {
-            "SELECT t.typeID, t.typeName, COALESCE(v.volume, t.volume, 0.01), t.groupID, t.published 
-             FROM invTypes t LEFT JOIN invVolumes v ON t.typeID = v.typeID 
+            "SELECT t.typeID, t.typeName, COALESCE(v.volume, t.volume, 0.01), t.groupID, COALESCE(g.categoryID, 0), t.published 
+             FROM invTypes t LEFT JOIN invVolumes v ON t.typeID = v.typeID LEFT JOIN invGroups g ON t.groupID = g.groupID 
              WHERE t.typeID = ?1"
         } else {
-            "SELECT typeID, typeName, COALESCE(volume, 0.01), groupID, published 
-             FROM invTypes WHERE typeID = ?1"
+            "SELECT t.typeID, t.typeName, COALESCE(t.volume, 0.01), t.groupID, COALESCE(g.categoryID, 0), t.published 
+             FROM invTypes t LEFT JOIN invGroups g ON t.groupID = g.groupID 
+             WHERE t.typeID = ?1"
         };
 
         let mut stmt = conn.prepare(query).ok()?;
         stmt.query_row(params![type_id], |row| {
             let vol: f64 = row.get(2)?;
-            let pub_flag: i64 = row.get(4)?;
+            let pub_flag: i64 = row.get(5)?;
             Ok(ItemInfo {
                 type_id: row.get(0)?,
                 name: row.get(1)?,
                 packaged_volume: if vol <= 0.0 { 0.01 } else { vol },
                 group_id: row.get(3)?,
+                category_id: row.get(4)?,
                 published: pub_flag == 1,
             })
         })

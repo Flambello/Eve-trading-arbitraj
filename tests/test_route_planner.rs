@@ -52,6 +52,12 @@ fn make_test_deal(
     ArbitrageDeal {
         type_id,
         item_name: name.to_string(),
+        source_order_id: 100_000_000 + (type_id as u64 * 10_000) + (src_sys.0 as u64 % 10_000),
+        dest_order_id: 200_000_000 + (type_id as u64 * 10_000) + (dst_sys.0 as u64 % 10_000),
+        source_order_volume_remain: 100,
+        dest_order_volume_remain: 100,
+        dest_order_min_volume: 1,
+        is_npc_trade: false,
         buy_price: 100.0,
         sell_price: 150.0,
         spread_pct: 50.0,
@@ -133,4 +139,56 @@ fn test_route_planner_greedy_chaining_and_max_stops() {
     assert!(route.total_profit > 0.0);
     assert!(route.total_jumps > 0);
     assert!(route.avg_profit_per_jump > 0.0);
+}
+
+#[test]
+fn test_route_planner_exhausted_order_pruned() {
+    let graph = create_route_test_graph();
+    let home = 30000142; // Jita
+
+    // Deal 1: Jita -> Perimeter (Spirits, source_order_id = 12345)
+    let mut d1 = make_test_deal(
+        9850,
+        "Spirits",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        10_000_000.0,
+        1,
+    );
+    d1.source_order_id = 12345;
+    d1.source_station_id = 60003760;
+
+    // Deal 2: Jita -> Amarr (Spirits, shares same source_order_id = 12345)
+    let mut d2 = make_test_deal(
+        9850,
+        "Spirits",
+        (30000142, "Jita"),
+        (30002187, "Amarr"),
+        9_000_000.0,
+        1,
+    );
+    d2.source_order_id = 12345;
+    d2.source_station_id = 60003760;
+
+    // Deal 3: Perimeter -> Amarr (Pyerite, independent order)
+    let mut d3 = make_test_deal(
+        35,
+        "Pyerite",
+        (30000144, "Perimeter"),
+        (30002187, "Amarr"),
+        8_000_000.0,
+        1,
+    );
+    d3.source_order_id = 54321;
+    d3.source_station_id = 60003761;
+
+    let deals = vec![d1, d2, d3];
+
+    // Plan route with up to 5 stops
+    let route = plan_route(&deals, BIG_HAULER, home, &graph, true, 5);
+
+    // Stop 1 selects Deal 1. Deal 2 must be pruned and never selected!
+    assert_eq!(route.stops.len(), 2);
+    assert_eq!(route.stops[0].deal.item_name, "Spirits");
+    assert_eq!(route.stops[1].deal.item_name, "Pyerite");
 }

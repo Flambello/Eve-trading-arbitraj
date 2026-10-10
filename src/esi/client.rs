@@ -179,7 +179,10 @@ impl EsiClient {
 
     /// Fetches all paginated items from an ESI endpoint.
     /// Checks `x-pages` header on page 1 and fetches subsequent pages concurrently.
-    pub async fn get_all_pages<T: DeserializeOwned + Send + 'static>(
+    /// Fetches all paginated items from an ESI endpoint.
+    /// Supports ETag conditional GETs: returns cached data on HTTP 304 Not Modified.
+    /// Checks `x-pages` header on page 1 and fetches subsequent pages concurrently.
+    pub async fn get_all_pages<T: Serialize + DeserializeOwned + Send + 'static>(
         &self,
         endpoint: &str,
         extra_query: &[(&str, String)],
@@ -188,6 +191,22 @@ impl EsiClient {
             endpoint.to_string()
         } else {
             format!("{}{}", ESI_BASE, endpoint)
+        };
+
+        let cache_key = if extra_query.is_empty() {
+            format!("{}:all", url)
+        } else {
+            let q_str = extra_query
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("{}:all?{}", url, q_str)
+        };
+
+        let cached_etag = {
+            let map = self.etags.lock().await;
+            map.get(&cache_key).cloned()
         };
 
         // Fetch page 1 with retry on rate limit
@@ -200,6 +219,10 @@ impl EsiClient {
             let mut req = self.client.get(&url);
             for (k, v) in &p1_query {
                 req = req.query(&[(*k, v)]);
+            }
+
+            if let Some(ref entry) = cached_etag {
+                req = req.header(IF_NONE_MATCH, entry.etag.as_str());
             }
 
             match req.send().await {
@@ -217,6 +240,8 @@ impl EsiClient {
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(10));
                         continue;
+                    } else if status == StatusCode::NOT_MODIFIED {
+                        break r;
                     } else if !status.is_success() {
                         bail!("Failed to fetch page 1: status {}", status);
                     }
@@ -229,6 +254,33 @@ impl EsiClient {
             }
         };
 
+        // If data hasn't changed since last scan, return cached data immediately
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            if let Some(entry) = cached_etag {
+                let parsed: Vec<T> = serde_json::from_str(&entry.body_json)
+                    .context("Failed to deserialize cached paginated ESI response")?;
+                return Ok(parsed);
+            }
+        }
+
+        // Proactive error limit throttling if CCP error limit is dwindling
+        if let Some(remain) = resp
+            .headers()
+            .get("x-esi-error-limit-remain")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            if remain < 20 {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
+        }
+
+        let etag_hdr = resp
+            .headers()
+            .get("etag")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
         let total_pages = resp
             .headers()
             .get("x-pages")
@@ -240,66 +292,79 @@ impl EsiClient {
         let mut all_items: Vec<T> = serde_json::from_str(&body_text)
             .with_context(|| format!("Failed to parse JSON array from {}", url))?;
 
-        if total_pages <= 1 {
-            return Ok(all_items);
-        }
+        if total_pages > 1 {
+            // Fetch pages 2..=total_pages with retry & backoff on rate limits
+            let mut tasks = Vec::new();
+            let owned_query: Vec<(String, String)> = extra_query
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect();
 
-        // Fetch pages 2..=total_pages with retry & backoff on rate limits
-        let mut tasks = Vec::new();
-        let owned_query: Vec<(String, String)> = extra_query
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect();
+            for page in 2..=total_pages {
+                let client = self.client.clone();
+                let sem = Arc::clone(&self.concurrency_sem);
+                let u = url.clone();
+                let mut q = owned_query.clone();
+                q.push(("page".to_string(), page.to_string()));
 
-        for page in 2..=total_pages {
-            let client = self.client.clone();
-            let sem = Arc::clone(&self.concurrency_sem);
-            let u = url.clone();
-            let mut q = owned_query.clone();
-            q.push(("page".to_string(), page.to_string()));
-
-            tasks.push(tokio::spawn(async move {
-                let mut page_backoff = Duration::from_millis(500);
-                let text = loop {
-                    let _p = sem.acquire().await.map_err(|e| anyhow::anyhow!("{}", e))?;
-                    let mut req = client.get(&u);
-                    for (k, v) in &q {
-                        req = req.query(&[(k.as_str(), v.as_str())]);
-                    }
-                    match req.send().await {
-                        Ok(r) => {
-                            let status = r.status();
-                            if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
-                                eprintln!(
-                                    " [ESI] Page {} rate limited ({}). Retrying in {:?}...",
-                                    page, status, page_backoff
-                                );
-                                tokio::time::sleep(page_backoff).await;
-                                page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
-                                continue;
-                            } else if status.is_server_error() {
-                                tokio::time::sleep(page_backoff).await;
-                                page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
-                                continue;
-                            } else if !status.is_success() {
-                                bail!("Page {} failed with status {}", page, status);
+                tasks.push(tokio::spawn(async move {
+                    let mut page_backoff = Duration::from_millis(500);
+                    let text = loop {
+                        let _p = sem.acquire().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+                        let mut req = client.get(&u);
+                        for (k, v) in &q {
+                            req = req.query(&[(k.as_str(), v.as_str())]);
+                        }
+                        match req.send().await {
+                            Ok(r) => {
+                                let status = r.status();
+                                if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                                    eprintln!(
+                                        " [ESI] Page {} rate limited ({}). Retrying in {:?}...",
+                                        page, status, page_backoff
+                                    );
+                                    tokio::time::sleep(page_backoff).await;
+                                    page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                    continue;
+                                } else if status.is_server_error() {
+                                    tokio::time::sleep(page_backoff).await;
+                                    page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                    continue;
+                                } else if !status.is_success() {
+                                    bail!("Page {} failed with status {}", page, status);
+                                }
+                                break r.text().await?;
                             }
-                            break r.text().await?;
+                            Err(_e) => {
+                                tokio::time::sleep(page_backoff).await;
+                                page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                            }
                         }
-                        Err(_e) => {
-                            tokio::time::sleep(page_backoff).await;
-                            page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
-                        }
-                    }
-                };
-                let page_items: Vec<T> = serde_json::from_str(&text)?;
-                Ok::<Vec<T>, anyhow::Error>(page_items)
-            }));
+                    };
+                    let page_items: Vec<T> = serde_json::from_str(&text)?;
+                    Ok::<Vec<T>, anyhow::Error>(page_items)
+                }));
+            }
+
+            for task in tasks {
+                let page_items = task.await??;
+                all_items.extend(page_items);
+            }
         }
 
-        for task in tasks {
-            let page_items = task.await??;
-            all_items.extend(page_items);
+        // Cache total order list under page 1 ETag
+        if let Some(etag) = etag_hdr {
+            if let Ok(serialized) = serde_json::to_string(&all_items) {
+                let mut map = self.etags.lock().await;
+                map.insert(
+                    cache_key,
+                    StoredEtag {
+                        etag,
+                        expires: None,
+                        body_json: serialized,
+                    },
+                );
+            }
         }
 
         Ok(all_items)

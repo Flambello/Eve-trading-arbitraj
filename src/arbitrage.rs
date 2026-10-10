@@ -10,6 +10,14 @@ use std::collections::HashMap;
 pub struct ArbitrageDeal {
     pub type_id: u32,
     pub item_name: String,
+    pub source_order_id: u64,
+    pub dest_order_id: u64,
+    pub source_order_volume_remain: u32,
+    pub dest_order_volume_remain: u32,
+    #[serde(default)]
+    pub dest_order_min_volume: u32,
+    #[serde(default)]
+    pub is_npc_trade: bool,
 
     pub buy_price: f64,  // Price at source (player buys from sell order)
     pub sell_price: f64, // Price at destination (player sells into buy order)
@@ -75,7 +83,7 @@ pub struct ArbitrageConfig {
     pub home_system: u32,
     pub min_profit: f64,
     pub min_spread: f64,
-    pub min_net_profit_pct: f64, // Minimum profitability % after taxes (e.g. 15.0%)
+    pub min_net_profit_pct: f64, // Minimum profitability % after taxes (e.g. 10.0%)
     pub broker_fee: f64,
     pub sales_tax: f64,
     pub safe_only: bool,
@@ -166,8 +174,13 @@ pub fn find_deals(
         }
 
         // 3. Test all (source_station, dest_station) pairs
-        for (&_src_station, &src_order) in &best_sell_by_station {
-            for (&_dst_station, &dst_order) in &best_buy_by_station {
+        for (&src_station, &src_order) in &best_sell_by_station {
+            for (&dst_station, &dst_order) in &best_buy_by_station {
+                // Must be cross-station trade (not same station)
+                if src_station == dst_station {
+                    continue;
+                }
+
                 // Must have positive spread
                 if dst_order.price <= src_order.price {
                     continue;
@@ -226,6 +239,11 @@ pub fn calculate_deal(
     let src_station = src_order.location_id;
     let dst_station = dst_order.location_id;
 
+    // Must be cross-station trade (not same station)
+    if src_station == dst_station {
+        return None;
+    }
+
     // Strictly exclude lowsec and nullsec: only highsec systems allowed
     if !graph.is_highsec(src_system_id) || !graph.is_highsec(dst_system_id) {
         return None;
@@ -276,6 +294,12 @@ pub fn calculate_deal(
         .min(max_by_demand);
 
     if quantity == 0 {
+        return None;
+    }
+
+    // Enforce buy order min_volume requirement:
+    // In EVE Online, if a buyer set min_volume > 1, sales of fewer units are rejected
+    if quantity < dst_order.min_volume {
         return None;
     }
 
@@ -347,39 +371,49 @@ pub fn calculate_deal(
             }
         });
 
-        let src_security = graph.security(src_system_id).unwrap_or(1.0);
-        let dst_security = graph.security(dst_system_id).unwrap_or(1.0);
+    let src_security = graph.security(src_system_id).unwrap_or(1.0);
+    let dst_security = graph.security(dst_system_id).unwrap_or(1.0);
 
-        Some(ArbitrageDeal {
-            type_id,
-            item_name: item.name.clone(),
-            buy_price,
-            sell_price,
-            spread_pct,
-            source_station_id: src_station,
-            source_system_id: src_system_id,
-            source_system_name: src_system_name,
-            source_station_name: src_station_name,
-            source_security: src_security,
-            dest_station_id: dst_station,
-            dest_system_id: dst_system_id,
-            dest_system_name: dst_system_name,
-            dest_station_name: dst_station_name,
-            dest_security: dst_security,
-            quantity,
-            volume_used,
-            capital_required,
-            gross_profit,
-            taxes_and_fees: total_taxes_and_fees,
-            net_profit,
-            net_profit_pct,
-            jumps_from_home,
-            jumps_source_dest,
-            total_jumps,
-            profit_per_jump,
-            profit_per_m3,
-        })
-    }
+    let is_npc_trade = src_order.duration == 365
+        || dst_order.duration == 365
+        || item.is_npc_trade_commodity();
+
+    Some(ArbitrageDeal {
+        type_id,
+        item_name: item.name.clone(),
+        source_order_id: src_order.order_id,
+        dest_order_id: dst_order.order_id,
+        source_order_volume_remain: src_order.volume_remain,
+        dest_order_volume_remain: dst_order.volume_remain,
+        dest_order_min_volume: dst_order.min_volume,
+        is_npc_trade,
+        buy_price,
+        sell_price,
+        spread_pct,
+        source_station_id: src_station,
+        source_system_id: src_system_id,
+        source_system_name: src_system_name,
+        source_station_name: src_station_name,
+        source_security: src_security,
+        dest_station_id: dst_station,
+        dest_system_id: dst_system_id,
+        dest_system_name: dst_system_name,
+        dest_station_name: dst_station_name,
+        dest_security: dst_security,
+        quantity,
+        volume_used,
+        capital_required,
+        gross_profit,
+        taxes_and_fees: total_taxes_and_fees,
+        net_profit,
+        net_profit_pct,
+        jumps_from_home,
+        jumps_source_dest,
+        total_jumps,
+        profit_per_jump,
+        profit_per_m3,
+    })
+}
 
 pub fn bundle_route_cargo(
     deals: &[ArbitrageDeal],
@@ -410,10 +444,22 @@ pub fn bundle_route_cargo(
         let mut total_vol = 0.0;
         let mut total_cap = 0.0;
         let mut total_profit = 0.0;
+        let mut used_orders: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut used_types: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         for deal in corridor_deals {
             if deal.volume_used <= remaining_vol && deal.capital_required <= remaining_budget {
+                if deal.source_order_id > 0 && used_orders.contains(&deal.source_order_id) {
+                    continue;
+                }
+                if used_types.contains(&deal.type_id) {
+                    continue;
+                }
                 packed_deals.push((*deal).clone());
+                if deal.source_order_id > 0 {
+                    used_orders.insert(deal.source_order_id);
+                }
+                used_types.insert(deal.type_id);
                 remaining_vol -= deal.volume_used;
                 remaining_budget -= deal.capital_required;
                 total_vol += deal.volume_used;

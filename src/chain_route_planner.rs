@@ -102,6 +102,9 @@ struct BeamCandidate {
     total_profit: f64,
     total_capital_spent: f64,
     used_deal_keys: HashSet<(u32, u64, u64)>, // (type_id, source_station_id, dest_station_id)
+    consumed_source_orders: HashMap<u64, u32>, // source_order_id -> quantity bought across route
+    consumed_dest_orders: HashMap<u64, u32>,   // dest_order_id -> quantity sold across route
+    exhausted_source_stations: HashSet<(u32, u64)>, // (type_id, source_station_id)
 }
 
 /// Calculates extra jumps if routing `from` → `waypoint` → `to` vs `from` → `to` direct.
@@ -124,20 +127,93 @@ pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe:
     (j1 + j2).saturating_sub(direct)
 }
 
+/// Result of finite-stock constrained knapsack packing across route stops and legs.
+#[derive(Debug, Clone)]
+pub struct ConstrainedPackResult {
+    pub packed: Vec<CargoSlot>,
+    pub total_volume: f64,
+    pub total_capital: f64,
+    pub total_profit: f64,
+    pub consumed_sources: HashMap<u64, u32>,
+    pub consumed_dests: HashMap<u64, u32>,
+    pub exhausted_sources: HashSet<(u32, u64)>,
+}
+
 /// Knapsack packing at a single station / system.
 /// Fills up to `remaining_vol` and `remaining_isk`.
 /// Sorts available deals by profit density (net_profit / volume_used) DESC.
+/// Enforces finite order stock and prevents multiplying source orders beyond available volume.
 pub fn knapsack_pack(
+    deals: &[&ArbitrageDeal],
+    remaining_vol: f64,
+    remaining_isk: f64,
+    used_keys: &HashSet<(u32, u64, u64)>,
+) -> (Vec<CargoSlot>, f64, f64, f64) {
+    let empty_sources = HashMap::new();
+    let empty_dests = HashMap::new();
+    let empty_exhausted = HashSet::new();
+    let res = knapsack_pack_constrained(
+        deals,
+        remaining_vol,
+        remaining_isk,
+        used_keys,
+        &empty_sources,
+        &empty_dests,
+        &empty_exhausted,
+    );
+    (res.packed, res.total_volume, res.total_capital, res.total_profit)
+}
+
+/// Extended knapsack packing that tracks and updates order volume consumption
+/// across all stops and legs of the route, ensuring no source order is over-allocated.
+pub fn knapsack_pack_constrained(
     deals: &[&ArbitrageDeal],
     mut remaining_vol: f64,
     mut remaining_isk: f64,
     used_keys: &HashSet<(u32, u64, u64)>,
-) -> (Vec<CargoSlot>, f64, f64, f64) {
+    prior_consumed_sources: &HashMap<u64, u32>,
+    prior_consumed_dests: &HashMap<u64, u32>,
+    prior_exhausted_sources: &HashSet<(u32, u64)>,
+) -> ConstrainedPackResult {
+    let mut consumed_sources = prior_consumed_sources.clone();
+    let mut consumed_dests = prior_consumed_dests.clone();
+    let mut exhausted_sources = prior_exhausted_sources.clone();
+
     let mut available: Vec<&&ArbitrageDeal> = deals
         .iter()
         .filter(|d| {
-            !used_keys.contains(&(d.type_id, d.source_station_id, d.dest_station_id))
-                && d.net_profit_pct >= 15.0
+            if used_keys.contains(&(d.type_id, d.source_station_id, d.dest_station_id))
+                || d.net_profit_pct < 10.0
+                || exhausted_sources.contains(&(d.type_id, d.source_station_id))
+            {
+                return false;
+            }
+
+            if d.source_order_id > 0 {
+                let consumed = consumed_sources.get(&d.source_order_id).copied().unwrap_or(0);
+                let total_avail = if d.source_order_volume_remain > 0 {
+                    d.source_order_volume_remain
+                } else {
+                    d.quantity
+                };
+                if consumed >= total_avail {
+                    return false;
+                }
+            }
+
+            if d.dest_order_id > 0 {
+                let consumed = consumed_dests.get(&d.dest_order_id).copied().unwrap_or(0);
+                let total_avail = if d.dest_order_volume_remain > 0 {
+                    d.dest_order_volume_remain
+                } else {
+                    d.quantity
+                };
+                if consumed >= total_avail {
+                    return false;
+                }
+            }
+
+            true
         })
         .collect();
 
@@ -158,6 +234,11 @@ pub fn knapsack_pack(
             break;
         }
 
+        // Check if this station/type was marked exhausted during packing of prior deals in this stop
+        if exhausted_sources.contains(&(deal.type_id, deal.source_station_id)) {
+            continue;
+        }
+
         let unit_vol = deal.volume_used / (deal.quantity.max(1) as f64);
         let unit_cost = deal.buy_price;
         let unit_profit = deal.net_profit / (deal.quantity.max(1) as f64);
@@ -168,9 +249,39 @@ pub fn knapsack_pack(
 
         let max_by_vol = (remaining_vol / unit_vol).floor() as u32;
         let max_by_cost = (remaining_isk / unit_cost).floor() as u32;
-        let fit_qty = max_by_vol.min(max_by_cost).min(deal.quantity);
 
-        if fit_qty == 0 {
+        let avail_source = if deal.source_order_id > 0 {
+            let consumed = consumed_sources.get(&deal.source_order_id).copied().unwrap_or(0);
+            let total_avail = if deal.source_order_volume_remain > 0 {
+                deal.source_order_volume_remain
+            } else {
+                deal.quantity
+            };
+            total_avail.saturating_sub(consumed)
+        } else {
+            deal.quantity
+        };
+
+        let avail_dest = if deal.dest_order_id > 0 {
+            let consumed = consumed_dests.get(&deal.dest_order_id).copied().unwrap_or(0);
+            let total_avail = if deal.dest_order_volume_remain > 0 {
+                deal.dest_order_volume_remain
+            } else {
+                deal.quantity
+            };
+            total_avail.saturating_sub(consumed)
+        } else {
+            deal.quantity
+        };
+
+        let fit_qty = max_by_vol
+            .min(max_by_cost)
+            .min(deal.quantity)
+            .min(avail_source)
+            .min(avail_dest);
+
+        let min_req = deal.dest_order_min_volume.max(1);
+        if fit_qty < min_req {
             continue;
         }
 
@@ -197,6 +308,28 @@ pub fn knapsack_pack(
             net_profit: slot_profit,
         });
 
+        // Update consumed supplies
+        if deal.source_order_id > 0 {
+            let c = consumed_sources.entry(deal.source_order_id).or_insert(0);
+            *c += fit_qty;
+            let total_avail = if deal.source_order_volume_remain > 0 {
+                deal.source_order_volume_remain
+            } else {
+                deal.quantity
+            };
+            if *c >= total_avail {
+                exhausted_sources.insert((deal.type_id, deal.source_station_id));
+            }
+        } else {
+            // Fallback when order ID is 0: mark station/type exhausted once packed
+            exhausted_sources.insert((deal.type_id, deal.source_station_id));
+        }
+
+        if deal.dest_order_id > 0 {
+            let c = consumed_dests.entry(deal.dest_order_id).or_insert(0);
+            *c += fit_qty;
+        }
+
         remaining_vol -= slot_vol;
         remaining_isk -= slot_cost;
         total_vol += slot_vol;
@@ -204,7 +337,21 @@ pub fn knapsack_pack(
         total_profit += slot_profit;
     }
 
-    (packed, total_vol, total_cap, total_profit)
+    // Once a stop has packed its deals, mark all packed (type_id, source_station_id) as exhausted
+    // so subsequent legs cannot re-buy from this station
+    for slot in &packed {
+        exhausted_sources.insert((slot.deal.type_id, slot.deal.source_station_id));
+    }
+
+    ConstrainedPackResult {
+        packed,
+        total_volume: total_vol,
+        total_capital: total_cap,
+        total_profit,
+        consumed_sources,
+        consumed_dests,
+        exhausted_sources,
+    }
 }
 
 /// Builds flat list of ordered waypoints and their names.
@@ -260,9 +407,15 @@ pub fn find_chain_routes(
             {
                 return false;
             }
-            d.net_profit_pct >= 15.0
-                && d.volume_used <= config.ship_max_volume
-                && d.capital_required <= config.ship_max_budget
+            if d.net_profit_pct < 10.0 {
+                return false;
+            }
+            let min_qty = d.dest_order_min_volume.max(1) as f64;
+            let unit_vol = d.volume_used / (d.quantity.max(1) as f64);
+            let unit_cost = d.buy_price;
+            let min_vol = unit_vol * min_qty;
+            let min_cost = unit_cost * min_qty;
+            min_vol <= config.ship_max_volume && min_cost <= config.ship_max_budget
         })
         .collect();
 
@@ -297,6 +450,9 @@ pub fn find_chain_routes(
         total_profit: 0.0,
         total_capital_spent: 0.0,
         used_deal_keys: HashSet::new(),
+        consumed_source_orders: HashMap::new(),
+        consumed_dest_orders: HashMap::new(),
+        exhausted_source_stations: HashSet::new(),
     };
 
     let mut beam = vec![initial_candidate];
@@ -321,19 +477,29 @@ pub fn find_chain_routes(
                 let mut pickups = Vec::new();
                 let mut candidate_cargo = candidate.cargo_on_board.clone();
                 let mut candidate_used_keys = candidate.used_deal_keys.clone();
+                let mut candidate_consumed_sources = candidate.consumed_source_orders.clone();
+                let mut candidate_consumed_dests = candidate.consumed_dest_orders.clone();
+                let mut candidate_exhausted_sources = candidate.exhausted_source_stations.clone();
                 let mut leg_capital_spent = 0.0;
 
                 // A. Check if we can pack more deals at current system going to target_dest
                 if current_rem_vol > 0.001 && current_rem_isk > 0.001 {
                     if let Some(src_deals) = deals_by_corridor.get(&(current_pos, target_dest)) {
-                        let (packed, vol, cap, _) = knapsack_pack(
+                        let pack_res = knapsack_pack_constrained(
                             src_deals,
                             current_rem_vol,
                             current_rem_isk,
                             &candidate_used_keys,
+                            &candidate_consumed_sources,
+                            &candidate_consumed_dests,
+                            &candidate_exhausted_sources,
                         );
-                        if !packed.is_empty() {
-                            for slot in &packed {
+                        candidate_consumed_sources = pack_res.consumed_sources;
+                        candidate_consumed_dests = pack_res.consumed_dests;
+                        candidate_exhausted_sources = pack_res.exhausted_sources;
+
+                        if !pack_res.packed.is_empty() {
+                            for slot in &pack_res.packed {
                                 candidate_used_keys.insert((
                                     slot.deal.type_id,
                                     slot.deal.source_station_id,
@@ -341,10 +507,10 @@ pub fn find_chain_routes(
                                 ));
                                 candidate_cargo.push(slot.clone());
                             }
-                            current_vol += vol;
-                            current_rem_vol -= vol;
-                            current_rem_isk -= cap;
-                            leg_capital_spent += cap;
+                            current_vol += pack_res.total_volume;
+                            current_rem_vol -= pack_res.total_volume;
+                            current_rem_isk -= pack_res.total_capital;
+                            leg_capital_spent += pack_res.total_capital;
                             peak_vol = peak_vol.max(current_vol);
 
                             pickups.push(PickupStop {
@@ -355,9 +521,9 @@ pub fn find_chain_routes(
                                     .unwrap_or_else(|| format!("System {}", current_pos)),
                                 jumps_from_prev: 0,
                                 detour_jumps: 0,
-                                cargo_loaded: packed,
-                                volume_loaded: vol,
-                                capital_spent: cap,
+                                cargo_loaded: pack_res.packed,
+                                volume_loaded: pack_res.total_volume,
+                                capital_spent: pack_res.total_capital,
                             });
                         }
                     }
@@ -409,20 +575,27 @@ pub fn find_chain_routes(
                                 continue;
                             }
 
-                            let (bonus_packed, b_vol, b_cap, _) = knapsack_pack(
+                            let bonus_res = knapsack_pack_constrained(
                                 &matching_deals,
                                 current_rem_vol,
                                 current_rem_isk,
                                 &candidate_used_keys,
+                                &candidate_consumed_sources,
+                                &candidate_consumed_dests,
+                                &candidate_exhausted_sources,
                             );
 
-                            if !bonus_packed.is_empty() {
+                            if !bonus_res.packed.is_empty() {
+                                candidate_consumed_sources = bonus_res.consumed_sources;
+                                candidate_consumed_dests = bonus_res.consumed_dests;
+                                candidate_exhausted_sources = bonus_res.exhausted_sources;
+
                                 let jumps_from_prev =
                                     graph.jump_count(current_pos, enroute_sys, config.safe_only);
                                 leg_jumps += jumps_from_prev;
                                 current_pos = enroute_sys;
 
-                                for slot in &bonus_packed {
+                                for slot in &bonus_res.packed {
                                     candidate_used_keys.insert((
                                         slot.deal.type_id,
                                         slot.deal.source_station_id,
@@ -430,10 +603,10 @@ pub fn find_chain_routes(
                                     ));
                                     candidate_cargo.push(slot.clone());
                                 }
-                                current_vol += b_vol;
-                                current_rem_vol -= b_vol;
-                                current_rem_isk -= b_cap;
-                                leg_capital_spent += b_cap;
+                                current_vol += bonus_res.total_volume;
+                                current_rem_vol -= bonus_res.total_volume;
+                                current_rem_isk -= bonus_res.total_capital;
+                                leg_capital_spent += bonus_res.total_capital;
                                 peak_vol = peak_vol.max(current_vol);
 
                                 pickups.push(PickupStop {
@@ -444,9 +617,9 @@ pub fn find_chain_routes(
                                         .unwrap_or_else(|| format!("System {}", enroute_sys)),
                                     jumps_from_prev,
                                     detour_jumps: detour,
-                                    cargo_loaded: bonus_packed,
-                                    volume_loaded: b_vol,
-                                    capital_spent: b_cap,
+                                    cargo_loaded: bonus_res.packed,
+                                    volume_loaded: bonus_res.total_volume,
+                                    capital_spent: bonus_res.total_capital,
                                 });
                             }
                         }
@@ -461,11 +634,13 @@ pub fn find_chain_routes(
                     let mut retained_cargo = Vec::new();
                     let mut total_profit_sold = 0.0;
                     let mut volume_freed = 0.0;
+                    let mut capital_freed = 0.0;
 
                     for slot in candidate_cargo {
                         if slot.sell_system == target_dest {
                             total_profit_sold += slot.net_profit;
                             volume_freed += slot.volume;
+                            capital_freed += slot.capital;
                             cargo_sold.push(slot);
                         } else {
                             retained_cargo.push(slot);
@@ -495,7 +670,7 @@ pub fn find_chain_routes(
                         let new_total_jumps = candidate.total_jumps + leg_jumps.max(1);
                         let new_total_profit = candidate.total_profit + total_profit_sold;
                         let new_rem_vol = (current_rem_vol + volume_freed).min(config.ship_max_volume);
-                        let new_rem_isk = (current_rem_isk + total_profit_sold).min(config.ship_max_budget);
+                        let new_rem_isk = (current_rem_isk + capital_freed + total_profit_sold).min(config.ship_max_budget);
                         let new_curr_vol = (current_vol - volume_freed).max(0.0);
 
                         let new_cand = BeamCandidate {
@@ -510,6 +685,9 @@ pub fn find_chain_routes(
                             total_profit: new_total_profit,
                             total_capital_spent: candidate.total_capital_spent + leg_capital_spent,
                             used_deal_keys: candidate_used_keys,
+                            consumed_source_orders: candidate_consumed_sources,
+                            consumed_dest_orders: candidate_consumed_dests,
+                            exhausted_source_stations: candidate_exhausted_sources,
                         };
 
                         next_beam.push(new_cand);
@@ -523,11 +701,17 @@ pub fn find_chain_routes(
             let mut corridor_candidates: Vec<((u32, u32), f64, u32)> = Vec::new();
 
             for (&(src_sys, dst_sys), corr_deals) in &deals_by_corridor {
-                // Must have at least one unused deal
+                // Must have at least one usable deal (not used, not exhausted)
                 let has_unused = corr_deals.iter().any(|d| {
                     !candidate
                         .used_deal_keys
                         .contains(&(d.type_id, d.source_station_id, d.dest_station_id))
+                        && !candidate
+                            .exhausted_source_stations
+                            .contains(&(d.type_id, d.source_station_id))
+                        && (d.source_order_id == 0
+                            || *candidate.consumed_source_orders.get(&d.source_order_id).unwrap_or(&0)
+                                < d.source_order_volume_remain.max(d.quantity))
                 });
                 if !has_unused {
                     continue;
@@ -550,6 +734,12 @@ pub fn find_chain_routes(
                         !candidate
                             .used_deal_keys
                             .contains(&(d.type_id, d.source_station_id, d.dest_station_id))
+                            && !candidate
+                                .exhausted_source_stations
+                                .contains(&(d.type_id, d.source_station_id))
+                            && (d.source_order_id == 0
+                                || *candidate.consumed_source_orders.get(&d.source_order_id).unwrap_or(&0)
+                                    < d.source_order_volume_remain.max(d.quantity))
                     })
                     .map(|d| d.net_profit)
                     .sum();
@@ -571,18 +761,29 @@ pub fn find_chain_routes(
                 };
 
                 let mut candidate_used_keys = candidate.used_deal_keys.clone();
-                let (primary_packed, p_vol, p_cap, _p_profit) = knapsack_pack(
+                let mut candidate_consumed_sources = candidate.consumed_source_orders.clone();
+                let mut candidate_consumed_dests = candidate.consumed_dest_orders.clone();
+                let mut candidate_exhausted_sources = candidate.exhausted_source_stations.clone();
+
+                let primary_res = knapsack_pack_constrained(
                     src_deals,
                     candidate.remaining_vol,
                     candidate.remaining_isk,
                     &candidate_used_keys,
+                    &candidate_consumed_sources,
+                    &candidate_consumed_dests,
+                    &candidate_exhausted_sources,
                 );
 
-                if primary_packed.is_empty() {
+                if primary_res.packed.is_empty() {
                     continue;
                 }
 
-                for slot in &primary_packed {
+                candidate_consumed_sources = primary_res.consumed_sources;
+                candidate_consumed_dests = primary_res.consumed_dests;
+                candidate_exhausted_sources = primary_res.exhausted_sources;
+
+                for slot in &primary_res.packed {
                     candidate_used_keys.insert((
                         slot.deal.type_id,
                         slot.deal.source_station_id,
@@ -594,11 +795,11 @@ pub fn find_chain_routes(
                     graph.jump_count(candidate.current_system, src_sys, config.safe_only);
                 let mut leg_jumps = jumps_to_src;
                 let mut current_pos = src_sys;
-                let mut current_vol = p_vol;
-                let mut current_rem_vol = candidate.remaining_vol - p_vol;
-                let mut current_rem_isk = candidate.remaining_isk - p_cap;
+                let mut current_vol = primary_res.total_volume;
+                let mut current_rem_vol = candidate.remaining_vol - primary_res.total_volume;
+                let mut current_rem_isk = candidate.remaining_isk - primary_res.total_capital;
                 let mut peak_vol = candidate.peak_volume_m3.max(current_vol);
-                let mut leg_capital_spent = p_cap;
+                let mut leg_capital_spent = primary_res.total_capital;
 
                 let mut pickups = vec![PickupStop {
                     system_id: src_sys,
@@ -608,12 +809,12 @@ pub fn find_chain_routes(
                         .unwrap_or_else(|| format!("System {}", src_sys)),
                     jumps_from_prev: jumps_to_src,
                     detour_jumps: 0,
-                    cargo_loaded: primary_packed.clone(),
-                    volume_loaded: p_vol,
-                    capital_spent: p_cap,
+                    cargo_loaded: primary_res.packed.clone(),
+                    volume_loaded: primary_res.total_volume,
+                    capital_spent: primary_res.total_capital,
                 }];
 
-                let mut candidate_cargo = primary_packed;
+                let mut candidate_cargo = primary_res.packed;
 
                 // En-route bonus pickups between src_sys and dst_sys (only if cargo hold has room)
                 if current_rem_vol > 0.001 && current_rem_isk > 0.001 {
@@ -650,20 +851,27 @@ pub fn find_chain_routes(
                             continue;
                         }
 
-                        let (b_packed, b_vol, b_cap, _) = knapsack_pack(
+                        let b_res = knapsack_pack_constrained(
                             &matching_deals,
                             current_rem_vol,
                             current_rem_isk,
                             &candidate_used_keys,
+                            &candidate_consumed_sources,
+                            &candidate_consumed_dests,
+                            &candidate_exhausted_sources,
                         );
 
-                        if !b_packed.is_empty() {
+                        if !b_res.packed.is_empty() {
+                            candidate_consumed_sources = b_res.consumed_sources;
+                            candidate_consumed_dests = b_res.consumed_dests;
+                            candidate_exhausted_sources = b_res.exhausted_sources;
+
                             let jumps_from_prev =
                                 graph.jump_count(current_pos, enroute_sys, config.safe_only);
                             leg_jumps += jumps_from_prev;
                             current_pos = enroute_sys;
 
-                            for slot in &b_packed {
+                            for slot in &b_res.packed {
                                 candidate_used_keys.insert((
                                     slot.deal.type_id,
                                     slot.deal.source_station_id,
@@ -671,10 +879,10 @@ pub fn find_chain_routes(
                                 ));
                                 candidate_cargo.push(slot.clone());
                             }
-                            current_vol += b_vol;
-                            current_rem_vol -= b_vol;
-                            current_rem_isk -= b_cap;
-                            leg_capital_spent += b_cap;
+                            current_vol += b_res.total_volume;
+                            current_rem_vol -= b_res.total_volume;
+                            current_rem_isk -= b_res.total_capital;
+                            leg_capital_spent += b_res.total_capital;
                             peak_vol = peak_vol.max(current_vol);
 
                             pickups.push(PickupStop {
@@ -685,9 +893,9 @@ pub fn find_chain_routes(
                                     .unwrap_or_else(|| format!("System {}", enroute_sys)),
                                 jumps_from_prev,
                                 detour_jumps: detour,
-                                cargo_loaded: b_packed,
-                                volume_loaded: b_vol,
-                                capital_spent: b_cap,
+                                cargo_loaded: b_res.packed,
+                                volume_loaded: b_res.total_volume,
+                                capital_spent: b_res.total_capital,
                             });
                         }
                     }
@@ -704,11 +912,13 @@ pub fn find_chain_routes(
                 let mut retained_cargo = Vec::new();
                 let mut total_profit_sold = 0.0;
                 let mut volume_freed = 0.0;
+                let mut capital_freed = 0.0;
 
                 for slot in candidate_cargo {
                     if slot.sell_system == dst_sys {
                         total_profit_sold += slot.net_profit;
                         volume_freed += slot.volume;
+                        capital_freed += slot.capital;
                         cargo_sold.push(slot);
                     } else {
                         retained_cargo.push(slot);
@@ -745,7 +955,7 @@ pub fn find_chain_routes(
                 let new_total_jumps = candidate.total_jumps + leg_jumps.max(1);
                 let new_total_profit = candidate.total_profit + total_profit_sold;
                 let new_rem_vol = (current_rem_vol + volume_freed).min(config.ship_max_volume);
-                let new_rem_isk = (current_rem_isk + total_profit_sold).min(config.ship_max_budget);
+                let new_rem_isk = (current_rem_isk + capital_freed + total_profit_sold).min(config.ship_max_budget);
                 let new_curr_vol = (current_vol - volume_freed).max(0.0);
 
                 let new_cand = BeamCandidate {
@@ -760,6 +970,9 @@ pub fn find_chain_routes(
                     total_profit: new_total_profit,
                     total_capital_spent: candidate.total_capital_spent + leg_capital_spent,
                     used_deal_keys: candidate_used_keys,
+                    consumed_source_orders: candidate_consumed_sources,
+                    consumed_dest_orders: candidate_consumed_dests,
+                    exhausted_source_stations: candidate_exhausted_sources,
                 };
 
                 next_beam.push(new_cand);

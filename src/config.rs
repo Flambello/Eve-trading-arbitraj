@@ -84,7 +84,7 @@ pub struct FilterConfig {
 }
 
 fn default_min_net_profit_pct() -> f64 {
-    15.0
+    10.0
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -131,7 +131,7 @@ impl Default for UserConfig {
             filters: FilterConfig {
                 min_profit_isk: 1_000_000.0,
                 min_spread_pct: 3.0,
-                min_net_profit_pct: 15.0, // Enforced minimum 15% after taxes
+                min_net_profit_pct: 10.0, // Enforced minimum 10% after taxes
             },
             fees: FeeConfig {
                 broker_fee_pct: 3.0,

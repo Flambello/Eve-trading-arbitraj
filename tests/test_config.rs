@@ -56,10 +56,10 @@ fn test_user_config_defaults_and_invariants() {
     assert!(cfg.scan.sound_alerts, "Sound alerts must default to true");
     assert_eq!(cfg.scan.sound_min_roi_pct, 100.0, "Sound alert threshold must default to 100.0%");
 
-    // Filter invariants: 15% minimum net ROI
+    // Filter invariants: 10% minimum net ROI
     assert_eq!(
-        cfg.filters.min_net_profit_pct, 15.0,
-        "Enforced minimum ROI must default to 15.0%"
+        cfg.filters.min_net_profit_pct, 10.0,
+        "Enforced minimum ROI must default to 10.0%"
     );
     assert!(cfg.filters.min_profit_isk >= 1_000_000.0);
     assert!(cfg.filters.min_spread_pct >= 3.0);

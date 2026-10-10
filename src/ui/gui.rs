@@ -2,13 +2,40 @@ use crate::arbitrage::{bundle_route_cargo, find_deals, ArbitrageConfig, Arbitrag
 use crate::config::{BIG_HAULER, SMALL_HAULER};
 use crate::esi::{fetch_markets, EsiClient};
 use crate::graph::SystemGraph;
-use crate::route_planner::{plan_route, TradeRoute};
+use crate::route_planner::{plan_route, RouteStop, TradeRoute};
 use crate::sde::SdeLoader;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
+use egui_extras::{Column, TableBuilder};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum BreakpointTier {
+    Compact,    // < 1000px: laptops / compact window
+    Standard,   // 1000px - 1440px: normal 1080p windowed
+    Widescreen, // 1440px - 2100px: 1080p fullscreen, 1440p
+    Ultrawide,  // >= 2100px: 1440p fullscreen, 4K, ultrawides
+}
+
+impl BreakpointTier {
+    pub fn from_width(w: f32) -> Self {
+        if w < 1000.0 {
+            BreakpointTier::Compact
+        } else if w < 1440.0 {
+            BreakpointTier::Standard
+        } else if w < 2100.0 {
+            BreakpointTier::Widescreen
+        } else {
+            BreakpointTier::Ultrawide
+        }
+    }
+
+    pub fn is_wide(self) -> bool {
+        matches!(self, BreakpointTier::Widescreen | BreakpointTier::Ultrawide)
+    }
+}
 
 #[derive(PartialEq, Clone, Copy)]
 enum ActiveTab {
@@ -67,16 +94,127 @@ enum ScanResult {
     Error(String),
 }
 
+#[derive(Clone, Debug)]
+pub struct StartupProgress {
+    pub stage_index: usize,
+    pub total_stages: usize,
+    pub stage_name: String,
+    pub detail: String,
+    pub percent: f32,
+    pub completed: bool,
+    pub error: Option<String>,
+}
+
+impl Default for StartupProgress {
+    fn default() -> Self {
+        Self {
+            stage_index: 1,
+            total_stages: 5,
+            stage_name: "Universe Initialization".to_string(),
+            detail: "Booting New Eden trading intelligence core...".to_string(),
+            percent: 0.05,
+            completed: false,
+            error: None,
+        }
+    }
+}
+
+pub enum StartupMsg {
+    Progress(StartupProgress),
+    Ready {
+        sde: Arc<SdeLoader>,
+        graph: Arc<SystemGraph>,
+        esi: Arc<EsiClient>,
+        home_system_name: String,
+        scan_regions: Vec<u32>,
+        deals: Vec<ArbitrageDeal>,
+        manifests: Vec<TradeCorridorManifest>,
+        route: Option<TradeRoute>,
+    },
+    Error(String),
+}
+
+const TIPS: &[&str] = &[
+    "💡 Minimum 10.0% net ROI is strictly enforced across every arbitrage deal after taxes and broker fees.",
+    "💡 Big Hauler packs up to 60,000 m³ / 500M ISK, while Small Hauler provides an agile 30,000 m³ / 50M ISK profile.",
+    "💡 Safe highsec routing automatically bypasses dangerous solar systems with security status below 0.45.",
+    "💡 Multi-item knapsack manifests bundle multiple high-margin items along identical corridors into single hauler runs.",
+    "💡 Dead-end systems and remote highsec detours with ≥40% net ROI are badged with 🔥 for maximum profit yields.",
+    "💡 You can press F11 anytime to toggle fullscreen, or use Ctrl + / - to scale the interface dynamically.",
+    "💡 Deepest order book liquidity is found across the 5 trade hubs: Jita, Amarr, Dodixie, Rens, and Hek.",
+];
+
 #[allow(dead_code)]
 enum ChainSearchResult {
     Success(Vec<crate::chain_route_planner::ChainRoute>),
     Error(String),
 }
 
+
+/// Helper to ensure clipboard contents are copied both via context and output_mut across all Linux windowing backends
+fn copy_to_clipboard(ui: &mut egui::Ui, text: impl Into<String>) {
+    let s = text.into();
+    ui.ctx().copy_text(s.clone());
+    ui.output_mut(|o| o.copied_text = s);
+}
+
+/// Export a slice of deals to standard CSV format
+fn export_deals_to_csv(deals: &[(usize, &ArbitrageDeal)]) -> String {
+    let mut out = String::from("Item,Buy Station,Buy System,Buy Price,Sell Station,Sell System,Sell Price,Quantity,Volume_m3,Capital_Required,Net_Profit,Net_ROI_Pct,Total_Jumps,Profit_Per_Jump,Profit_Per_m3\n");
+    for (_, d) in deals {
+        out.push_str(&format!(
+            "\"{}\",\"{}\",\"{}\",{:.2},\"{}\",\"{}\",{:.2},{},{:.2},{:.2},{:.2},{:.2},{},{:.2},{:.2}\n",
+            d.item_name.replace('"', "\"\""),
+            d.source_station_name.replace('"', "\"\""),
+            d.source_system_name.replace('"', "\"\""),
+            d.buy_price,
+            d.dest_station_name.replace('"', "\"\""),
+            d.dest_system_name.replace('"', "\"\""),
+            d.sell_price,
+            d.quantity,
+            d.volume_used,
+            d.capital_required,
+            d.net_profit,
+            d.net_profit_pct,
+            d.total_jumps,
+            d.profit_per_jump,
+            d.profit_per_m3,
+        ));
+    }
+    out
+}
+
+/// Export packed manifests and items to CSV format
+fn export_manifests_to_csv(manifests: &[TradeCorridorManifest]) -> String {
+    let mut out = String::from("Corridor,Source Station,Source System,Dest Station,Dest System,Total Volume m3,Total Capital Required,Total Net Profit,Item,Quantity,Buy Price,Sell Price,Item Net Profit,Item Net ROI\n");
+    for (m_idx, m) in manifests.iter().enumerate() {
+        for d in &m.deals {
+            out.push_str(&format!(
+                "{},\"{}\",\"{}\",\"{}\",\"{}\",{:.2},{:.2},{:.2},\"{}\",{},{:.2},{:.2},{:.2},{:.2}\n",
+                m_idx + 1,
+                m.source_station_name.replace('"', "\"\""),
+                m.source_system_name.replace('"', "\"\""),
+                m.dest_station_name.replace('"', "\"\""),
+                m.dest_system_name.replace('"', "\"\""),
+                m.total_volume_used,
+                m.total_capital_required,
+                m.total_net_profit,
+                d.item_name.replace('"', "\"\""),
+                d.quantity,
+                d.buy_price,
+                d.sell_price,
+                d.net_profit,
+                d.net_profit_pct,
+            ));
+        }
+    }
+    out
+}
+
 pub struct DesktopApp {
-    sde: Arc<SdeLoader>,
-    graph: Arc<SystemGraph>,
-    esi: Arc<EsiClient>,
+    sde: Option<Arc<SdeLoader>>,
+    graph: Option<Arc<SystemGraph>>,
+    esi: Option<Arc<EsiClient>>,
 
     // Controls
     ship_is_big: bool,
@@ -89,6 +227,11 @@ pub struct DesktopApp {
     broker_fee_pct: f64,
     sales_tax_pct: f64,
     max_route_stops: usize,
+
+    // Vessel & Anti-Gank Protection Sizing
+    pub custom_cargo_vol: f64,
+    pub custom_budget_isk: f64,
+    pub use_custom_ship: bool,
 
     // Auto-Refresh & Audio Alerts (5m cadence matching CCP ESI order book cache)
     pub auto_refresh: bool,
@@ -111,6 +254,7 @@ pub struct DesktopApp {
     sort_descending: bool,
     min_profit_filter_m: f64,
     max_jumps_filter: u32,
+    pub hide_npc_trades: bool,
 
     // Active state
     tab: ActiveTab,
@@ -142,6 +286,13 @@ pub struct DesktopApp {
     pub is_fullscreen: bool,
     pub dossier_side_panel: bool,
     pub compact_kpi: bool,
+
+    // ── Startup & Animated Splash Screen ─────────────────────────
+    pub is_startup: bool,
+    pub startup_progress: StartupProgress,
+    pub startup_rx: Option<Receiver<StartupMsg>>,
+    pub startup_tip_index: usize,
+    pub startup_last_tip: Instant,
 }
 
 impl DesktopApp {
@@ -169,7 +320,7 @@ impl DesktopApp {
         let initial_status = if initial_deals.is_empty() {
             "Ready. Configure ship & location, then click SCAN MARKET.".to_string()
         } else {
-            format!("Loaded {} profitable arbitrage deals (ROI >= 15.0%).", initial_deals.len())
+            format!("Loaded {} profitable arbitrage deals (ROI >= 10.0%).", initial_deals.len())
         };
 
         let has_forge = false;
@@ -183,21 +334,21 @@ impl DesktopApp {
 
         let mut initial_alerted_keys = std::collections::HashSet::new();
         for d in &initial_deals {
-            if d.net_profit_pct >= initial_sound_min_roi.max(15.0) {
+            if d.net_profit_pct >= initial_sound_min_roi.max(10.0) {
                 initial_alerted_keys.insert((d.type_id, d.source_station_id, d.dest_station_id));
             }
         }
 
         Self {
-            sde,
-            graph,
-            esi,
+            sde: Some(sde),
+            graph: Some(graph),
+            esi: Some(esi),
             ship_is_big: initial_ship_is_big,
             home_system: initial_home_system,
             include_adjacent_regions: true,
             safe_only: initial_safe_only,
             npc_stations_only: initial_npc_stations_only,
-            min_roi_pct: initial_min_roi.max(15.0),
+            min_roi_pct: initial_min_roi.max(10.0),
             min_profit_isk: if initial_min_profit <= 0.0 { 1_000_000.0 } else { initial_min_profit },
             broker_fee_pct: 3.0,
             sales_tax_pct: 8.0,
@@ -221,6 +372,7 @@ impl DesktopApp {
             sort_descending: true,
             min_profit_filter_m: 0.0,
             max_jumps_filter: 0,
+            hide_npc_trades: false,
 
             tab: ActiveTab::Deals,
             is_scanning: false,
@@ -243,10 +395,132 @@ impl DesktopApp {
             chain_tx,
             chain_flowchart_split: true,
 
+            custom_cargo_vol: 60_000.0,
+            custom_budget_isk: 500_000_000.0,
+            use_custom_ship: false,
+
             ui_scale: 1.0,
             is_fullscreen: false,
             dossier_side_panel: true,
             compact_kpi: false,
+
+            is_startup: false,
+            startup_progress: StartupProgress {
+                stage_index: 5,
+                total_stages: 5,
+                stage_name: "Ready".to_string(),
+                detail: "Startup complete".to_string(),
+                percent: 1.0,
+                completed: true,
+                error: None,
+            },
+            startup_rx: None,
+            startup_tip_index: 0,
+            startup_last_tip: Instant::now(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_loading(
+        initial_ship_is_big: bool,
+        initial_home_system: String,
+        initial_safe_only: bool,
+        initial_npc_stations_only: bool,
+        initial_min_roi: f64,
+        initial_min_profit: f64,
+        initial_auto_refresh: bool,
+        initial_sound_alerts: bool,
+        initial_sound_min_roi: f64,
+        startup_rx: Receiver<StartupMsg>,
+    ) -> Self {
+        let (tx, rx) = channel();
+        let (chain_tx, chain_rx) = channel();
+
+        Self {
+            sde: None,
+            graph: None,
+            esi: None,
+            ship_is_big: initial_ship_is_big,
+            home_system: initial_home_system,
+            include_adjacent_regions: true,
+            safe_only: initial_safe_only,
+            npc_stations_only: initial_npc_stations_only,
+            min_roi_pct: initial_min_roi.max(10.0),
+            min_profit_isk: if initial_min_profit <= 0.0 { 1_000_000.0 } else { initial_min_profit },
+            broker_fee_pct: 3.0,
+            sales_tax_pct: 8.0,
+            max_route_stops: 5,
+
+            auto_refresh: initial_auto_refresh,
+            auto_refresh_secs: 300,
+            last_scan_completed: Some(Instant::now()),
+            sound_alerts_enabled: initial_sound_alerts,
+            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 { 100.0 } else { initial_sound_min_roi },
+            alerted_deal_keys: std::collections::HashSet::new(),
+
+            region_the_forge: false,
+            region_domain: false,
+            region_sinq_laison: false,
+            region_heimatar: false,
+            region_metropolis: false,
+
+            filter_item_name: String::new(),
+            sort_by: DealSortBy::ProfitPerJump,
+            sort_descending: true,
+            min_profit_filter_m: 0.0,
+            max_jumps_filter: 0,
+            hide_npc_trades: false,
+
+            tab: ActiveTab::Deals,
+            is_scanning: false,
+            status_text: "Initializing neural core...".to_string(),
+            deals: Vec::new(),
+            manifests: Vec::new(),
+            route: None,
+            selected_deal_idx: None,
+            toast: None,
+            rx,
+            tx,
+
+            chain_max_legs: 4,
+            chain_detour_enabled: true,
+            chain_max_detour: 2,
+            chain_is_running: false,
+            chain_results: Vec::new(),
+            chain_selected_idx: None,
+            chain_rx,
+            chain_tx,
+            chain_flowchart_split: true,
+
+            custom_cargo_vol: 60_000.0,
+            custom_budget_isk: 500_000_000.0,
+            use_custom_ship: false,
+
+            ui_scale: 1.0,
+            is_fullscreen: false,
+            dossier_side_panel: true,
+            compact_kpi: false,
+
+            is_startup: true,
+            startup_progress: StartupProgress::default(),
+            startup_rx: Some(startup_rx),
+            startup_tip_index: 0,
+            startup_last_tip: Instant::now(),
+        }
+    }
+
+
+    pub fn current_ship(&self) -> crate::config::ShipProfile {
+        if self.use_custom_ship {
+            crate::config::ShipProfile {
+                name: "Custom / Anti-Gank Profile",
+                max_volume: self.custom_cargo_vol.max(10.0),
+                max_budget: self.custom_budget_isk.max(100_000.0),
+            }
+        } else if self.ship_is_big {
+            BIG_HAULER
+        } else {
+            SMALL_HAULER
         }
     }
 
@@ -257,12 +531,14 @@ impl DesktopApp {
     fn selected_regions(&self) -> Vec<u32> {
         let mut set = std::collections::HashSet::new();
 
-        if let Some(home_id) = self.sde.get_system_id(&self.home_system) {
-            if let Some(home_reg) = self.sde.get_system_region(home_id) {
-                set.insert(home_reg);
-                if self.include_adjacent_regions {
-                    for adj in self.graph.adjacent_regions(home_reg, self.safe_only) {
-                        set.insert(adj);
+        if let (Some(sde), Some(graph)) = (&self.sde, &self.graph) {
+            if let Some(home_id) = sde.get_system_id(&self.home_system) {
+                if let Some(home_reg) = sde.get_system_region(home_id) {
+                    set.insert(home_reg);
+                    if self.include_adjacent_regions {
+                        for adj in graph.adjacent_regions(home_reg, self.safe_only) {
+                            set.insert(adj);
+                        }
                     }
                 }
             }
@@ -288,24 +564,24 @@ impl DesktopApp {
             return;
         }
 
+        let (Some(sde), Some(graph), Some(esi)) = (&self.sde, &self.graph, &self.esi) else {
+            return;
+        };
+
         self.is_scanning = true;
         self.status_text = "Connecting to CCP ESI API & streaming market orders...".to_string();
 
-        let sde = Arc::clone(&self.sde);
-        let graph = Arc::clone(&self.graph);
-        let esi = Arc::clone(&self.esi);
+        let sde = Arc::clone(sde);
+        let graph = Arc::clone(graph);
+        let esi = Arc::clone(esi);
         let tx = self.tx.clone();
 
-        let ship = if self.ship_is_big {
-            BIG_HAULER
-        } else {
-            SMALL_HAULER
-        };
+        let ship = self.current_ship();
 
         let home_name = self.home_system.clone();
         let safe_only = self.safe_only;
         let npc_stations_only = self.npc_stations_only;
-        let min_roi = self.min_roi_pct.max(15.0); // Strict 15% invariant
+        let min_roi = self.min_roi_pct.max(10.0); // Strict 10% invariant
         let min_profit = self.min_profit_isk;
         let broker_fee = self.broker_fee_pct;
         let sales_tax = self.sales_tax_pct;
@@ -369,6 +645,9 @@ impl DesktopApp {
                 let manifests = bundle_route_cargo(&deals, ship);
                 let route = plan_route(&deals, ship, home_id, &graph, safe_only, max_stops);
 
+                // Save updated ESI cache to disk
+                let _ = esi.save_cache().await;
+
                 let _ = tx.send(ScanResult::Success {
                     deals,
                     manifests,
@@ -383,6 +662,62 @@ impl DesktopApp {
 
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Startup splash handling
+        if self.is_startup {
+            let mut startup_complete = None;
+            if let Some(ref rx) = self.startup_rx {
+                while let Ok(msg) = rx.try_recv() {
+                    match msg {
+                        StartupMsg::Progress(prog) => {
+                            self.startup_progress = prog;
+                            ctx.request_repaint();
+                        }
+                        StartupMsg::Ready {
+                            sde,
+                            graph,
+                            esi,
+                            home_system_name,
+                            scan_regions,
+                            deals,
+                            manifests,
+                            route,
+                        } => {
+                            startup_complete = Some((sde, graph, esi, home_system_name, scan_regions, deals, manifests, route));
+                            break;
+                        }
+                        StartupMsg::Error(err) => {
+                            self.startup_progress.error = Some(err);
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+            }
+
+            if let Some((sde, graph, esi, home_system_name, _scan_regions, deals, manifests, route)) = startup_complete {
+                self.sde = Some(sde);
+                self.graph = Some(graph);
+                self.esi = Some(esi);
+                self.home_system = home_system_name;
+                self.deals = deals;
+                self.manifests = manifests;
+                self.route = route;
+                self.is_startup = false;
+                self.startup_rx = None;
+                self.status_text = format!(
+                    "✔ Ready! Loaded {} profitable trade deals across {} packed manifests.",
+                    self.deals.len(),
+                    self.manifests.len()
+                );
+                ctx.request_repaint();
+            }
+
+            if self.is_startup {
+                ctx.request_repaint_after(Duration::from_millis(16));
+                self.render_splash_screen(ctx);
+                return;
+            }
+        }
+
         // Poll worker thread
         if let Ok(res) = self.rx.try_recv() {
             self.is_scanning = false;
@@ -523,8 +858,10 @@ impl eframe::App for DesktopApp {
         visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(14, 19, 38);
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(28, 40, 65));
         visuals.widgets.inactive.bg_fill = Color32::from_rgb(18, 26, 48);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 240));
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(28, 40, 72);
         visuals.widgets.active.bg_fill = Color32::from_rgb(0, 160, 220);
+        visuals.slider_trailing_fill = true;
         ctx.set_visuals(visuals);
         // Global rounded corners + tighter spacing for premium feel
         let mut style = (*ctx.style()).clone();
@@ -533,6 +870,7 @@ impl eframe::App for DesktopApp {
         style.visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
         style.visuals.widgets.active.rounding = egui::Rounding::same(4.0);
         style.spacing.item_spacing = Vec2::new(8.0, 5.0);
+        style.spacing.slider_rail_height = 5.0;
         ctx.set_style(style);
 
         // Top Control and Navigation Panel
@@ -933,13 +1271,30 @@ impl DesktopApp {
         ui.horizontal_wrapped(|ui| {
             // Ship Selector
             ui.label(RichText::new("SHIP PROFILE:").size(12.0).color(Color32::from_rgb(150, 180, 220)).strong());
-            let big_label = if self.ship_is_big { "✔ Big Hauler (60k m³ · 500M)" } else { "Big Hauler (60k m³ · 500M)" };
-            if ui.selectable_label(self.ship_is_big, RichText::new(big_label).strong()).clicked() {
-                self.ship_is_big = true;
-            }
-            let small_label = if !self.ship_is_big { "✔ Small Hauler (30k m³ · 50M)" } else { "Small Hauler (30k m³ · 50M)" };
-            if ui.selectable_label(!self.ship_is_big, RichText::new(small_label).strong()).clicked() {
-                self.ship_is_big = false;
+            if self.use_custom_ship {
+                let custom_label = format!("✔ Custom ({:.0}k m³ · {:.0}M)", self.custom_cargo_vol / 1000.0, self.custom_budget_isk / 1_000_000.0);
+                if ui.selectable_label(true, RichText::new(custom_label).color(Color32::from_rgb(0, 220, 255)).strong()).clicked() {
+                    self.tab = ActiveTab::Settings;
+                }
+                if ui.small_button("⚙ Edit").on_hover_text("Configure ship cargo hold & anti-gank ISK limit in Settings").clicked() {
+                    self.tab = ActiveTab::Settings;
+                }
+                if ui.small_button("↺ Presets").on_hover_text("Switch back to Standard Hauler presets").clicked() {
+                    self.use_custom_ship = false;
+                }
+            } else {
+                let big_label = if self.ship_is_big { "✔ Big Hauler (60k m³ · 500M)" } else { "Big Hauler (60k m³ · 500M)" };
+                if ui.selectable_label(self.ship_is_big, RichText::new(big_label).strong()).clicked() {
+                    self.ship_is_big = true;
+                }
+                let small_label = if !self.ship_is_big { "✔ Small Hauler (30k m³ · 50M)" } else { "Small Hauler (30k m³ · 50M)" };
+                if ui.selectable_label(!self.ship_is_big, RichText::new(small_label).strong()).clicked() {
+                    self.ship_is_big = false;
+                }
+                if ui.small_button("⚙ Custom").on_hover_text("Configure custom cargo hold & anti-gank ISK limit in Settings").clicked() {
+                    self.use_custom_ship = true;
+                    self.tab = ActiveTab::Settings;
+                }
             }
 
             ui.separator();
@@ -972,14 +1327,14 @@ impl DesktopApp {
             }
 
             // System detected status pill
-            let home_id_opt = self.sde.get_system_id(&self.home_system);
+            let home_id_opt = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
             if let Some(hid) = home_id_opt {
-                let sec = self.graph.security(hid).unwrap_or(1.0);
+                let sec = self.graph.as_ref().and_then(|g| g.security(hid)).unwrap_or(1.0);
                 let sec_col = security_color(sec);
-                let reg_name = self.sde.get_system_region(hid)
-                    .and_then(|r| self.sde.get_region_name(r))
+                let reg_name = self.sde.as_ref().and_then(|s| s.get_system_region(hid))
+                    .and_then(|r| self.sde.as_ref().and_then(|s| s.get_region_name(r)))
                     .unwrap_or_else(|| "Unknown".to_string());
-                let sys_name = self.sde.get_system_name(hid).unwrap_or_default();
+                let sys_name = self.sde.as_ref().and_then(|s| s.get_system_name(hid)).unwrap_or_default();
                 ui.label(
                     RichText::new(format!("[{:.1}] {} · {}", sec, sys_name, reg_name))
                         .size(11.0)
@@ -1060,17 +1415,34 @@ impl DesktopApp {
             ui.add(
                 egui::DragValue::new(&mut self.min_roi_pct)
                     .speed(0.5)
-                    .range(15.0..=100.0)
+                    .range(10.0..=100.0)
                     .suffix("%"),
             );
-            ui.label(RichText::new("(≥15% Enforced)").size(11.0).color(Color32::GRAY));
+            ui.label(RichText::new("(≥10% Enforced)").size(11.0).color(Color32::GRAY));
+
+            // Right-aligned status anchor on widescreen to prevent visual emptiness
+            if ui.available_width() > 220.0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("● Tranquility Live")
+                            .size(11.0)
+                            .color(Color32::from_rgb(0, 220, 150))
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new("ESI v1")
+                            .size(10.5)
+                            .color(Color32::from_rgb(120, 150, 190)),
+                    );
+                });
+            }
         });
 
         // Autocomplete suggestion strip when typing an incomplete system name
-        let home_id_opt = self.sde.get_system_id(&self.home_system);
+        let home_id_opt = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
         let trimmed_query = self.home_system.trim();
         if home_id_opt.is_none() && trimmed_query.len() >= 2 {
-            let suggestions = self.sde.search_systems(trimmed_query, 6);
+            let suggestions = self.sde.as_ref().map(|s| s.search_systems(trimmed_query, 6)).unwrap_or_default();
             if !suggestions.is_empty() {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -1102,12 +1474,24 @@ impl DesktopApp {
         let top_profit = self.deals.first().map(|d| d.net_profit).unwrap_or(0.0);
         let top_ppj = self.deals.first().map(|d| d.profit_per_jump).unwrap_or(0.0);
         let deal_count = self.deals.len();
+        let top_roi = self.deals.iter().map(|d| d.net_profit_pct).fold(0.0_f64, f64::max);
+        let top_density = self.deals.iter().map(|d| d.profit_per_m3).fold(0.0_f64, f64::max);
+        let current_ship = self.current_ship();
+        let ship_name = if self.use_custom_ship {
+            format!("Custom ({:.0}k m³)", current_ship.max_volume / 1000.0)
+        } else if self.ship_is_big {
+            "Big Hauler (60k m³)".to_string()
+        } else {
+            "Small Hauler (30k m³)".to_string()
+        };
 
-        let is_compact = self.compact_kpi || ui.available_width() < 920.0;
+        let avail_w = ui.available_width();
+        let is_compact = self.compact_kpi || avail_w < 950.0;
+        let is_widescreen = avail_w >= 1350.0;
 
         if is_compact {
             ui.horizontal_wrapped(|ui| {
-                // Emerald pill
+                // Pill 1: Best Profit
                 egui::Frame::none()
                     .fill(Color32::from_rgba_unmultiplied(0, 190, 110, 24))
                     .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 155, 85)))
@@ -1118,7 +1502,7 @@ impl DesktopApp {
                         ui.label(RichText::new(format!("+{:.2}M ISK", top_profit / 1_000_000.0)).size(12.5).color(Color32::from_rgb(0, 255, 150)).strong());
                     });
 
-                // Gold pill
+                // Pill 2: Top Profit/Jump
                 egui::Frame::none()
                     .fill(Color32::from_rgba_unmultiplied(195, 155, 0, 24))
                     .stroke(Stroke::new(1.0_f32, Color32::from_rgb(165, 125, 0)))
@@ -1129,7 +1513,29 @@ impl DesktopApp {
                         ui.label(RichText::new(format!("{:.2}M / jump", top_ppj / 1_000_000.0)).size(12.5).color(Color32::from_rgb(255, 215, 0)).strong());
                     });
 
-                // Cyan pill
+                // Pill 3: Max ROI
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(255, 120, 0, 24))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(210, 95, 0)))
+                    .rounding(4.0)
+                    .inner_margin(egui::vec2(8.0, 4.0))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("🔥 MAX ROI:").size(10.5).color(Color32::from_rgb(255, 140, 0)).strong());
+                        ui.label(RichText::new(format!("+{:.1}%", top_roi)).size(12.5).color(Color32::from_rgb(255, 185, 60)).strong());
+                    });
+
+                // Pill 4: Density
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(0, 200, 200, 24))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 160, 160)))
+                    .rounding(4.0)
+                    .inner_margin(egui::vec2(8.0, 4.0))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("📦 DENSITY:").size(10.5).color(Color32::from_rgb(0, 200, 200)).strong());
+                        ui.label(RichText::new(format!("{} ISK/m³", format_rate_isk(top_density))).size(12.5).color(Color32::from_rgb(0, 245, 245)).strong());
+                    });
+
+                // Pill 5: Deals Count
                 egui::Frame::none()
                     .fill(Color32::from_rgba_unmultiplied(0, 145, 205, 24))
                     .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 125, 185)))
@@ -1140,10 +1546,97 @@ impl DesktopApp {
                         ui.label(RichText::new(format!("{} profitable", deal_count)).size(12.5).color(Color32::from_rgb(0, 220, 255)).strong());
                     });
 
+                // Pill 6: Fleet
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(120, 140, 180, 24))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(90, 110, 150)))
+                    .rounding(4.0)
+                    .inner_margin(egui::vec2(8.0, 4.0))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("🛡️ FLEET:").size(10.5).color(Color32::from_rgb(150, 175, 210)).strong());
+                        ui.label(RichText::new(ship_name).size(12.5).color(Color32::from_rgb(200, 220, 255)).strong());
+                    });
+
                 let toggle_label = if self.compact_kpi { "▼ Expand KPIs" } else { "▲ Compact KPIs" };
-                if ui.small_button(toggle_label).on_hover_text("Toggle between compact bar and 3-column KPI cards").clicked() {
+                if ui.small_button(toggle_label).on_hover_text("Toggle between compact bar and full KPI cards").clicked() {
                     self.compact_kpi = !self.compact_kpi;
                 }
+            });
+        } else if is_widescreen {
+            // 6-column fluid metric grid for widescreen / fullscreen displays
+            ui.columns(6, |cols| {
+                // Card 1: Best Profit
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(0, 190, 110, 18))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 155, 85)))
+                    .rounding(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[0], |ui| {
+                        ui.label(RichText::new("💎  BEST PROFIT").size(10.0).color(Color32::from_rgb(0, 140, 75)));
+                        ui.label(RichText::new(format!("+{:.2}M ISK", top_profit / 1_000_000.0)).size(18.0).color(Color32::from_rgb(0, 255, 150)).strong());
+                    });
+
+                // Card 2: Top Profit/Jump
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(195, 155, 0, 18))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(165, 125, 0)))
+                    .rounding(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[1], |ui| {
+                        ui.label(RichText::new("⚡  TOP PROFIT / JUMP").size(10.0).color(Color32::from_rgb(145, 108, 0)));
+                        ui.label(RichText::new(format!("{:.2}M / jump", top_ppj / 1_000_000.0)).size(18.0).color(Color32::from_rgb(255, 215, 0)).strong());
+                    });
+
+                // Card 3: Max Net ROI
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(255, 120, 0, 18))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(210, 95, 0)))
+                    .rounding(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[2], |ui| {
+                        ui.label(RichText::new("🔥  MAX NET ROI").size(10.0).color(Color32::from_rgb(200, 90, 0)));
+                        ui.label(RichText::new(format!("+{:.1}%", top_roi)).size(18.0).color(Color32::from_rgb(255, 170, 50)).strong());
+                    });
+
+                // Card 4: Profit Density
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(0, 200, 200, 18))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 160, 160)))
+                    .rounding(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[3], |ui| {
+                        ui.label(RichText::new("📦  PROFIT DENSITY").size(10.0).color(Color32::from_rgb(0, 150, 150)));
+                        ui.label(RichText::new(format!("{} ISK/m³", format_rate_isk(top_density))).size(18.0).color(Color32::from_rgb(0, 240, 240)).strong());
+                    });
+
+                // Card 5: Deals Discovered
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(0, 145, 205, 18))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 125, 185)))
+                    .rounding(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[4], |ui| {
+                        ui.label(RichText::new("📊  ACTIVE DEALS").size(10.0).color(Color32::from_rgb(0, 115, 172)));
+                        ui.label(RichText::new(format!("{} profitable", deal_count)).size(18.0).color(Color32::from_rgb(0, 210, 255)).strong());
+                    });
+
+                // Card 6: Ship & Safety with collapse button
+                egui::Frame::none()
+                    .fill(Color32::from_rgba_unmultiplied(120, 140, 180, 18))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(90, 110, 150)))
+                    .rounding(6.0)
+                    .inner_margin(8.0)
+                    .show(&mut cols[5], |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("🛡️  FLEET PROFILE").size(10.0).color(Color32::from_rgb(120, 145, 180)));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("▲").on_hover_text("Collapse to compact KPI strip").clicked() {
+                                    self.compact_kpi = true;
+                                }
+                            });
+                        });
+                        ui.label(RichText::new(ship_name).size(15.0).color(Color32::from_rgb(200, 220, 255)).strong());
+                    });
             });
         } else {
             ui.columns(3, |cols| {
@@ -1372,6 +1865,77 @@ impl DesktopApp {
                             .speed(1)
                             .range(0..=60),
                     );
+
+                    ui.separator();
+
+                    // NPC Trade Deals Toggle Filter Button
+                    let (npc_icon, npc_label, npc_fill, npc_stroke, npc_text_col) = if self.hide_npc_trades {
+                        ("🚫", "Hide NPC Trades: ON", Color32::from_rgb(180, 50, 40), Color32::from_rgb(255, 90, 80), Color32::WHITE)
+                    } else {
+                        ("🏛️", "NPC Trades: Visible", Color32::from_rgba_unmultiplied(20, 36, 60, 200), Color32::from_rgb(60, 110, 170), Color32::from_rgb(160, 210, 255))
+                    };
+
+                    let npc_btn = egui::Button::new(
+                        RichText::new(format!("{} {}", npc_icon, npc_label))
+                            .size(12.0)
+                            .color(npc_text_col)
+                            .strong(),
+                    )
+                    .fill(npc_fill)
+                    .stroke(Stroke::new(1.0_f32, npc_stroke));
+
+                    if ui.add(npc_btn)
+                        .on_hover_text("Toggle to filter out NPC trade deals (seeded commodities like Spirits, Dairy Products, Wheat, Livestock, Antibiotics, and 365-day NPC orders).\n• Active (ON): Hides NPC trade commodity deals\n• Inactive (OFF): Shows all profitable deals")
+                        .clicked()
+                    {
+                        self.hide_npc_trades = !self.hide_npc_trades;
+                        let toast_msg = if self.hide_npc_trades {
+                            "Filter: Hiding NPC trade deals"
+                        } else {
+                            "Filter: Showing all trade deals (including NPC)"
+                        };
+                        self.set_toast(toast_msg);
+                    }
+
+                    ui.separator();
+                    let export_btn = egui::Button::new(
+                        RichText::new("📥 Export Deals to CSV")
+                            .color(Color32::from_rgb(0, 220, 255))
+                            .strong(),
+                    );
+                    if ui.add(export_btn).on_hover_text("Export all currently filtered deals to ./deals_export.csv and copy to clipboard").clicked() {
+                        let filter_inner = self.filter_item_name.trim().to_lowercase();
+                        let filter_sde_inner = crate::sde::station_name_to_sde(&filter_inner).to_lowercase();
+                        let min_prof = self.min_profit_filter_m * 1_000_000.0;
+                        let max_j = self.max_jumps_filter;
+                        let hide_npc = self.hide_npc_trades;
+
+                        let export_filtered: Vec<(usize, &ArbitrageDeal)> = self
+                            .deals
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, d)| {
+                                if hide_npc && d.is_npc_trade {
+                                    return false;
+                                }
+                                (filter_inner.is_empty()
+                                    || d.item_name.to_lowercase().contains(&filter_inner)
+                                    || d.source_system_name.to_lowercase().contains(&filter_inner)
+                                    || d.dest_system_name.to_lowercase().contains(&filter_inner)
+                                    || d.source_station_name.to_lowercase().contains(&filter_inner)
+                                    || d.source_station_name.to_lowercase().contains(&filter_sde_inner)
+                                    || d.dest_station_name.to_lowercase().contains(&filter_inner)
+                                    || d.dest_station_name.to_lowercase().contains(&filter_sde_inner))
+                                    && d.net_profit >= min_prof
+                                    && (max_j == 0 || d.total_jumps <= max_j)
+                            })
+                            .collect();
+
+                        let csv_str = export_deals_to_csv(&export_filtered);
+                        copy_to_clipboard(ui, csv_str.clone());
+                        let _ = std::fs::write("deals_export.csv", &csv_str);
+                        self.set_toast(format!("Exported {} deals to ./deals_export.csv & copied to clipboard!", export_filtered.len()));
+                    }
                 });
             });
 
@@ -1382,12 +1946,16 @@ impl DesktopApp {
         let filter_sde = crate::sde::station_name_to_sde(&filter).to_lowercase();
         let min_profit_threshold = self.min_profit_filter_m * 1_000_000.0;
         let max_jumps = self.max_jumps_filter;
+        let hide_npc = self.hide_npc_trades;
 
         let mut filtered: Vec<(usize, &ArbitrageDeal)> = self
             .deals
             .iter()
             .enumerate()
             .filter(|(_, d)| {
+                if hide_npc && d.is_npc_trade {
+                    return false;
+                }
                 (filter.is_empty()
                     || d.item_name.to_lowercase().contains(&filter)
                     || d.source_system_name.to_lowercase().contains(&filter)
@@ -1528,7 +2096,7 @@ impl DesktopApp {
         let use_side_panel = has_selection && self.dossier_side_panel && avail_w >= 1150.0;
 
         if use_side_panel {
-            let side_w = (avail_w * 0.38).clamp(380.0, 520.0);
+            let side_w = (avail_w * 0.36).clamp(380.0, 680.0);
             let table_w = (avail_w - side_w - 10.0).max(300.0);
 
             let mut grid_res = (None, None, None);
@@ -1648,150 +2216,258 @@ impl DesktopApp {
         let current_sort = self.sort_by;
         let is_desc = self.sort_descending;
         let is_big = self.ship_is_big;
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Grid::new("deals_grid")
-                        .striped(true)
-                        .spacing(Vec2::new(12.0, 7.0))
-                        .min_col_width(45.0)
-                        .show(ui, |ui| {
-                            let mut render_header_btn = |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
-                                let is_active = current_sort == sort_target;
-                                let arrow = if is_active {
-                                    if is_desc { " ▼" } else { " ▲" }
-                                } else {
-                                    ""
-                                };
-                                let label_text = format!("{}{}", title, arrow);
-                                let text_color = if is_active {
-                                    Color32::from_rgb(255, 215, 0)
-                                } else {
-                                    Color32::from_rgb(255, 205, 0)
-                                };
-                                let resp = ui.add(
-                                    egui::Button::new(RichText::new(label_text).color(text_color).strong())
-                                        .frame(false),
-                                )
-                                .on_hover_text(format!("Click to sort by {} ({})", title, if is_active && is_desc { "switch to Ascending" } else { "switch to Descending" }));
-                                if resp.clicked() {
-                                    ui.ctx().request_repaint();
-                                    if is_active {
-                                        change_sort = Some((sort_target, !is_desc));
-                                    } else {
-                                        let default_desc = !matches!(
-                                            sort_target,
-                                            DealSortBy::ItemName
-                                                | DealSortBy::BuySystem
-                                                | DealSortBy::SellSystem
-                                                | DealSortBy::Jumps
-                                                | DealSortBy::Cost
-                                        );
-                                        change_sort = Some((sort_target, default_desc));
-                                    }
-                                }
+
+        let avail_w = ui.available_width();
+        let is_compact_tier = avail_w < 1000.0;
+
+        let mut render_header_btn = |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
+            let is_active = current_sort == sort_target;
+            let arrow = if is_active {
+                if is_desc { " ▼" } else { " ▲" }
+            } else {
+                ""
+            };
+            let label_text = format!("{}{}", title, arrow);
+            let text_color = if is_active {
+                Color32::from_rgb(255, 215, 0)
+            } else {
+                Color32::from_rgb(255, 205, 0)
+            };
+            let resp = ui.add(
+                egui::Button::new(RichText::new(label_text).color(text_color).strong())
+                    .frame(false),
+            )
+            .on_hover_text(format!("Click to sort by {} ({})", title, if is_active && is_desc { "switch to Ascending" } else { "switch to Descending" }));
+            if resp.clicked() {
+                ui.ctx().request_repaint();
+                if is_active {
+                    change_sort = Some((sort_target, !is_desc));
+                } else {
+                    let default_desc = !matches!(
+                        sort_target,
+                        DealSortBy::ItemName
+                            | DealSortBy::BuySystem
+                            | DealSortBy::SellSystem
+                            | DealSortBy::Jumps
+                            | DealSortBy::Cost
+                    );
+                    change_sort = Some((sort_target, default_desc));
+                }
+            }
+        };
+
+        // Responsive fluid column width distribution to fill 100% of window width
+        let actions_w = (avail_w * 0.09).clamp(125.0, 160.0);
+        let rank_w = 38.0;
+        let pool = (avail_w - rank_w - actions_w - 24.0).max(550.0);
+
+        let w_item = 15.0_f32;
+        let w_buy_sys = 9.5_f32;
+        let w_buy_price = 7.5_f32;
+        let w_sell_sys = 9.5_f32;
+        let w_sell_price = 7.5_f32;
+        let w_qty = 5.5_f32;
+        let w_vol = 6.0_f32;
+        let w_profit_m3 = if is_compact_tier { 0.0 } else { 7.0 };
+        let w_cost = 7.0_f32;
+        let w_ship_util = if is_compact_tier { 0.0 } else { 7.0 };
+        let w_net_profit = 9.5_f32;
+        let w_net_roi = 6.0_f32;
+        let w_jumps = 5.0_f32;
+        let w_profit_jump = 9.0_f32;
+
+        let total_w = w_item + w_buy_sys + w_buy_price + w_sell_sys + w_sell_price + w_qty + w_vol + w_profit_m3 + w_cost + w_ship_util + w_net_profit + w_net_roi + w_jumps + w_profit_jump;
+
+        let col_item = (pool * (w_item / total_w)).max(120.0);
+        let col_buy_sys = (pool * (w_buy_sys / total_w)).max(75.0);
+        let col_buy_price = (pool * (w_buy_price / total_w)).max(65.0);
+        let col_sell_sys = (pool * (w_sell_sys / total_w)).max(75.0);
+        let col_sell_price = (pool * (w_sell_price / total_w)).max(65.0);
+        let col_qty = (pool * (w_qty / total_w)).max(42.0);
+        let col_vol = (pool * (w_vol / total_w)).max(48.0);
+        let col_profit_m3 = (pool * (w_profit_m3 / total_w)).max(60.0);
+        let col_cost = (pool * (w_cost / total_w)).max(60.0);
+        let col_ship_util = (pool * (w_ship_util / total_w)).max(65.0);
+        let col_net_profit = (pool * (w_net_profit / total_w)).max(80.0);
+        let col_net_roi = (pool * (w_net_roi / total_w)).max(48.0);
+        let col_jumps = (pool * (w_jumps / total_w)).max(38.0);
+        let col_profit_jump = (pool * (w_profit_jump / total_w)).max(80.0);
+
+        let mut builder = TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .min_scrolled_height(0.0)
+            .column(Column::exact(rank_w)) // 1: #
+            .column(Column::remainder().at_least(col_item).resizable(true)) // 2: ITEM (flexible expanding remainder)
+            .column(Column::initial(col_buy_sys).at_least(70.0).resizable(true)) // 3: BUY SYSTEM
+            .column(Column::initial(col_buy_price).at_least(60.0).resizable(true))  // 4: BUY / ITEM
+            .column(Column::initial(col_sell_sys).at_least(70.0).resizable(true)) // 5: SELL SYSTEM
+            .column(Column::initial(col_sell_price).at_least(60.0).resizable(true))  // 6: SELL / ITEM
+            .column(Column::initial(col_qty).at_least(40.0).resizable(true))  // 7: QTY
+            .column(Column::initial(col_vol).at_least(45.0).resizable(true)); // 8: VOL (m³)
+
+        if !is_compact_tier {
+            builder = builder.column(Column::initial(col_profit_m3).at_least(55.0).resizable(true)); // 9: PROFIT/m³
+        }
+
+        builder = builder.column(Column::initial(col_cost).at_least(55.0).resizable(true)); // 10: COST (M)
+
+        if !is_compact_tier {
+            builder = builder.column(Column::initial(col_ship_util).at_least(60.0).resizable(true)); // 11: SHIP UTIL
+        }
+
+        builder = builder
+            .column(Column::initial(col_net_profit).at_least(75.0).resizable(true)) // 12: NET PROFIT
+            .column(Column::initial(col_net_roi).at_least(45.0).resizable(true))  // 13: NET ROI
+            .column(Column::initial(col_jumps).at_least(35.0).resizable(true))  // 14: JUMPS
+            .column(Column::initial(col_profit_jump).at_least(75.0).resizable(true)) // 15: PROFIT/JUMP
+            .column(Column::initial(actions_w).at_least(115.0).resizable(true)); // 16: QUICK ACTIONS
+
+        builder
+            .header(24.0, |mut header| {
+                header.col(|ui| { ui.label(RichText::new("#").color(Color32::from_rgb(255, 205, 0)).strong()); });
+                header.col(|ui| { render_header_btn(ui, "ITEM", DealSortBy::ItemName); });
+                header.col(|ui| { render_header_btn(ui, "BUY SYSTEM", DealSortBy::BuySystem); });
+                header.col(|ui| { render_header_btn(ui, "BUY / ITEM", DealSortBy::BuyPrice); });
+                header.col(|ui| { render_header_btn(ui, "SELL SYSTEM", DealSortBy::SellSystem); });
+                header.col(|ui| { render_header_btn(ui, "SELL / ITEM", DealSortBy::SellPrice); });
+                header.col(|ui| { render_header_btn(ui, "QTY", DealSortBy::Quantity); });
+                header.col(|ui| { render_header_btn(ui, "VOL (m³)", DealSortBy::Volume); });
+                if !is_compact_tier {
+                    header.col(|ui| { render_header_btn(ui, "PROFIT/m³", DealSortBy::ProfitPerM3); });
+                }
+                header.col(|ui| { render_header_btn(ui, "COST (M)", DealSortBy::Cost); });
+                if !is_compact_tier {
+                    header.col(|ui| { ui.label(RichText::new("SHIP UTIL").color(Color32::from_rgb(255, 205, 0)).strong()); });
+                }
+                header.col(|ui| { render_header_btn(ui, "NET PROFIT", DealSortBy::TotalProfit); });
+                header.col(|ui| { render_header_btn(ui, "NET ROI", DealSortBy::RoiPct); });
+                header.col(|ui| { render_header_btn(ui, "JUMPS", DealSortBy::Jumps); });
+                header.col(|ui| { render_header_btn(ui, "PROFIT/JUMP", DealSortBy::ProfitPerJump); });
+                header.col(|ui| { ui.label(RichText::new("QUICK ACTIONS").color(Color32::from_rgb(255, 205, 0)).strong()); });
+            })
+            .body(|mut body| {
+                for (display_rank, &(orig_idx, deal)) in filtered.iter().enumerate() {
+                    let is_selected = current_selected_idx == Some(orig_idx);
+                    body.row(28.0, |mut row| {
+                        row.set_selected(is_selected);
+
+                        // 1: Rank badge
+                        row.col(|ui| {
+                            let rank_color = match display_rank {
+                                0 => Color32::from_rgb(255, 215, 0),   // Gold
+                                1 => Color32::from_rgb(200, 215, 230), // Silver
+                                2 => Color32::from_rgb(205, 127, 50),  // Bronze
+                                _ => Color32::GRAY,
                             };
-
-                            // Column Headers
-                            ui.label(RichText::new("#").color(Color32::from_rgb(255, 205, 0)).strong());
-                            render_header_btn(ui, "ITEM", DealSortBy::ItemName);
-                            render_header_btn(ui, "BUY SYSTEM", DealSortBy::BuySystem);
-                            render_header_btn(ui, "BUY / ITEM", DealSortBy::BuyPrice);
-                            render_header_btn(ui, "SELL SYSTEM", DealSortBy::SellSystem);
-                            render_header_btn(ui, "SELL / ITEM", DealSortBy::SellPrice);
-                            render_header_btn(ui, "QTY", DealSortBy::Quantity);
-                            render_header_btn(ui, "VOL (m³)", DealSortBy::Volume);
-                            render_header_btn(ui, "PROFIT/m³", DealSortBy::ProfitPerM3);
-                            render_header_btn(ui, "COST (M)", DealSortBy::Cost);
-                            ui.label(RichText::new("SHIP UTIL").color(Color32::from_rgb(255, 205, 0)).strong());
-                            render_header_btn(ui, "NET PROFIT", DealSortBy::TotalProfit);
-                            render_header_btn(ui, "NET ROI", DealSortBy::RoiPct);
-                            render_header_btn(ui, "JUMPS", DealSortBy::Jumps);
-                            render_header_btn(ui, "PROFIT/JUMP", DealSortBy::ProfitPerJump);
-                            ui.label(RichText::new("QUICK ACTIONS").color(Color32::from_rgb(255, 205, 0)).strong());
-                            ui.end_row();
-
-                            for (display_rank, (orig_idx, deal)) in filtered.iter().enumerate() {
-                                let is_selected = current_selected_idx == Some(*orig_idx);
-
-                                // Rank badge
-                                let rank_color = match display_rank {
-                                    0 => Color32::from_rgb(255, 215, 0),   // Gold
-                                    1 => Color32::from_rgb(200, 215, 230), // Silver
-                                    2 => Color32::from_rgb(205, 127, 50),  // Bronze
-                                    _ => Color32::GRAY,
-                                };
-                                // Framed rank badge (#1 gold, #2 silver, #3 bronze)
-                                egui::Frame::none()
-                                    .fill(Color32::from_rgba_unmultiplied(
-                                        rank_color.r(), rank_color.g(), rank_color.b(), 28,
-                                    ))
-                                    .stroke(Stroke::new(1.0_f32, rank_color))
-                                    .rounding(3.0)
-                                    .inner_margin(4.0)
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            RichText::new(format!("#{}", display_rank + 1))
-                                                .color(rank_color)
-                                                .strong()
-                                                .size(12.0),
-                                        );
-                                    });
-
-                                // Item Name with selection toggle, 40%+ ROI flame, and citadel badge
-                                let item_color = if is_selected {
-                                    Color32::from_rgb(0, 230, 255)
-                                } else {
-                                    Color32::WHITE
-                                };
-                                ui.horizontal(|ui| {
-                                    if ui.selectable_label(is_selected, RichText::new(&deal.item_name).color(item_color).strong()).clicked() {
-                                        toggle_select = Some(*orig_idx);
-                                    }
-                                    if deal.is_high_roi() {
-                                        ui.label(RichText::new("🔥 40%+").size(10.0).color(Color32::from_rgb(255, 120, 0)).strong())
-                                            .on_hover_text("High-ROI deal: Net return >= 40%");
-                                    }
-                                    if !crate::arbitrage::is_npc_station(deal.source_station_id) || !crate::arbitrage::is_npc_station(deal.dest_station_id) {
-                                        ui.label(RichText::new("🏰").color(Color32::from_rgb(255, 185, 60)).strong())
-                                            .on_hover_text("Includes player-owned Upwell Citadel / Structure");
-                                    }
+                            let rank_resp = egui::Frame::none()
+                                .fill(Color32::from_rgba_unmultiplied(
+                                    rank_color.r(), rank_color.g(), rank_color.b(), 28,
+                                ))
+                                .stroke(Stroke::new(1.0_f32, rank_color))
+                                .rounding(3.0)
+                                .inner_margin(4.0)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(format!("#{}", display_rank + 1))
+                                            .color(rank_color)
+                                            .strong()
+                                            .size(12.0),
+                                    );
                                 });
+                            if rank_resp.response.interact(egui::Sense::click()).clicked() {
+                                toggle_select = Some(orig_idx);
+                            }
+                        });
 
-                                // Buy System with security rating
-                                let src_sec_col = security_color(deal.source_security);
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("[{:.1}]", deal.source_security)).size(11.0).color(src_sec_col).strong());
-                                    ui.label(RichText::new(&deal.source_system_name).color(Color32::from_rgb(120, 200, 255)));
-                                });
+                        // 2: Item Name (selectable)
+                        row.col(|ui| {
+                            let item_color = if is_selected {
+                                Color32::from_rgb(0, 230, 255)
+                            } else {
+                                Color32::WHITE
+                            };
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(is_selected, RichText::new(&deal.item_name).color(item_color).strong()).clicked() {
+                                    toggle_select = Some(orig_idx);
+                                }
+                                if deal.is_high_roi() {
+                                    ui.label(RichText::new("🔥 40%+").size(10.0).color(Color32::from_rgb(255, 120, 0)).strong())
+                                        .on_hover_text("High-ROI deal: Net return >= 40%");
+                                }
+                                if deal.is_npc_trade {
+                                    ui.label(RichText::new("🏛️ NPC").size(10.0).color(Color32::from_rgb(110, 190, 255)).strong())
+                                        .on_hover_text("NPC trade deal: Seeded commodity or 365-day NPC order");
+                                }
+                                if !crate::arbitrage::is_npc_station(deal.source_station_id) || !crate::arbitrage::is_npc_station(deal.dest_station_id) {
+                                    ui.label(RichText::new("🏰").color(Color32::from_rgb(255, 185, 60)).strong())
+                                        .on_hover_text("Includes player-owned Upwell Citadel / Structure");
+                                }
+                            });
+                        });
 
-                                // Unit Buy Price (from sell order)
-                                ui.label(
-                                    RichText::new(format_unit_price_isk(deal.buy_price))
-                                        .color(Color32::from_rgb(140, 210, 255)),
-                                )
-                                .on_hover_text(format!("Buy Price: {:.2} ISK / unit (from Sell Order)", deal.buy_price));
+                        // 3: Buy System
+                        row.col(|ui| {
+                            let src_sec_col = security_color(deal.source_security);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("[{:.1}]", deal.source_security)).size(11.0).color(src_sec_col).strong());
+                                ui.label(RichText::new(&deal.source_system_name).color(Color32::from_rgb(120, 200, 255)));
+                            });
+                        });
 
-                                // Sell System with security rating
-                                let dst_sec_col = security_color(deal.dest_security);
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("[{:.1}]", deal.dest_security)).size(11.0).color(dst_sec_col).strong());
-                                    ui.label(RichText::new(&deal.dest_system_name).color(Color32::from_rgb(255, 140, 240)));
-                                });
+                        // 4: Buy Price
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(format_unit_price_isk(deal.buy_price))
+                                    .color(Color32::from_rgb(140, 210, 255)),
+                            )
+                            .on_hover_text(format!("Buy Price: {:.2} ISK / unit (from Sell Order)", deal.buy_price));
+                        });
 
-                                // Unit Sell Price (into buy order)
-                                ui.label(
-                                    RichText::new(format_unit_price_isk(deal.sell_price))
-                                        .color(Color32::from_rgb(255, 160, 240)),
-                                )
-                                .on_hover_text(format!("Sell Price: {:.2} ISK / unit (into Buy Order)", deal.sell_price));
+                        // 5: Sell System
+                        row.col(|ui| {
+                            let dst_sec_col = security_color(deal.dest_security);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("[{:.1}]", deal.dest_security)).size(11.0).color(dst_sec_col).strong());
+                                ui.label(RichText::new(&deal.dest_system_name).color(Color32::from_rgb(255, 140, 240)));
+                            });
+                        });
 
-                                ui.label(format!("{}", deal.quantity));
-                                ui.label(format!("{:.1}", deal.volume_used));
+                        // 6: Sell Price
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(format_unit_price_isk(deal.sell_price))
+                                    .color(Color32::from_rgb(255, 160, 240)),
+                            )
+                            .on_hover_text(format!("Sell Price: {:.2} ISK / unit (into Buy Order)", deal.sell_price));
+                        });
+
+                        // 7: Quantity
+                        row.col(|ui| {
+                            ui.label(format!("{}", deal.quantity));
+                        });
+
+                        // 8: Volume
+                        row.col(|ui| {
+                            ui.label(format!("{:.1}", deal.volume_used));
+                        });
+
+                        // 9: Profit / m3 (if not compact)
+                        if !is_compact_tier {
+                            row.col(|ui| {
                                 ui.label(RichText::new(format_rate_isk(deal.profit_per_m3)).color(Color32::from_rgb(0, 220, 220)).strong());
-                                ui.label(format!("{:.2}M", deal.capital_required / 1_000_000.0));
+                            });
+                        }
 
-                                // Ship capacity utilization — painted mini progress bars
+                        // 10: Cost
+                        row.col(|ui| {
+                            ui.label(format!("{:.2}M", deal.capital_required / 1_000_000.0));
+                        });
+
+                        // 11: Ship Util (if not compact)
+                        if !is_compact_tier {
+                            row.col(|ui| {
                                 let max_vol = if is_big { 60_000.0_f64 } else { 30_000.0_f64 };
                                 let max_budget = if is_big { 500_000_000.0_f64 } else { 50_000_000.0_f64 };
                                 let vol_frac = (deal.volume_used / max_vol) as f32;
@@ -1804,57 +2480,67 @@ impl DesktopApp {
                                         max_budget / 1_000_000.0,
                                         budget_frac * 100.0,
                                     ));
+                            });
+                        }
 
-                                // Net profit glowing green
-                                ui.label(
-                                    RichText::new(format!("+{:.2}M ISK", deal.net_profit / 1_000_000.0))
-                                        .color(Color32::from_rgb(0, 240, 150))
-                                        .strong(),
-                                );
-
-                                // ROI with flame color if high ROI
-                                let roi_col = if deal.is_high_roi() {
-                                    Color32::from_rgb(255, 140, 0)
-                                } else {
-                                    Color32::from_rgb(0, 255, 180)
-                                };
-                                ui.label(
-                                    RichText::new(format!("+{:.1}%", deal.net_profit_pct))
-                                        .color(roi_col)
-                                        .strong(),
-                                );
-
-                                // Jumps breakdown
-                                let jumps_tag = format!("{}+{}={}", deal.jumps_from_home, deal.jumps_source_dest, deal.total_jumps);
-                                ui.label(RichText::new(jumps_tag).color(Color32::LIGHT_GRAY));
-
-                                // Profit per jump
-                                ui.label(
-                                    RichText::new(format!("{:.2}M", deal.profit_per_jump / 1_000_000.0))
-                                        .color(Color32::from_rgb(255, 215, 0))
-                                        .strong(),
-                                );
-
-                                // Quick copy buttons
-                                ui.horizontal(|ui| {
-                                    if ui.small_button("📋 Item").on_hover_text("Copy item name to clipboard").clicked() {
-                                        ui.output_mut(|o| o.copied_text = deal.item_name.clone());
-                                        action_toast = Some(format!("Copied item '{}' to clipboard!", deal.item_name));
-                                    }
-                                    if ui.small_button("📋 Buy").on_hover_text(format!("Copy buy station '{}' to clipboard", deal.source_station_name)).clicked() {
-                                        ui.output_mut(|o| o.copied_text = deal.source_station_name.clone());
-                                        action_toast = Some(format!("Copied buy station '{}' to clipboard!", deal.source_station_name));
-                                    }
-                                    if ui.small_button("📋 Sell").on_hover_text(format!("Copy sell station '{}' to clipboard", deal.dest_station_name)).clicked() {
-                                        ui.output_mut(|o| o.copied_text = deal.dest_station_name.clone());
-                                        action_toast = Some(format!("Copied sell station '{}' to clipboard!", deal.dest_station_name));
-                                    }
-                                });
-
-                                ui.end_row();
-                            }
+                        // 12: Net Profit
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(format!("+{:.2}M ISK", deal.net_profit / 1_000_000.0))
+                                    .color(Color32::from_rgb(0, 240, 150))
+                                    .strong(),
+                            );
                         });
-                });
+
+                        // 13: Net ROI
+                        row.col(|ui| {
+                            let roi_col = if deal.is_high_roi() {
+                                Color32::from_rgb(255, 140, 0)
+                            } else {
+                                Color32::from_rgb(0, 255, 180)
+                            };
+                            ui.label(
+                                RichText::new(format!("+{:.1}%", deal.net_profit_pct))
+                                    .color(roi_col)
+                                    .strong(),
+                            );
+                        });
+
+                        // 14: Jumps
+                        row.col(|ui| {
+                            let jumps_tag = format!("{}+{}={}", deal.jumps_from_home, deal.jumps_source_dest, deal.total_jumps);
+                            ui.label(RichText::new(jumps_tag).color(Color32::LIGHT_GRAY));
+                        });
+
+                        // 15: Profit / Jump
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(format!("{:.2}M", deal.profit_per_jump / 1_000_000.0))
+                                    .color(Color32::from_rgb(255, 215, 0))
+                                    .strong(),
+                            );
+                        });
+
+                        // 16: Quick Actions
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui.small_button("📋 Item").on_hover_text("Copy item name to clipboard").clicked() {
+                                    copy_to_clipboard(ui, deal.item_name.clone());
+                                    action_toast = Some(format!("Copied item '{}' to clipboard!", deal.item_name));
+                                }
+                                if ui.small_button("📋 Buy").on_hover_text(format!("Copy buy station '{}' to clipboard", deal.source_station_name)).clicked() {
+                                    copy_to_clipboard(ui, deal.source_station_name.clone());
+                                    action_toast = Some(format!("Copied buy station '{}' to clipboard!", deal.source_station_name));
+                                }
+                                if ui.small_button("📋 Sell").on_hover_text(format!("Copy sell station '{}' to clipboard", deal.dest_station_name)).clicked() {
+                                    copy_to_clipboard(ui, deal.dest_station_name.clone());
+                                    action_toast = Some(format!("Copied sell station '{}' to clipboard!", deal.dest_station_name));
+                                }
+                            });
+                        });
+                    });
+                }
+            });
 
         (toggle_select, action_toast, change_sort)
     }
@@ -1884,7 +2570,7 @@ impl DesktopApp {
                             .strong(),
                     );
                     if ui.small_button("📋 Copy Name").clicked() {
-                        ui.output_mut(|o| o.copied_text = deal.item_name.clone());
+                        copy_to_clipboard(ui, deal.item_name.clone());
                         toast = Some(format!("Copied '{}'", deal.item_name));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1927,7 +2613,12 @@ impl DesktopApp {
                                         ("🏰 Upwell Citadel", Color32::from_rgb(255, 185, 60))
                                     };
                                     ui.label(RichText::new(&deal.source_station_name).size(12.0).strong());
-                                    ui.label(RichText::new(src_badge).size(11.0).color(src_badge_color).strong());
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(src_badge).size(11.0).color(src_badge_color).strong());
+                                        if deal.is_npc_trade {
+                                            ui.label(RichText::new("📦 NPC Commodity").size(11.0).color(Color32::from_rgb(0, 220, 255)).strong());
+                                        }
+                                    });
                                     let src_sec_col = security_color(deal.source_security);
                                     ui.label(
                                         RichText::new(format!("System: {} [{:.1}] ({} jumps from home)", deal.source_system_name, deal.source_security, deal.jumps_from_home))
@@ -1937,7 +2628,7 @@ impl DesktopApp {
                                     ui.label(format!("Quantity: {} units", deal.quantity));
                                     ui.label(format!("Capital Cost: {:.2}M ISK", deal.capital_required / 1_000_000.0));
                                     if ui.small_button("📋 Copy Buy Station").clicked() {
-                                        ui.output_mut(|o| o.copied_text = deal.source_station_name.clone());
+                                        copy_to_clipboard(ui, deal.source_station_name.clone());
                                         *toast = Some(format!("Copied buy station '{}'", deal.source_station_name));
                                     }
                                 });
@@ -1958,7 +2649,12 @@ impl DesktopApp {
                                         ("🏰 Upwell Citadel", Color32::from_rgb(255, 185, 60))
                                     };
                                     ui.label(RichText::new(&deal.dest_station_name).size(12.0).strong());
-                                    ui.label(RichText::new(dst_badge).size(11.0).color(dst_badge_color).strong());
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(dst_badge).size(11.0).color(dst_badge_color).strong());
+                                        if deal.is_npc_trade {
+                                            ui.label(RichText::new("📦 NPC Commodity").size(11.0).color(Color32::from_rgb(0, 220, 255)).strong());
+                                        }
+                                    });
                                     let dst_sec_col = security_color(deal.dest_security);
                                     ui.label(
                                         RichText::new(format!("System: {} [{:.1}] ({} jumps delivery)", deal.dest_system_name, deal.dest_security, deal.jumps_source_dest))
@@ -1968,14 +2664,15 @@ impl DesktopApp {
                                     ui.label(format!("Gross Revenue: {:.2}M ISK", (deal.sell_price * deal.quantity as f64) / 1_000_000.0));
                                     ui.label(format!("Price Spread: +{:.1}%", deal.spread_pct));
                                     if ui.small_button("📋 Copy Sell Station").clicked() {
-                                        ui.output_mut(|o| o.copied_text = deal.dest_station_name.clone());
+                                        copy_to_clipboard(ui, deal.dest_station_name.clone());
                                         *toast = Some(format!("Copied sell station '{}'", deal.dest_station_name));
                                     }
                                 });
                         };
 
-                        let max_vol = if self.ship_is_big { 60_000.0 } else { 30_000.0 };
-                        let max_budget = if self.ship_is_big { 500_000_000.0 } else { 50_000_000.0 };
+                        let ship = self.current_ship();
+                        let max_vol = ship.max_volume;
+                        let max_budget = ship.max_budget;
                         let vol_pct = (deal.volume_used / max_vol) * 100.0;
                         let budget_pct = (deal.capital_required / max_budget) * 100.0;
 
@@ -2009,13 +2706,23 @@ impl DesktopApp {
                                 });
                         };
 
-                        let use_cols = !is_side_panel && ui.available_width() >= 850.0;
+                        let use_cols = (!is_side_panel && ui.available_width() >= 850.0)
+                            || (is_side_panel && ui.available_width() >= 480.0);
                         if use_cols {
-                            ui.columns(3, |cols| {
-                                render_purchase(&mut cols[0], &mut toast);
-                                render_sale(&mut cols[1], &mut toast);
-                                render_financial(&mut cols[2]);
-                            });
+                            if is_side_panel {
+                                ui.columns(2, |cols| {
+                                    render_purchase(&mut cols[0], &mut toast);
+                                    cols[0].add_space(6.0);
+                                    render_sale(&mut cols[0], &mut toast);
+                                    render_financial(&mut cols[1]);
+                                });
+                            } else {
+                                ui.columns(3, |cols| {
+                                    render_purchase(&mut cols[0], &mut toast);
+                                    render_sale(&mut cols[1], &mut toast);
+                                    render_financial(&mut cols[2]);
+                                });
+                            }
                         } else {
                             render_purchase(ui, &mut toast);
                             ui.add_space(6.0);
@@ -2027,6 +2734,141 @@ impl DesktopApp {
             });
 
         (close_requested, toggle_dock_requested, toast)
+    }
+
+    fn render_manifest_card(
+        &self,
+        ui: &mut egui::Ui,
+        idx: usize,
+        m: &TradeCorridorManifest,
+        max_vol: f64,
+        max_budget: f64,
+    ) -> Option<String> {
+        let mut toast = None;
+        let vol_pct = (m.total_volume_used / max_vol) * 100.0;
+        let budget_pct = (m.total_capital_required / max_budget) * 100.0;
+        let src_sec_col = security_color(m.source_security);
+        let dst_sec_col = security_color(m.dest_security);
+
+        egui::Frame::none()
+            .fill(Color32::from_rgb(17, 24, 38))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(45, 60, 90)))
+            .rounding(6.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                // Header row with route & profit badge
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("MANIFEST #{}", idx + 1))
+                            .color(Color32::from_rgb(255, 205, 0))
+                            .size(14.0)
+                            .strong(),
+                    );
+                    ui.separator();
+                    ui.label(RichText::new(format!("[{:.1}]", m.source_security)).color(src_sec_col).strong());
+                    ui.label(RichText::new(&m.source_system_name).color(Color32::from_rgb(0, 210, 255)).strong());
+                    ui.label(RichText::new("➔").color(Color32::WHITE).strong());
+                    ui.label(RichText::new(format!("[{:.1}]", m.dest_security)).color(dst_sec_col).strong());
+                    ui.label(RichText::new(&m.dest_system_name).color(Color32::from_rgb(255, 140, 240)).strong());
+                    ui.label(format!("({} jumps)", m.jumps));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("+{:.2}M ISK Net Profit (+{:.1}% ROI)", m.total_net_profit / 1_000_000.0, m.overall_roi_pct))
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .size(13.5)
+                                .strong(),
+                        );
+                    });
+                });
+
+                ui.add_space(6.0);
+
+                // Metrics bar
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!("⚡ Profit/Jump: {:.2}M/jump", m.profit_per_jump / 1_000_000.0))
+                            .color(Color32::from_rgb(255, 215, 0))
+                            .strong(),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("📦 Cargo Hold: {:.1} / {:.0} m³ ({:.1}%)", m.total_volume_used, max_vol, vol_pct))
+                            .color(Color32::from_rgb(180, 210, 255)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("💰 Budget Used: {:.2}M / {:.0}M ({:.1}%)", m.total_capital_required / 1_000_000.0, max_budget / 1_000_000.0, budget_pct))
+                            .color(Color32::from_rgb(255, 200, 120)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("Items: {} distinct deals packed", m.deals.len()))
+                            .color(Color32::LIGHT_GRAY),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("📋 Multi-Buy").on_hover_text("Copy in EVE Online Multi-Buy format: '<Item Name>\\t<Quantity>\\n' for in-game paste").clicked() {
+                            let mb = m.deals.iter().map(|d| format!("{}\t{}", d.item_name, d.quantity)).collect::<Vec<_>>().join("\n");
+                            copy_to_clipboard(ui, mb);
+                            toast = Some(format!("Copied {} items in Multi-Buy format!", m.deals.len()));
+                        }
+                        if ui.small_button("📋 Copy Shopping List").on_hover_text("Copy item names and quantities to clipboard").clicked() {
+                            let list = m.deals.iter().map(|d| format!("{}x {}", d.quantity, d.item_name)).collect::<Vec<_>>().join("\n");
+                            copy_to_clipboard(ui, list);
+                            toast = Some(format!("Copied {} manifest items to clipboard!", m.deals.len()));
+                        }
+                        if ui.small_button("📋 Copy Buy Station").clicked() {
+                            copy_to_clipboard(ui, m.source_station_name.clone());
+                            toast = Some(format!("Copied '{}'", m.source_station_name));
+                        }
+                        if ui.small_button("📋 Copy Sell Station").clicked() {
+                            copy_to_clipboard(ui, m.dest_station_name.clone());
+                            toast = Some(format!("Copied '{}'", m.dest_station_name));
+                        }
+                    });
+                });
+
+                ui.add_space(6.0);
+
+                // Table of packed items in this manifest
+                egui::Grid::new(format!("manifest_grid_{}", idx))
+                    .striped(true)
+                    .spacing(Vec2::new(12.0, 4.0))
+                    .min_col_width(50.0)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("PACKED ITEM").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("QTY").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("VOL (m³)").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("BUY / UNIT").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("SELL / UNIT").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("COST (M)").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("PROFIT (M)").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("ROI %").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(RichText::new("PROFIT/m³").color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.end_row();
+
+                        for d in &m.deals {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&d.item_name).strong());
+                                if d.is_high_roi() {
+                                    ui.label(RichText::new("🔥 40%+").size(10.0).color(Color32::from_rgb(255, 120, 0)).strong());
+                                }
+                            });
+                            ui.label(format!("{}", d.quantity));
+                            ui.label(format!("{:.1}", d.volume_used));
+                            ui.label(format!("{:.2}", d.buy_price));
+                            ui.label(format!("{:.2}", d.sell_price));
+                            ui.label(format!("{:.2}M", d.capital_required / 1_000_000.0));
+                            ui.label(RichText::new(format!("+{:.2}M", d.net_profit / 1_000_000.0)).color(Color32::from_rgb(0, 240, 150)).strong());
+                            ui.label(RichText::new(format!("+{:.1}%", d.net_profit_pct)).color(Color32::from_rgb(0, 255, 180)).strong());
+                            ui.label(RichText::new(format_rate_isk(d.profit_per_m3)).color(Color32::from_rgb(0, 220, 220)));
+                            ui.end_row();
+                        }
+                    });
+            });
+
+        toast
     }
 
     fn render_manifests_tab(&mut self, ui: &mut egui::Ui) {
@@ -2082,6 +2924,20 @@ impl DesktopApp {
                             .size(12.0)
                             .color(Color32::from_rgb(140, 170, 200)),
                     );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let export_btn = egui::Button::new(
+                            RichText::new("📥 Export Manifests to CSV")
+                                .color(Color32::from_rgb(0, 220, 255))
+                                .strong(),
+                        );
+                        if ui.add(export_btn).on_hover_text("Export all packed manifests to ./manifests_export.csv and clipboard").clicked() {
+                            let csv_str = export_manifests_to_csv(&self.manifests);
+                            copy_to_clipboard(ui, csv_str.clone());
+                            let _ = std::fs::write("manifests_export.csv", &csv_str);
+                            self.set_toast(format!("Exported {} manifests to ./manifests_export.csv & copied to clipboard!", self.manifests.len()));
+                        }
+                    });
                 });
                 ui.add_space(4.0);
                 ui.label(
@@ -2091,137 +2947,116 @@ impl DesktopApp {
 
         ui.add_space(10.0);
 
-        let max_vol = if self.ship_is_big { 60_000.0 } else { 30_000.0 };
-        let max_budget = if self.ship_is_big { 500_000_000.0 } else { 50_000_000.0 };
+        let ship = self.current_ship();
+        let max_vol = ship.max_volume;
+        let max_budget = ship.max_budget;
 
         let mut manifest_toast: Option<String> = None;
+        let avail_w = ui.available_width();
+        let manifest_indices: Vec<usize> = (0..self.manifests.len()).collect();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (idx, m) in self.manifests.iter().enumerate() {
-                let vol_pct = (m.total_volume_used / max_vol) * 100.0;
-                let budget_pct = (m.total_capital_required / max_budget) * 100.0;
-                let src_sec_col = security_color(m.source_security);
-                let dst_sec_col = security_color(m.dest_security);
-
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(17, 24, 38))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(45, 60, 90)))
-                    .rounding(6.0)
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        // Header row with route & profit badge
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("MANIFEST #{}", idx + 1))
-                                    .color(Color32::from_rgb(255, 205, 0))
-                                    .size(14.0)
-                                    .strong(),
-                            );
-                            ui.separator();
-                            ui.label(RichText::new(format!("[{:.1}]", m.source_security)).color(src_sec_col).strong());
-                            ui.label(RichText::new(&m.source_system_name).color(Color32::from_rgb(0, 210, 255)).strong());
-                            ui.label(RichText::new("➔").color(Color32::WHITE).strong());
-                            ui.label(RichText::new(format!("[{:.1}]", m.dest_security)).color(dst_sec_col).strong());
-                            ui.label(RichText::new(&m.dest_system_name).color(Color32::from_rgb(255, 140, 240)).strong());
-                            ui.label(format!("({} jumps)", m.jumps));
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(
-                                    RichText::new(format!("+{:.2}M ISK Net Profit (+{:.1}% ROI)", m.total_net_profit / 1_000_000.0, m.overall_roi_pct))
-                                        .color(Color32::from_rgb(0, 255, 140))
-                                        .size(14.0)
-                                        .strong(),
-                                );
-                            });
+            if avail_w >= 1400.0 {
+                // Browser-grade 2-column responsive layout for wide displays
+                for chunk in manifest_indices.chunks(2) {
+                    if chunk.len() == 2 {
+                        let idx0 = chunk[0];
+                        let idx1 = chunk[1];
+                        let m0 = &self.manifests[idx0];
+                        let m1 = &self.manifests[idx1];
+                        ui.columns(2, |cols| {
+                            if let Some(msg) = self.render_manifest_card(&mut cols[0], idx0, m0, max_vol, max_budget) {
+                                manifest_toast = Some(msg);
+                            }
+                            if let Some(msg) = self.render_manifest_card(&mut cols[1], idx1, m1, max_vol, max_budget) {
+                                manifest_toast = Some(msg);
+                            }
                         });
-
-                        ui.add_space(6.0);
-
-                        // Metrics bar
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(format!("⚡ Profit/Jump: {:.2}M/jump", m.profit_per_jump / 1_000_000.0))
-                                    .color(Color32::from_rgb(255, 215, 0))
-                                    .strong(),
-                            );
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!("📦 Cargo Hold: {:.1} / {:.0} m³ ({:.1}%)", m.total_volume_used, max_vol, vol_pct))
-                                    .color(Color32::from_rgb(180, 210, 255)),
-                            );
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!("💰 Budget Used: {:.2}M / {:.0}M ({:.1}%)", m.total_capital_required / 1_000_000.0, max_budget / 1_000_000.0, budget_pct))
-                                    .color(Color32::from_rgb(255, 200, 120)),
-                            );
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!("Items: {} distinct deals packed", m.deals.len()))
-                                    .color(Color32::LIGHT_GRAY),
-                            );
-
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("📋 Copy Shopping List").on_hover_text("Copy item names and quantities to clipboard").clicked() {
-                                    let list = m.deals.iter().map(|d| format!("{}x {}", d.quantity, d.item_name)).collect::<Vec<_>>().join("\n");
-                                    ui.output_mut(|o| o.copied_text = list);
-                                    manifest_toast = Some(format!("Copied {} manifest items to clipboard!", m.deals.len()));
-                                }
-                                if ui.small_button("📋 Copy Buy Station").clicked() {
-                                    ui.output_mut(|o| o.copied_text = m.source_station_name.clone());
-                                    manifest_toast = Some(format!("Copied '{}'", m.source_station_name));
-                                }
-                                if ui.small_button("📋 Copy Sell Station").clicked() {
-                                    ui.output_mut(|o| o.copied_text = m.dest_station_name.clone());
-                                    manifest_toast = Some(format!("Copied '{}'", m.dest_station_name));
-                                }
-                            });
+                    } else {
+                        let idx0 = chunk[0];
+                        let m0 = &self.manifests[idx0];
+                        ui.columns(2, |cols| {
+                            if let Some(msg) = self.render_manifest_card(&mut cols[0], idx0, m0, max_vol, max_budget) {
+                                manifest_toast = Some(msg);
+                            }
                         });
-
-                        ui.add_space(6.0);
-
-                        // Table of packed items in this manifest
-                        egui::Grid::new(format!("manifest_grid_{}", idx))
-                            .striped(true)
-                            .spacing(Vec2::new(12.0, 4.0))
-                            .min_col_width(50.0)
-                            .show(ui, |ui| {
-                                ui.label(RichText::new("PACKED ITEM").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("QTY").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("VOL (m³)").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("BUY / UNIT").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("SELL / UNIT").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("COST (M)").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("PROFIT (M)").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("ROI %").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.label(RichText::new("PROFIT/m³").color(Color32::from_rgb(255, 205, 0)).strong());
-                                ui.end_row();
-
-                                for d in &m.deals {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(&d.item_name).strong());
-                                        if d.is_high_roi() {
-                                            ui.label(RichText::new("🔥 40%+").size(10.0).color(Color32::from_rgb(255, 120, 0)).strong());
-                                        }
-                                    });
-                                    ui.label(format!("{}", d.quantity));
-                                    ui.label(format!("{:.1}", d.volume_used));
-                                    ui.label(format!("{:.2}", d.buy_price));
-                                    ui.label(format!("{:.2}", d.sell_price));
-                                    ui.label(format!("{:.2}M", d.capital_required / 1_000_000.0));
-                                    ui.label(RichText::new(format!("+{:.2}M", d.net_profit / 1_000_000.0)).color(Color32::from_rgb(0, 240, 150)).strong());
-                                    ui.label(RichText::new(format!("+{:.1}%", d.net_profit_pct)).color(Color32::from_rgb(0, 255, 180)).strong());
-                                    ui.label(RichText::new(format_rate_isk(d.profit_per_m3)).color(Color32::from_rgb(0, 220, 220)));
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                ui.add_space(8.0);
+                    }
+                    ui.add_space(8.0);
+                }
+            } else {
+                // Fluid single-column layout for standard/compact displays
+                for (idx, m) in self.manifests.iter().enumerate() {
+                    if let Some(msg) = self.render_manifest_card(ui, idx, m, max_vol, max_budget) {
+                        manifest_toast = Some(msg);
+                    }
+                    ui.add_space(8.0);
+                }
             }
         });
 
         if let Some(msg) = manifest_toast {
             self.set_toast(msg);
         }
+    }
+
+    fn render_route_stop_card(&self, ui: &mut egui::Ui, stop: &RouteStop) -> Option<String> {
+        let mut toast = None;
+        egui::Frame::none()
+            .fill(Color32::from_rgb(17, 24, 38))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(40, 56, 85)))
+            .rounding(5.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                // Stop header
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("[STOP #{}]", stop.step))
+                            .color(Color32::from_rgb(255, 205, 0))
+                            .size(14.0)
+                            .strong(),
+                    );
+                    ui.label(format!("Travel {} jumps to pickup at", stop.jumps_from_prev));
+                    ui.label(
+                        RichText::new(&stop.deal.source_system_name)
+                            .color(Color32::from_rgb(0, 210, 255))
+                            .strong(),
+                    );
+                    if ui.small_button("📋 Copy System").clicked() {
+                        copy_to_clipboard(ui, stop.deal.source_system_name.clone());
+                        toast = Some(format!("Copied '{}'", stop.deal.source_system_name));
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // Actions breakdown
+                ui.columns(2, |cols| {
+                    // Buy side
+                    cols[0].label(RichText::new("1. BUY AT SOURCE:").color(Color32::from_rgb(0, 230, 150)).strong());
+                    cols[0].label(RichText::new(format!("{}x {}", stop.deal.quantity, stop.deal.item_name)).strong());
+                    cols[0].label(format!("Unit: {:.2} ISK (Total: {:.2}M ISK)", stop.deal.buy_price, stop.deal.capital_required / 1_000_000.0));
+                    cols[0].label(RichText::new(&stop.deal.source_station_name).color(Color32::GRAY).size(11.0));
+                    if cols[0].small_button("📋 Copy Buy Station").clicked() {
+                        copy_to_clipboard(&mut cols[0], stop.deal.source_station_name.clone());
+                        toast = Some(format!("Copied buy station '{}'", stop.deal.source_station_name));
+                    }
+
+                    // Sell side
+                    cols[1].label(RichText::new(format!("2. WARP {} JUMPS & SELL:", stop.deal.jumps_source_dest)).color(Color32::from_rgb(255, 180, 50)).strong());
+                    cols[1].label(RichText::new(format!("Destination: {}", stop.deal.dest_system_name)).color(Color32::from_rgb(255, 140, 240)).strong());
+                    cols[1].label(
+                        RichText::new(format!("Net Profit: +{:.2}M ISK (+{:.1}% ROI)", stop.deal.net_profit / 1_000_000.0, stop.deal.net_profit_pct))
+                            .color(Color32::from_rgb(0, 255, 140))
+                            .strong(),
+                    );
+                    cols[1].label(RichText::new(&stop.deal.dest_station_name).color(Color32::GRAY).size(11.0));
+                    if cols[1].small_button("📋 Copy Sell Station").clicked() {
+                        copy_to_clipboard(&mut cols[1], stop.deal.dest_station_name.clone());
+                        toast = Some(format!("Copied sell station '{}'", stop.deal.dest_station_name));
+                    }
+                });
+            });
+        toast
     }
 
     fn render_route_tab(&mut self, ui: &mut egui::Ui) {
@@ -2261,7 +3096,7 @@ impl DesktopApp {
 
                         if ui.add(copy_btn).clicked() {
                             let trail = route.waypoint_names.join(" -> ");
-                            ui.output_mut(|o| o.copied_text = trail);
+                            copy_to_clipboard(ui, trail);
                             self.set_toast("Copied entire in-game waypoint trail to clipboard!");
                         }
                     });
@@ -2294,62 +3129,38 @@ impl DesktopApp {
         ui.heading("Sequential Flight Legs & Trade Actions:");
         ui.add_space(6.0);
 
+        let avail_w = ui.available_width();
+        let mut route_toast: Option<String> = None;
+
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for stop in &route.stops {
-                egui::Frame::none()
-                    .fill(Color32::from_rgb(17, 24, 38))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(40, 56, 85)))
-                    .rounding(5.0)
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        // Stop header
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("[STOP #{}]", stop.step))
-                                    .color(Color32::from_rgb(255, 205, 0))
-                                    .size(14.0)
-                                    .strong(),
-                            );
-                            ui.label(format!("Travel {} jumps to pickup at", stop.jumps_from_prev));
-                            ui.label(
-                                RichText::new(&stop.deal.source_system_name)
-                                    .color(Color32::from_rgb(0, 210, 255))
-                                    .strong(),
-                            );
-                            if ui.small_button("📋 Copy System").clicked() {
-                                ui.output_mut(|o| o.copied_text = stop.deal.source_system_name.clone());
-                                self.set_toast(format!("Copied '{}'", stop.deal.source_system_name));
-                            }
-                        });
-
-                        ui.add_space(6.0);
-
-                        // Actions breakdown
+            if avail_w >= 1400.0 {
+                // Browser-grade 2-column responsive layout for wide displays
+                for chunk in route.stops.chunks(2) {
+                    if chunk.len() == 2 {
                         ui.columns(2, |cols| {
-                            // Buy side
-                            cols[0].label(RichText::new("1. BUY AT SOURCE:").color(Color32::from_rgb(0, 230, 150)).strong());
-                            cols[0].label(RichText::new(format!("{}x {}", stop.deal.quantity, stop.deal.item_name)).strong());
-                            cols[0].label(format!("Unit: {:.2} ISK (Total: {:.2}M ISK)", stop.deal.buy_price, stop.deal.capital_required / 1_000_000.0));
-                            cols[0].label(RichText::new(&stop.deal.source_station_name).color(Color32::GRAY).size(11.0));
-                            if cols[0].small_button("📋 Copy Buy Station").clicked() {
-                                cols[0].output_mut(|o| o.copied_text = stop.deal.source_station_name.clone());
+                            if let Some(msg) = self.render_route_stop_card(&mut cols[0], &chunk[0]) {
+                                route_toast = Some(msg);
                             }
-
-                            // Sell side
-                            cols[1].label(RichText::new(format!("2. WARP {} JUMPS & SELL:", stop.deal.jumps_source_dest)).color(Color32::from_rgb(255, 180, 50)).strong());
-                            cols[1].label(RichText::new(format!("Destination: {}", stop.deal.dest_system_name)).color(Color32::from_rgb(255, 140, 240)).strong());
-                            cols[1].label(
-                                RichText::new(format!("Net Profit: +{:.2}M ISK (+{:.1}% ROI)", stop.deal.net_profit / 1_000_000.0, stop.deal.net_profit_pct))
-                                    .color(Color32::from_rgb(0, 255, 140))
-                                    .strong(),
-                            );
-                            cols[1].label(RichText::new(&stop.deal.dest_station_name).color(Color32::GRAY).size(11.0));
-                            if cols[1].small_button("📋 Copy Sell Station").clicked() {
-                                cols[1].output_mut(|o| o.copied_text = stop.deal.dest_station_name.clone());
+                            if let Some(msg) = self.render_route_stop_card(&mut cols[1], &chunk[1]) {
+                                route_toast = Some(msg);
                             }
                         });
-                    });
-                ui.add_space(6.0);
+                    } else {
+                        ui.columns(2, |cols| {
+                            if let Some(msg) = self.render_route_stop_card(&mut cols[0], &chunk[0]) {
+                                route_toast = Some(msg);
+                            }
+                        });
+                    }
+                    ui.add_space(6.0);
+                }
+            } else {
+                for stop in &route.stops {
+                    if let Some(msg) = self.render_route_stop_card(ui, stop) {
+                        route_toast = Some(msg);
+                    }
+                    ui.add_space(6.0);
+                }
             }
 
             ui.add_space(10.0);
@@ -2360,19 +3171,25 @@ impl DesktopApp {
                     .color(Color32::from_rgb(180, 215, 255)),
             );
         });
+
+        if let Some(msg) = route_toast {
+            self.set_toast(msg);
+        }
     }
 
     fn start_chain_search(&mut self) {
         if self.chain_is_running || self.deals.is_empty() {
             return;
         }
+        let (Some(sde), Some(graph)) = (&self.sde, &self.graph) else {
+            return;
+        };
         self.chain_is_running = true;
         let deals = self.deals.clone();
-        let graph = Arc::clone(&self.graph);
+        let graph = Arc::clone(graph);
         let tx = self.chain_tx.clone();
 
-        let home_id = self
-            .sde
+        let home_id = sde
             .get_system_id(&self.home_system)
             .unwrap_or(30000142);
 
@@ -2382,15 +3199,13 @@ impl DesktopApp {
             beam_width: 15,
             detour_enabled: self.chain_detour_enabled,
             max_detour_jumps: self.chain_max_detour,
-            ship_max_volume: if self.ship_is_big {
-                BIG_HAULER.max_volume
-            } else {
-                SMALL_HAULER.max_volume
+            ship_max_volume: {
+                let ship = self.current_ship();
+                ship.max_volume
             },
-            ship_max_budget: if self.ship_is_big {
-                BIG_HAULER.max_budget
-            } else {
-                SMALL_HAULER.max_budget
+            ship_max_budget: {
+                let ship = self.current_ship();
+                ship.max_budget
             },
             safe_only: self.safe_only,
         };
@@ -2425,30 +3240,53 @@ impl DesktopApp {
                 ui.add_space(8.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    // Max Chain Legs
-                    ui.label(RichText::new("Max Legs:").strong());
-                    ui.add(
-                        egui::Slider::new(&mut self.chain_max_legs, 1..=8)
-                            .text("legs")
-                            .clamp_to_range(true),
-                    );
+                    ui.scope(|ui| {
+                        // Distinct, visible rail styling with cyan border and filled track
+                        ui.spacing_mut().slider_rail_height = 6.0;
+                        let mut visuals = ui.visuals_mut().clone();
+                        visuals.widgets.inactive.bg_fill = Color32::from_rgb(26, 42, 68);
+                        visuals.widgets.inactive.bg_stroke = Stroke::new(1.5_f32, Color32::from_rgb(0, 180, 240));
+                        visuals.widgets.hovered.bg_fill = Color32::from_rgb(36, 58, 92);
+                        visuals.widgets.hovered.bg_stroke = Stroke::new(2.0_f32, Color32::from_rgb(0, 220, 255));
+                        visuals.widgets.active.bg_fill = Color32::from_rgb(46, 74, 116);
+                        visuals.widgets.active.bg_stroke = Stroke::new(2.0_f32, Color32::from_rgb(0, 255, 200));
+                        visuals.selection.bg_fill = Color32::from_rgb(0, 170, 230);
+                        visuals.slider_trailing_fill = true;
+                        *ui.visuals_mut() = visuals;
 
-                    ui.separator();
+                        // Max Chain Legs
+                        ui.label(RichText::new("Max Legs:").strong());
+                        ui.add(
+                            egui::Slider::new(&mut self.chain_max_legs, 1..=8)
+                                .text("legs")
+                                .clamp_to_range(true),
+                        );
 
-                    // En-route detour toggle
-                    ui.checkbox(&mut self.chain_detour_enabled, RichText::new("En-Route Pickups").strong());
+                        ui.separator();
 
-                    // Detour Tolerance slider
-                    ui.add_enabled(
-                        self.chain_detour_enabled,
-                        egui::Slider::new(&mut self.chain_max_detour, 0..=5)
-                            .text("max detour jumps")
-                            .clamp_to_range(true),
-                    );
+                        // En-route detour toggle
+                        ui.checkbox(&mut self.chain_detour_enabled, RichText::new("En-Route Pickups").strong());
+
+                        // Detour Tolerance slider
+                        ui.add_enabled(
+                            self.chain_detour_enabled,
+                            egui::Slider::new(&mut self.chain_max_detour, 0..=5)
+                                .text("max detour jumps")
+                                .clamp_to_range(true),
+                        );
+                    });
 
                     if !self.chain_detour_enabled {
                         ui.label(RichText::new("(Strict on-route systems only)").color(Color32::GRAY));
                     }
+
+                    ui.separator();
+                    ui.label(
+                        RichText::new("✓ Finite Station Stock Enforced")
+                            .color(Color32::from_rgb(0, 255, 140))
+                            .size(11.5)
+                            .strong(),
+                    );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if self.chain_is_running {
@@ -2665,9 +3503,9 @@ impl DesktopApp {
         let mut stop_idx = 1;
 
         // ── 1. Start / Departure Node ──
-        let home_id = self.sde.get_system_id(&self.home_system);
+        let home_id = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
         let home_sec = home_id
-            .and_then(|id| self.sde.get_system_security(id))
+            .and_then(|id| self.sde.as_ref().and_then(|s| s.get_system_security(id)))
             .unwrap_or(1.0);
         let home_sec_col = security_color(home_sec);
 
@@ -2693,7 +3531,7 @@ impl DesktopApp {
                         )
                         .fill(Color32::from_rgb(0, 200, 255));
                         if ui.add(sys_btn).clicked() {
-                            ui.output_mut(|o| o.copied_text = home_copy.clone());
+                            copy_to_clipboard(ui, home_copy.clone());
                             self.set_toast(format!("Copied start system '{}'", home_copy));
                         }
                     });
@@ -2769,7 +3607,7 @@ impl DesktopApp {
                     .cargo_loaded
                     .first()
                     .map(|s| s.deal.source_security)
-                    .or_else(|| self.sde.get_system_security(pickup.system_id))
+                    .or_else(|| self.sde.as_ref().and_then(|s| s.get_system_security(pickup.system_id)))
                     .unwrap_or(1.0);
                 let sec_col = security_color(sec);
 
@@ -2808,7 +3646,7 @@ impl DesktopApp {
                                     )
                                     .fill(Color32::from_rgb(0, 230, 170));
                                     if ui.add(st_btn).clicked() {
-                                        ui.output_mut(|o| o.copied_text = st_copy.clone());
+                                        copy_to_clipboard(ui, st_copy.clone());
                                         self.set_toast(format!("Copied station '{}'", st_copy));
                                     }
                                 }
@@ -2818,7 +3656,7 @@ impl DesktopApp {
                                 )
                                 .fill(Color32::from_rgb(0, 200, 255));
                                 if ui.add(sys_btn).clicked() {
-                                    ui.output_mut(|o| o.copied_text = sys_copy.clone());
+                                    copy_to_clipboard(ui, sys_copy.clone());
                                     self.set_toast(format!("Copied system '{}'", sys_copy));
                                 }
                             });
@@ -2878,7 +3716,7 @@ impl DesktopApp {
                                 )
                                 .fill(Color32::from_rgb(0, 220, 255));
                                 if ui.add(item_btn).clicked() {
-                                    ui.output_mut(|o| o.copied_text = item_copy.clone());
+                                    copy_to_clipboard(ui, item_copy.clone());
                                     self.set_toast(format!("Copied item '{}'", item_copy));
                                 }
                             });
@@ -2899,6 +3737,13 @@ impl DesktopApp {
                                         .size(11.0)
                                         .color(Color32::from_rgb(0, 220, 255)),
                                 );
+                                if slot.deal.source_order_volume_remain > 0 {
+                                    ui.label(
+                                        RichText::new(format!("• Stock: {}/{} avail", slot.deal.quantity, slot.deal.source_order_volume_remain))
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(180, 210, 245)),
+                                    );
+                                }
                                 ui.label(
                                     RichText::new(format!("(+{:.2}M ISK net)", slot.net_profit / 1_000_000.0))
                                         .size(11.0)
@@ -2918,7 +3763,7 @@ impl DesktopApp {
                                     );
                                     let st_copy = slot.deal.source_station_name.clone();
                                     if ui.small_button("📋 Station").clicked() {
-                                        ui.output_mut(|o| o.copied_text = st_copy.clone());
+                                        copy_to_clipboard(ui, st_copy.clone());
                                         self.set_toast(format!("Copied station '{}'", st_copy));
                                     }
                                 });
@@ -2945,7 +3790,7 @@ impl DesktopApp {
                 .cargo_sold
                 .first()
                 .map(|s| s.deal.dest_security)
-                .or_else(|| self.sde.get_system_security(leg.sell.system_id))
+                .or_else(|| self.sde.as_ref().and_then(|s| s.get_system_security(leg.sell.system_id)))
                 .unwrap_or(1.0);
             let sec_col = security_color(sec);
 
@@ -2985,7 +3830,7 @@ impl DesktopApp {
                                 )
                                 .fill(Color32::from_rgb(0, 230, 170));
                                 if ui.add(st_btn).clicked() {
-                                    ui.output_mut(|o| o.copied_text = st_copy.clone());
+                                    copy_to_clipboard(ui, st_copy.clone());
                                     self.set_toast(format!("Copied station '{}'", st_copy));
                                 }
                             }
@@ -2995,7 +3840,7 @@ impl DesktopApp {
                             )
                             .fill(Color32::from_rgb(0, 200, 255));
                             if ui.add(sys_btn).clicked() {
-                                ui.output_mut(|o| o.copied_text = sys_copy.clone());
+                                copy_to_clipboard(ui, sys_copy.clone());
                                 self.set_toast(format!("Copied system '{}'", sys_copy));
                             }
                         });
@@ -3055,7 +3900,7 @@ impl DesktopApp {
                             )
                             .fill(Color32::from_rgb(0, 220, 255));
                             if ui.add(item_btn).clicked() {
-                                ui.output_mut(|o| o.copied_text = item_copy.clone());
+                                copy_to_clipboard(ui, item_copy.clone());
                                 self.set_toast(format!("Copied item '{}'", item_copy));
                             }
                         });
@@ -3171,7 +4016,7 @@ impl DesktopApp {
 
                         if ui.add(copy_btn).clicked() {
                             let trail = route.waypoint_names.join(" -> ");
-                            ui.output_mut(|o| o.copied_text = trail);
+                            copy_to_clipboard(ui, trail);
                             self.set_toast("Copied chained autopilot waypoints to clipboard!");
                         }
                     });
@@ -3420,9 +4265,121 @@ impl DesktopApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Sales Tax % (on sell order):");
-                        ui.add(egui::DragValue::new(&mut self.sales_tax_pct).speed(0.1).range(3.6..=8.0).suffix("%"));
-                        ui.label(RichText::new("(Default 8.0%, reduced by Accounting skill)").color(Color32::GRAY));
+                        ui.add(egui::DragValue::new(&mut self.sales_tax_pct).speed(0.1).range(3.375..=8.0).suffix("%"));
+                        ui.label(RichText::new("(Default 8.0%, reduced by Accounting skill to 3.375%)").color(Color32::GRAY));
                     });
+
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Skill Presets:").strong());
+                        if ui.small_button("Max Skills (Accounting V / Broker V)").on_hover_text("Accounting V: 3.375% sales tax\nBroker Relations V: 1.0% broker fee").clicked() {
+                            self.sales_tax_pct = 3.375;
+                            self.broker_fee_pct = 1.0;
+                            self.set_toast("Applied Max Skills: 3.375% sales tax, 1.0% broker fee");
+                        }
+                        if ui.small_button("Level IV Skills").on_hover_text("Accounting IV: 4.3% sales tax\nBroker Relations IV: 1.4% broker fee").clicked() {
+                            self.sales_tax_pct = 4.3;
+                            self.broker_fee_pct = 1.4;
+                            self.set_toast("Applied Level IV Skills: 4.3% sales tax, 1.4% broker fee");
+                        }
+                        if ui.small_button("Base / Untrained").on_hover_text("Accounting 0: 8.0% sales tax\nBroker Relations 0: 3.0% broker fee").clicked() {
+                            self.sales_tax_pct = 8.0;
+                            self.broker_fee_pct = 3.0;
+                            self.set_toast("Applied Untrained: 8.0% sales tax, 3.0% broker fee");
+                        }
+                    });
+                });
+
+            ui.add_space(12.0);
+
+            // Card: Vessel Cargo Capacity & Anti-Gank Collateral Budget
+            egui::Frame::none()
+                .fill(Color32::from_rgb(18, 25, 40))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(32, 45, 72)))
+                .rounding(6.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("🛡️ Vessel Cargo Capacity & Anti-Gank Collateral Budget").size(15.0).color(Color32::from_rgb(0, 210, 255)).strong());
+                    ui.label("Configure cargo hold volume and ISK collateral caps to match your active ship hull and prevent suicide ganking:");
+                    ui.add_space(8.0);
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Profile Mode:").strong());
+                        if ui.radio_value(&mut self.use_custom_ship, false, "Standard Hauler Presets").clicked() {
+                            self.set_toast(if self.ship_is_big { "Active: Big Hauler (60k m³ · 500M)" } else { "Active: Small Hauler (30k m³ · 50M)" });
+                        }
+                        if ui.radio_value(&mut self.use_custom_ship, true, "Custom Ship & Anti-Gank Sizing").clicked() {
+                            self.set_toast("Active: Custom Vessel & Anti-Gank Protection");
+                        }
+                    });
+
+                    if !self.use_custom_ship {
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Active Preset:");
+                            if ui.selectable_label(self.ship_is_big, "Big Hauler (Deep Space Transport: 60,000 m³ · 500M ISK)").clicked() {
+                                self.ship_is_big = true;
+                                self.set_toast("Selected Big Hauler preset (60k m³ · 500M ISK)");
+                            }
+                            if ui.selectable_label(!self.ship_is_big, "Small Hauler (T1 Industrial: 30,000 m³ · 50M ISK)").clicked() {
+                                self.ship_is_big = false;
+                                self.set_toast("Selected Small Hauler preset (30k m³ · 50M ISK)");
+                            }
+                        });
+                    } else {
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("Hull Quick Presets:").strong());
+                            if ui.small_button("T1 Hauler (30k m³ · 50M ISK)").on_hover_text("Iteron Mark V, Bestower, Tayra, Mammoth\nAnti-Gank Cap: 50M ISK (safe against 1 Catalyst)").clicked() {
+                                self.custom_cargo_vol = 30_000.0;
+                                self.custom_budget_isk = 50_000_000.0;
+                                self.set_toast("Loaded T1 Hauler preset (30k m³ · 50M ISK cap)");
+                            }
+                            if ui.small_button("Deep Space Transport (60k m³ · 500M ISK)").on_hover_text("Occator, Bustard, Mastodon, Impel (Overheated tank)\nAnti-Gank Cap: 500M ISK").clicked() {
+                                self.custom_cargo_vol = 60_000.0;
+                                self.custom_budget_isk = 500_000_000.0;
+                                self.set_toast("Loaded DST preset (60k m³ · 500M ISK cap)");
+                            }
+                            if ui.small_button("Blockade Runner (12k m³ · 300M ISK)").on_hover_text("Prowler, Prorator, Crane, Viator (Cloaky / Immune to Cargo Scanners)\nAnti-Gank Cap: 300M ISK").clicked() {
+                                self.custom_cargo_vol = 12_000.0;
+                                self.custom_budget_isk = 300_000_000.0;
+                                self.set_toast("Loaded Blockade Runner preset (12k m³ · 300M ISK cap)");
+                            }
+                            if ui.small_button("Freighter (900k m³ · 2.0B ISK)").on_hover_text("Charon, Obelisk, Fenrir, Providence\nAnti-Gank Cap: 2.0B ISK (Tornado gank threshold)").clicked() {
+                                self.custom_cargo_vol = 900_000.0;
+                                self.custom_budget_isk = 2_000_000_000.0;
+                                self.set_toast("Loaded Freighter preset (900k m³ · 2.0B ISK cap)");
+                            }
+                        });
+
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Cargo Hold Capacity (m³):");
+                            ui.add(egui::DragValue::new(&mut self.custom_cargo_vol).speed(250.0).range(100.0..=1_500_000.0).suffix(" m³"));
+                            ui.label(RichText::new(format!("({:.1}k m³)", self.custom_cargo_vol / 1000.0)).color(Color32::from_rgb(0, 220, 255)));
+                        });
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Anti-Gank Collateral Budget (ISK):");
+                            ui.add(egui::DragValue::new(&mut self.custom_budget_isk).speed(5_000_000.0).range(1_000_000.0..=100_000_000_000.0));
+                            let isk_badge = if self.custom_budget_isk >= 1_000_000_000.0 {
+                                format!("{:.2}B ISK", self.custom_budget_isk / 1_000_000_000.0)
+                            } else {
+                                format!("{:.1}M ISK", self.custom_budget_isk / 1_000_000.0)
+                            };
+                            ui.label(RichText::new(isk_badge).color(Color32::from_rgb(255, 215, 0)).strong());
+                        });
+
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(
+                                "💡 Anti-Gank Rule of Thumb: In Highsec (0.5 - 1.0), carrying more than 100M ISK in a T1 industrial or 1B - 2B ISK in a standard freighter makes you a prime target for suicide gankers (Catalysts / Tornadoes). Capping your trip budget prevents dangerous cargo exposure."
+                            )
+                            .size(11.0)
+                            .color(Color32::from_rgb(180, 200, 225)),
+                        );
+                    }
                 });
 
             ui.add_space(12.0);
@@ -3491,7 +4448,7 @@ impl DesktopApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Alert Minimum Net ROI %:");
-                        ui.add(egui::DragValue::new(&mut self.sound_min_roi_pct).speed(1.0).range(15.0..=1000.0).suffix("%"));
+                        ui.add(egui::DragValue::new(&mut self.sound_min_roi_pct).speed(1.0).range(10.0..=1000.0).suffix("%"));
                         ui.label(RichText::new("(Default: 100.0% Net ROI)").color(Color32::GRAY));
 
                         ui.add_space(10.0);
@@ -3535,7 +4492,7 @@ impl DesktopApp {
                 .show(ui, |ui| {
                     ui.label(RichText::new("🛡️ Domain Rules & Invariants").size(15.0).color(Color32::from_rgb(0, 210, 255)).strong());
                     ui.add_space(6.0);
-                    ui.label("• Strict 15.0% Net Profitability: Deals producing under 15% net return after all taxes are rejected.");
+                    ui.label("• Strict 10.0% Net Profitability: Deals producing under 10% net return after all taxes are rejected.");
                     ui.label("• Big Hauler Constraints: 60,000 m³ volume capacity / 500,000,000 ISK max budget.");
                     ui.label("• Small Hauler Constraints: 30,000 m³ volume capacity / 50,000,000 ISK max budget.");
                     ui.label("• True Profit-Per-Jump: Jumps required to fly to the pickup station are counted in total flight distance.");
@@ -3543,6 +4500,226 @@ impl DesktopApp {
                     ui.label("• Highsec Space Only: All trade routes and station orders are restricted to high security space.");
                 });
         });
+    }
+
+    fn render_splash_screen(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(7, 9, 24))
+                    .inner_margin(24.0),
+            )
+            .show(ctx, |ui| {
+                let total_rect = ui.max_rect();
+                let center = total_rect.center();
+                let time = ctx.input(|i| i.time) as f32;
+
+                // Rotating tips timer
+                if self.startup_last_tip.elapsed() >= Duration::from_secs(4) {
+                    self.startup_tip_index = (self.startup_tip_index + 1) % TIPS.len();
+                    self.startup_last_tip = Instant::now();
+                }
+
+                // Holographic radar / scanner background (scoped borrow)
+                {
+                    let painter = ui.painter();
+                    let radar_center = egui::pos2(center.x, center.y - 70.0);
+                    let base_radius = 120.0_f32;
+
+                    // Range rings
+                    for (idx, r_factor) in [0.35_f32, 0.65_f32, 1.0_f32, 1.35_f32].iter().enumerate() {
+                        let r = base_radius * r_factor;
+                        let alpha = if idx == 2 { 60 } else { 25 };
+                        painter.circle_stroke(
+                            radar_center,
+                            r,
+                            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 229, 255, alpha)),
+                        );
+                    }
+
+                    // Radar sweep line
+                    let sweep_angle = time * 2.2_f32;
+                    let sweep_end = egui::pos2(
+                        radar_center.x + (base_radius * 1.35_f32) * sweep_angle.cos(),
+                        radar_center.y + (base_radius * 1.35_f32) * sweep_angle.sin(),
+                    );
+                    painter.line_segment(
+                        [radar_center, sweep_end],
+                        Stroke::new(1.5_f32, Color32::from_rgba_unmultiplied(0, 255, 220, 180)),
+                    );
+
+                    // Pulsing target reticle
+                    let pulse = (time * 4.0_f32).sin().abs();
+                    let reticle_radius = 4.0_f32 + pulse * 3.0_f32;
+                    painter.circle_filled(
+                        radar_center,
+                        reticle_radius,
+                        Color32::from_rgba_unmultiplied(0, 255, 200, 220),
+                    );
+
+                    // Crosshair tick marks
+                    for angle in [
+                        0.0_f32,
+                        std::f32::consts::FRAC_PI_2,
+                        std::f32::consts::PI,
+                        3.0_f32 * std::f32::consts::FRAC_PI_2,
+                    ] {
+                        let p1 = egui::pos2(
+                            radar_center.x + (base_radius * 0.9_f32) * angle.cos(),
+                            radar_center.y + (base_radius * 0.9_f32) * angle.sin(),
+                        );
+                        let p2 = egui::pos2(
+                            radar_center.x + (base_radius * 1.4_f32) * angle.cos(),
+                            radar_center.y + (base_radius * 1.4_f32) * angle.sin(),
+                        );
+                        painter.line_segment(
+                            [p1, p2],
+                            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 180, 240, 45)),
+                        );
+                    }
+                }
+
+                // Centered UI Content
+                ui.vertical_centered(|ui| {
+                    ui.add_space((total_rect.height() * 0.08_f32).max(10.0));
+
+                    // Glowing Branding Header
+                    ui.label(
+                        RichText::new("EVE TRAVELING MERCHANT")
+                            .size(30.0)
+                            .color(Color32::from_rgb(0, 229, 255))
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new("AUTONOMOUS MULTI-ITEM ARBITRAGE & CORRIDOR ROUTE ENGINE")
+                            .size(11.0)
+                            .color(Color32::from_rgb(140, 175, 215))
+                            .extra_letter_spacing(2.0_f32),
+                    );
+
+                    ui.add_space(150.0); // Radar height offset
+
+                    // Active Stage Pill
+                    let stage_text = format!(
+                        "STAGE {} OF {} • {}",
+                        self.startup_progress.stage_index,
+                        self.startup_progress.total_stages,
+                        self.startup_progress.stage_name.to_uppercase()
+                    );
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_unmultiplied(16, 26, 48, 220))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 240)))
+                        .rounding(4.0)
+                        .inner_margin(egui::vec2(14.0, 5.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(stage_text)
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(255, 215, 0))
+                                    .strong(),
+                            );
+                        });
+
+                    ui.add_space(12.0);
+
+                    // Glowing Progress Bar
+                    let progress = self.startup_progress.percent.clamp(0.0, 1.0);
+                    let bar_width = 540.0_f32.min(total_rect.width() - 60.0);
+                    let bar_height = 20.0;
+
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(bar_width, bar_height), egui::Sense::hover());
+                    let bar_painter = ui.painter();
+
+                    bar_painter.rect_filled(rect, 4.0, Color32::from_rgb(12, 17, 30));
+                    bar_painter.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, Color32::from_rgb(30, 48, 78)));
+
+                    if progress > 0.001 {
+                        let fill_rect = egui::Rect::from_min_size(
+                            rect.min,
+                            Vec2::new(bar_width * progress, bar_height),
+                        );
+                        bar_painter.rect_filled(fill_rect, 4.0, Color32::from_rgb(0, 210, 255));
+                    }
+
+                    let pct_label = format!("{:.0}%", progress * 100.0);
+                    bar_painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        pct_label,
+                        egui::FontId::proportional(12.0),
+                        Color32::from_rgb(255, 255, 255),
+                    );
+
+                    ui.add_space(12.0);
+
+                    // Operation Detail Subtitle
+                    ui.label(
+                        RichText::new(&self.startup_progress.detail)
+                            .size(13.0)
+                            .color(Color32::from_rgb(215, 230, 255)),
+                    );
+
+                    // Error Alert Box (if any)
+                    if let Some(ref err) = self.startup_progress.error {
+                        ui.add_space(14.0);
+                        egui::Frame::none()
+                            .fill(Color32::from_rgba_unmultiplied(48, 12, 16, 230))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(231, 76, 60)))
+                            .rounding(5.0)
+                            .inner_margin(10.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(format!("✘ Startup Warning: {}", err))
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(255, 120, 120))
+                                        .strong(),
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .button(RichText::new("⚡ Enter Offline Mode").color(Color32::from_rgb(0, 229, 255)))
+                                        .clicked()
+                                    {
+                                        self.is_startup = false;
+                                    }
+                                });
+                            });
+                    }
+
+                    ui.add_space(20.0);
+
+                    // Rotating Tip Box
+                    let tip = TIPS[self.startup_tip_index];
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_unmultiplied(10, 15, 26, 200))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(24, 34, 52)))
+                        .rounding(5.0)
+                        .inner_margin(egui::vec2(16.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.set_max_width(560.0);
+                            ui.label(
+                                RichText::new(tip)
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(160, 190, 225))
+                                    .italics(),
+                            );
+                        });
+
+                    ui.add_space(16.0);
+
+                    // Skip Button
+                    if ui
+                        .button(
+                            RichText::new("⏩ Skip Pre-Fetch & Open Dashboard")
+                                .size(11.0)
+                                .color(Color32::from_rgb(110, 135, 170)),
+                        )
+                        .clicked()
+                    {
+                        self.is_startup = false;
+                    }
+                });
+            });
     }
 }
 

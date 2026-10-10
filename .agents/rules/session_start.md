@@ -25,7 +25,7 @@ make test    # or: cargo test --verbose
 - If errors or warnings occur, resolve them immediately before responding.
 
 ## 3. Core Business Invariants to Always Enforce
-- **15% Minimum Net Profitability**: Every trade deal must yield $\ge 15.0\%$ net profit after broker fees and sales taxes.
+- **10% Minimum Net Profitability**: Every trade deal must yield $\ge 10.0\%$ net profit after broker fees and sales taxes.
 - **Ship Constraints**:
   - Big Hauler: $\le 60,000\text{ m}^3$ cargo, $\le 500,000,000\text{ ISK}$ purchase budget.
   - Small Hauler: $\le 30,000\text{ m}^3$ cargo, $\le 50,000,000\text{ ISK}$ purchase budget.

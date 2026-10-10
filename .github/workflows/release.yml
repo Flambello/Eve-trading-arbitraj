@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build_release_linux:
     name: Build & Package Linux x86_64 Release

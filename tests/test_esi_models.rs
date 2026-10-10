@@ -168,10 +168,18 @@ fn test_cheapest_sell_and_best_buy_selection() {
     assert!(best_buy(&[]).is_none());
 
     // Buy-only orders return None for cheapest_sell
-    let buy_only: Vec<_> = mixed_orders.iter().filter(|o| o.is_buy_order).cloned().collect();
+    let buy_only: Vec<_> = mixed_orders
+        .iter()
+        .filter(|o| o.is_buy_order)
+        .cloned()
+        .collect();
     assert!(cheapest_sell(&buy_only).is_none());
 
     // Sell-only orders return None for best_buy
-    let sell_only: Vec<_> = mixed_orders.iter().filter(|o| !o.is_buy_order).cloned().collect();
+    let sell_only: Vec<_> = mixed_orders
+        .iter()
+        .filter(|o| !o.is_buy_order)
+        .cloned()
+        .collect();
     assert!(best_buy(&sell_only).is_none());
 }

@@ -8,14 +8,14 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$SCRIPT_DIR"
 
-GENERATOR_URL="https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py"
 GENERATOR_SCRIPT="$SCRIPT_DIR/.flatpak-cargo-generator.py"
 
 if [ ! -f "$GENERATOR_SCRIPT" ]; then
-    echo "==> Downloading official flatpak-cargo-generator.py..."
-    curl -fsSL "$GENERATOR_URL" -o "$GENERATOR_SCRIPT"
-    chmod +x "$GENERATOR_SCRIPT"
+    echo "Error: Generator script not found at $GENERATOR_SCRIPT" >&2
+    echo "Please ensure the repository is checked out with all packaging assets." >&2
+    exit 1
 fi
+chmod +x "$GENERATOR_SCRIPT"
 
 echo "==> Generating cargo-sources.json from Cargo.lock..."
 if command -v uv >/dev/null 2>&1; then

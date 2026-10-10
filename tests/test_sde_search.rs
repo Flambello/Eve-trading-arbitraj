@@ -112,15 +112,22 @@ async fn get_test_sde() -> SdeLoader {
 
 #[test]
 fn test_sde_in_memory_fixtures_complete() {
-    let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to initialize in-memory fixtures");
+    let sde =
+        SdeLoader::in_memory_with_fixtures().expect("Failed to initialize in-memory fixtures");
     assert_eq!(sde.get_system_id("Jita"), Some(30000142));
     assert_eq!(sde.get_system_name(30000142), Some("Jita".to_string()));
     assert_eq!(
         sde.get_station_name(60003760),
         Some("Jita IV - Moon 4 - Caldari Navy Assembly Plant".to_string())
     );
-    assert_eq!(sde.get_item_info(34).map(|i| i.name), Some("Tritanium".to_string()));
-    assert_eq!(sde.get_item_info(9850).map(|i| i.name), Some("Spirits".to_string()));
+    assert_eq!(
+        sde.get_item_info(34).map(|i| i.name),
+        Some("Tritanium".to_string())
+    );
+    assert_eq!(
+        sde.get_item_info(9850).map(|i| i.name),
+        Some("Spirits".to_string())
+    );
 }
 
 #[tokio::test]

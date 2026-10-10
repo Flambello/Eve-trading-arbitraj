@@ -13,6 +13,7 @@ use tokio::sync::{Mutex, Semaphore};
 
 const ESI_BASE: &str = "https://esi.evetech.net/latest";
 const USER_AGENT_VAL: &str = "eve-trade-scout/0.1.0 (EVE Online Arbitrage Scout)";
+pub const MAX_PAGES_LIMIT: u32 = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredEtag {
@@ -281,12 +282,21 @@ impl EsiClient {
             .and_then(|h| h.to_str().ok())
             .map(|s| s.to_string());
 
-        let total_pages = resp
+        let raw_pages = resp
             .headers()
             .get("x-pages")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(1);
+
+        if raw_pages > MAX_PAGES_LIMIT {
+            bail!(
+                "ESI response exceeded maximum safe pagination limit ({} pages; limit is {})",
+                raw_pages,
+                MAX_PAGES_LIMIT
+            );
+        }
+        let total_pages = raw_pages;
 
         let body_text = resp.text().await?;
         let mut all_items: Vec<T> = serde_json::from_str(&body_text)

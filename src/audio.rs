@@ -18,6 +18,14 @@ pub fn play_test_sound() {
     });
 }
 
+/// Validate that a sound theme identifier only contains safe alphanumeric and hyphen/underscore characters.
+pub fn is_safe_sound_theme_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Send a desktop notification banner asynchronously when a high-profit trade is found.
 pub fn send_desktop_notification(summary: &str, body: &str) {
     let summary = summary.to_string();
@@ -29,6 +37,7 @@ pub fn send_desktop_notification(summary: &str, body: &str) {
                 "EVE Traveling Merchant",
                 "-u",
                 "normal",
+                "--",
                 &summary,
                 &body,
             ])
@@ -60,10 +69,17 @@ pub fn has_audio_support() -> bool {
 }
 
 fn play_sound_internal(sound_theme_id: &str) {
+    if !is_safe_sound_theme_id(sound_theme_id) {
+        return;
+    }
+
     #[cfg(test)]
     {
         // Guard against spawning external processes and emitting terminal bells in unit tests
-        assert!(!sound_theme_id.is_empty(), "Sound theme ID must not be empty");
+        assert!(
+            !sound_theme_id.is_empty(),
+            "Sound theme ID must not be empty"
+        );
     }
 
     #[cfg(not(test))]
@@ -112,7 +128,9 @@ mod tests {
     fn test_audio_support_detection() {
         // 1. Empty or nonexistent path must return false
         assert!(!check_audio_support_in_paths(OsStr::new("")));
-        assert!(!check_audio_support_in_paths(OsStr::new("/tmp/nonexistent_audio_path_xyz")));
+        assert!(!check_audio_support_in_paths(OsStr::new(
+            "/tmp/nonexistent_audio_path_xyz"
+        )));
 
         // 2. has_audio_support returns a valid bool without panicking
         let supported = has_audio_support();

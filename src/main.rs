@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use eve_trade_scout::arbitrage::{bundle_route_cargo, find_deals, ArbitrageConfig, ArbitrageDeal};
+use eve_trade_scout::arbitrage::{
+    bundle_route_cargo, find_deals, sanitize_csv_cell, ArbitrageConfig, ArbitrageDeal,
+};
 use eve_trade_scout::config::{profile_from_str, UserConfig};
 use eve_trade_scout::esi::{fetch_markets, EsiClient};
 use eve_trade_scout::graph::SystemGraph;
@@ -776,10 +778,11 @@ fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
     )?;
 
     for d in deals {
-        // Escape quotes if needed
-        let safe_name = d.item_name.replace('"', "\"\"");
-        let safe_src_sta = d.source_station_name.replace('"', "\"\"");
-        let safe_dst_sta = d.dest_station_name.replace('"', "\"\"");
+        let safe_name = sanitize_csv_cell(&d.item_name);
+        let safe_src_sys = sanitize_csv_cell(&d.source_system_name);
+        let safe_src_sta = sanitize_csv_cell(&d.source_station_name);
+        let safe_dst_sys = sanitize_csv_cell(&d.dest_system_name);
+        let safe_dst_sta = sanitize_csv_cell(&d.dest_station_name);
 
         writeln!(
             file,
@@ -790,9 +793,9 @@ fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
             d.sell_price,
             d.spread_pct,
             d.net_profit_pct,
-            d.source_system_name,
+            safe_src_sys,
             safe_src_sta,
-            d.dest_system_name,
+            safe_dst_sys,
             safe_dst_sta,
             d.quantity,
             d.volume_used,

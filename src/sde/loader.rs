@@ -12,6 +12,9 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 const FUZZWORK_SDE_URL: &str = "https://www.fuzzwork.co.uk/dump/latest-sqlite.db.gz";
+pub const MAX_DECOMPRESSED_SDE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GB limit
+pub const MIN_SDE_COMPRESSED_BYTES: u64 = 20 * 1024 * 1024; // 20 MB minimum
+pub const MAX_SDE_COMPRESSED_BYTES: u64 = 400 * 1024 * 1024; // 400 MB maximum
 
 #[derive(Debug, Clone)]
 pub struct ItemInfo {
@@ -201,6 +204,17 @@ impl SdeLoader {
         let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("Failed to open SDE database at {:?}", db_path))?;
 
+        // Security check: Validate database integrity against corruption or tampering
+        {
+            let mut stmt = conn.prepare("PRAGMA quick_check")?;
+            let status: String = stmt
+                .query_row([], |r| r.get(0))
+                .unwrap_or_else(|_| "error".into());
+            if status != "ok" {
+                bail!("SDE SQLite database integrity check failed: {}", status);
+            }
+        }
+
         // Inspect table structure for volume columns
         let has_inv_volumes = {
             let mut stmt = conn.prepare(
@@ -345,6 +359,17 @@ impl SdeLoader {
             bail!("Failed to download SDE: HTTP {}", resp.status());
         }
 
+        if let Some(len) = resp.content_length() {
+            if !(MIN_SDE_COMPRESSED_BYTES..=MAX_SDE_COMPRESSED_BYTES).contains(&len) {
+                bail!(
+                    "SDE archive Content-Length out of bounds ({} bytes; expected {} to {} bytes)",
+                    len,
+                    MIN_SDE_COMPRESSED_BYTES,
+                    MAX_SDE_COMPRESSED_BYTES
+                );
+            }
+        }
+
         let total_size = resp.content_length().unwrap_or(150_000_000);
         let pb = ProgressBar::new(total_size);
         pb.set_style(
@@ -358,9 +383,18 @@ impl SdeLoader {
         let mut file = File::create(&temp_gz_path)?;
 
         let mut stream = resp.bytes_stream();
+        let mut downloaded_bytes = 0u64;
         use futures_util::StreamExt;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
+            downloaded_bytes += chunk.len() as u64;
+            if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
+                let _ = std::fs::remove_file(&temp_gz_path);
+                bail!(
+                    "SDE download exceeded maximum allowed size threshold ({} bytes)",
+                    MAX_SDE_COMPRESSED_BYTES
+                );
+            }
             file.write_all(&chunk)?;
             pb.inc(chunk.len() as u64);
         }
@@ -369,7 +403,8 @@ impl SdeLoader {
 
         println!(" [SDE] Decompressing gzip archive into SQLite database...");
         let compressed_file = File::open(&temp_gz_path)?;
-        let mut decoder = GzDecoder::new(BufReader::new(compressed_file));
+        let decoder = GzDecoder::new(BufReader::new(compressed_file));
+        let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
 
         let temp_db_path = dest_path.with_extension("sqlite.part");
         let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
@@ -377,10 +412,21 @@ impl SdeLoader {
         let mut buffer = [0u8; 64 * 1024];
         let decomp_pb = ProgressBar::new_spinner();
         decomp_pb.set_message("Decompressing database...");
+        let mut total_decompressed = 0u64;
+
         loop {
-            let bytes_read = decoder.read(&mut buffer)?;
+            let bytes_read = bounded_reader.read(&mut buffer)?;
             if bytes_read == 0 {
                 break;
+            }
+            total_decompressed += bytes_read as u64;
+            if total_decompressed > MAX_DECOMPRESSED_SDE_BYTES {
+                let _ = std::fs::remove_file(&temp_db_path);
+                let _ = std::fs::remove_file(&temp_gz_path);
+                bail!(
+                    "SDE decompression aborted: exceeded maximum safety threshold of {} bytes (potential decompression bomb)",
+                    MAX_DECOMPRESSED_SDE_BYTES
+                );
             }
             out_file.write_all(&buffer[..bytes_read])?;
             decomp_pb.inc(bytes_read as u64);
@@ -388,6 +434,18 @@ impl SdeLoader {
         out_file.flush()?;
         drop(out_file);
         decomp_pb.finish_with_message("Decompression complete!");
+
+        // Verify SQLite database magic header bytes
+        {
+            let mut header = [0u8; 16];
+            let mut check_file = File::open(&temp_db_path)?;
+            check_file.read_exact(&mut header)?;
+            if &header != b"SQLite format 3\0" {
+                let _ = std::fs::remove_file(&temp_db_path);
+                let _ = std::fs::remove_file(&temp_gz_path);
+                bail!("Downloaded file does not contain a valid SQLite database header");
+            }
+        }
 
         std::fs::rename(&temp_db_path, dest_path)?;
         let _ = std::fs::remove_file(&temp_gz_path);

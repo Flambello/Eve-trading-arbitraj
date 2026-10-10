@@ -502,3 +502,23 @@ pub fn bundle_route_cargo(
 
     manifests
 }
+
+/// Neutralize CSV Formula Injection (CWE-1236).
+/// If a cell starts with formula trigger characters (`=`, `+`, `-`, `@`, `\t`, `\r`),
+/// prepends a single quote `'` so spreadsheet applications treat it strictly as literal text.
+/// Also escapes internal double quotes (`"` -> `""`).
+pub fn sanitize_csv_cell(val: &str) -> String {
+    let trimmed = val.trim_start();
+    let escaped = if trimmed.starts_with('=')
+        || trimmed.starts_with('+')
+        || trimmed.starts_with('-')
+        || trimmed.starts_with('@')
+        || trimmed.starts_with('\t')
+        || trimmed.starts_with('\r')
+    {
+        format!("'{}", val)
+    } else {
+        val.to_string()
+    };
+    escaped.replace('"', "\"\"")
+}

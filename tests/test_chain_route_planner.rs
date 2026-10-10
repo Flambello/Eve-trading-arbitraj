@@ -437,7 +437,10 @@ fn test_chain_detour_zero_equals_strict_mode() {
     let r_zero = find_chain_routes(&[d1, d2], &graph, &cfg_zero);
 
     assert_eq!(r_strict.len(), r_zero.len());
-    assert!(!r_strict.is_empty(), "Chain routes must not be empty in strict mode");
+    assert!(
+        !r_strict.is_empty(),
+        "Chain routes must not be empty in strict mode"
+    );
     assert_eq!(r_strict[0].total_profit, r_zero[0].total_profit);
     assert_eq!(r_strict[0].total_jumps, r_zero[0].total_jumps);
 }

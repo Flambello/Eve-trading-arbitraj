@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 mod tests {
-    use eve_trade_scout::arbitrage::{calculate_deal, is_npc_station, ArbitrageConfig, ArbitrageDeal};
+    use eve_trade_scout::arbitrage::{
+        calculate_deal, is_npc_station, ArbitrageConfig, ArbitrageDeal,
+    };
     use eve_trade_scout::config::{BIG_HAULER, SMALL_HAULER};
     use eve_trade_scout::esi::models::MarketOrder;
     use eve_trade_scout::graph::SystemGraph;
@@ -168,7 +170,10 @@ mod tests {
         };
 
         let res_a = calculate_deal(34, &item, &src, &dst_sub10, &cfg, &sde, &graph);
-        assert!(res_a.is_none(), "Deal with 7.4% net ROI must be rejected by calculate_deal");
+        assert!(
+            res_a.is_none(),
+            "Deal with 7.4% net ROI must be rejected by calculate_deal"
+        );
 
         // Deal B: 125 ISK sell price
         // Broker fee: 100 * 3% = 3.0
@@ -190,7 +195,10 @@ mod tests {
         };
 
         let res_b = calculate_deal(34, &item, &src, &dst_above10, &cfg, &sde, &graph);
-        assert!(res_b.is_some(), "Deal with 12.0% net ROI must be accepted by calculate_deal");
+        assert!(
+            res_b.is_some(),
+            "Deal with 12.0% net ROI must be accepted by calculate_deal"
+        );
         let deal = res_b.unwrap();
         assert_eq!(deal.net_profit_pct, 12.0);
     }
@@ -200,11 +208,20 @@ mod tests {
         // Direct verification of eve_trade_scout::arbitrage::is_npc_station
         assert!(is_npc_station(60_003_760), "Jita IV-4 is an NPC station");
         assert!(is_npc_station(60_008_494), "Amarr VIII-4 is an NPC station");
-        assert!(is_npc_station(60_011_866), "Dodixie IX-20 is an NPC station");
+        assert!(
+            is_npc_station(60_011_866),
+            "Dodixie IX-20 is an NPC station"
+        );
 
         // Player-owned Citadels / Upwell Structures have IDs >= 1_000_000_000_000
-        assert!(!is_npc_station(1_028_858_195_912), "Perimeter Citadel is NOT an NPC station");
-        assert!(!is_npc_station(1_030_000_000_001), "Fortizar is NOT an NPC station");
+        assert!(
+            !is_npc_station(1_028_858_195_912),
+            "Perimeter Citadel is NOT an NPC station"
+        );
+        assert!(
+            !is_npc_station(1_030_000_000_001),
+            "Fortizar is NOT an NPC station"
+        );
     }
 
     #[test]
@@ -244,12 +261,18 @@ mod tests {
         // When npc_stations_only = true:
         cfg.npc_stations_only = true;
         let res_rejected = calculate_deal(34, &item, &src, &dst_citadel, &cfg, &sde, &graph);
-        assert!(res_rejected.is_none(), "Citadel trade must be rejected when npc_stations_only is true");
+        assert!(
+            res_rejected.is_none(),
+            "Citadel trade must be rejected when npc_stations_only is true"
+        );
 
         // When npc_stations_only = false:
         cfg.npc_stations_only = false;
         let res_accepted = calculate_deal(34, &item, &src, &dst_citadel, &cfg, &sde, &graph);
-        assert!(res_accepted.is_some(), "Citadel trade must be accepted when npc_stations_only is false");
+        assert!(
+            res_accepted.is_some(),
+            "Citadel trade must be accepted when npc_stations_only is false"
+        );
     }
 
     #[test]
@@ -292,7 +315,10 @@ mod tests {
         };
 
         let res = calculate_deal(34, &item, &src, &dst_lowsec, &cfg, &sde, &graph);
-        assert!(res.is_none(), "calculate_deal must reject deals with lowsec destination");
+        assert!(
+            res.is_none(),
+            "calculate_deal must reject deals with lowsec destination"
+        );
     }
 
     #[test]
@@ -333,7 +359,10 @@ mod tests {
         };
         let deal_1 = calculate_deal(34, &item, &src_1, &dst_1, &cfg, &sde, &graph)
             .expect("Deal 1 should calculate");
-        assert_eq!(deal_1.quantity, 600, "Should be constrained by cargo volume");
+        assert_eq!(
+            deal_1.quantity, 600,
+            "Should be constrained by cargo volume"
+        );
 
         // Case 2: Constrained by budget
         // Item price 25M each, budget 500M -> max by budget is 20 units
@@ -368,7 +397,10 @@ mod tests {
         };
         let deal_2 = calculate_deal(34, &item, &src_2, &dst_2, &cfg, &sde, &graph)
             .expect("Deal 2 should calculate");
-        assert_eq!(deal_2.quantity, 20, "Should be constrained by ISK capital budget");
+        assert_eq!(
+            deal_2.quantity, 20,
+            "Should be constrained by ISK capital budget"
+        );
 
         // Case 3: Constrained by supply
         let mut src_3 = src_2.clone();

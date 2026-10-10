@@ -121,8 +121,14 @@ fn test_cheapest_sell_and_best_buy_selection() {
         },
     ];
 
-    let cheapest = sells.iter().min_by(|a, b| a.price.partial_cmp(&b.price).unwrap()).unwrap();
-    let best = buys.iter().max_by(|a, b| a.price.partial_cmp(&b.price).unwrap()).unwrap();
+    let cheapest = sells
+        .iter()
+        .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
+        .unwrap();
+    let best = buys
+        .iter()
+        .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
+        .unwrap();
 
     assert_eq!(cheapest.order_id, 2);
     assert_eq!(cheapest.price, 5.80);

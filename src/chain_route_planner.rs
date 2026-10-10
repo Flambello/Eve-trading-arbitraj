@@ -103,7 +103,7 @@ struct BeamCandidate {
     total_capital_spent: f64,
     used_deal_keys: HashSet<(u32, u64, u64)>, // (type_id, source_station_id, dest_station_id)
     consumed_source_orders: HashMap<u64, u32>, // source_order_id -> quantity bought across route
-    consumed_dest_orders: HashMap<u64, u32>,   // dest_order_id -> quantity sold across route
+    consumed_dest_orders: HashMap<u64, u32>,  // dest_order_id -> quantity sold across route
     exhausted_source_stations: HashSet<(u32, u64)>, // (type_id, source_station_id)
 }
 
@@ -161,7 +161,12 @@ pub fn knapsack_pack(
         &empty_dests,
         &empty_exhausted,
     );
-    (res.packed, res.total_volume, res.total_capital, res.total_profit)
+    (
+        res.packed,
+        res.total_volume,
+        res.total_capital,
+        res.total_profit,
+    )
 }
 
 /// Extended knapsack packing that tracks and updates order volume consumption
@@ -190,7 +195,10 @@ pub fn knapsack_pack_constrained(
             }
 
             if d.source_order_id > 0 {
-                let consumed = consumed_sources.get(&d.source_order_id).copied().unwrap_or(0);
+                let consumed = consumed_sources
+                    .get(&d.source_order_id)
+                    .copied()
+                    .unwrap_or(0);
                 let total_avail = if d.source_order_volume_remain > 0 {
                     d.source_order_volume_remain
                 } else {
@@ -251,7 +259,10 @@ pub fn knapsack_pack_constrained(
         let max_by_cost = (remaining_isk / unit_cost).floor() as u32;
 
         let avail_source = if deal.source_order_id > 0 {
-            let consumed = consumed_sources.get(&deal.source_order_id).copied().unwrap_or(0);
+            let consumed = consumed_sources
+                .get(&deal.source_order_id)
+                .copied()
+                .unwrap_or(0);
             let total_avail = if deal.source_order_volume_remain > 0 {
                 deal.source_order_volume_remain
             } else {
@@ -263,7 +274,10 @@ pub fn knapsack_pack_constrained(
         };
 
         let avail_dest = if deal.dest_order_id > 0 {
-            let consumed = consumed_dests.get(&deal.dest_order_id).copied().unwrap_or(0);
+            let consumed = consumed_dests
+                .get(&deal.dest_order_id)
+                .copied()
+                .unwrap_or(0);
             let total_avail = if deal.dest_order_volume_remain > 0 {
                 deal.dest_order_volume_remain
             } else {
@@ -530,8 +544,7 @@ pub fn find_chain_routes(
                 }
 
                 // B. En-route pickups along path to target_dest
-                let direct_jumps =
-                    graph.jump_count(current_pos, target_dest, config.safe_only);
+                let direct_jumps = graph.jump_count(current_pos, target_dest, config.safe_only);
                 if direct_jumps < 9999 {
                     if current_rem_vol > 0.001 && current_rem_isk > 0.001 {
                         // Gather potential en-route systems
@@ -669,8 +682,10 @@ pub fn find_chain_routes(
 
                         let new_total_jumps = candidate.total_jumps + leg_jumps.max(1);
                         let new_total_profit = candidate.total_profit + total_profit_sold;
-                        let new_rem_vol = (current_rem_vol + volume_freed).min(config.ship_max_volume);
-                        let new_rem_isk = (current_rem_isk + capital_freed + total_profit_sold).min(config.ship_max_budget);
+                        let new_rem_vol =
+                            (current_rem_vol + volume_freed).min(config.ship_max_volume);
+                        let new_rem_isk = (current_rem_isk + capital_freed + total_profit_sold)
+                            .min(config.ship_max_budget);
                         let new_curr_vol = (current_vol - volume_freed).max(0.0);
 
                         let new_cand = BeamCandidate {
@@ -703,14 +718,18 @@ pub fn find_chain_routes(
             for (&(src_sys, dst_sys), corr_deals) in &deals_by_corridor {
                 // Must have at least one usable deal (not used, not exhausted)
                 let has_unused = corr_deals.iter().any(|d| {
-                    !candidate
-                        .used_deal_keys
-                        .contains(&(d.type_id, d.source_station_id, d.dest_station_id))
-                        && !candidate
-                            .exhausted_source_stations
-                            .contains(&(d.type_id, d.source_station_id))
+                    !candidate.used_deal_keys.contains(&(
+                        d.type_id,
+                        d.source_station_id,
+                        d.dest_station_id,
+                    )) && !candidate
+                        .exhausted_source_stations
+                        .contains(&(d.type_id, d.source_station_id))
                         && (d.source_order_id == 0
-                            || *candidate.consumed_source_orders.get(&d.source_order_id).unwrap_or(&0)
+                            || *candidate
+                                .consumed_source_orders
+                                .get(&d.source_order_id)
+                                .unwrap_or(&0)
                                 < d.source_order_volume_remain.max(d.quantity))
                 });
                 if !has_unused {
@@ -731,14 +750,18 @@ pub fn find_chain_routes(
                 let est_profit: f64 = corr_deals
                     .iter()
                     .filter(|d| {
-                        !candidate
-                            .used_deal_keys
-                            .contains(&(d.type_id, d.source_station_id, d.dest_station_id))
-                            && !candidate
-                                .exhausted_source_stations
-                                .contains(&(d.type_id, d.source_station_id))
+                        !candidate.used_deal_keys.contains(&(
+                            d.type_id,
+                            d.source_station_id,
+                            d.dest_station_id,
+                        )) && !candidate
+                            .exhausted_source_stations
+                            .contains(&(d.type_id, d.source_station_id))
                             && (d.source_order_id == 0
-                                || *candidate.consumed_source_orders.get(&d.source_order_id).unwrap_or(&0)
+                                || *candidate
+                                    .consumed_source_orders
+                                    .get(&d.source_order_id)
+                                    .unwrap_or(&0)
                                     < d.source_order_volume_remain.max(d.quantity))
                     })
                     .map(|d| d.net_profit)
@@ -749,9 +772,8 @@ pub fn find_chain_routes(
             }
 
             // Sort corridors by score DESC and evaluate top 20
-            corridor_candidates.sort_by(|a, b| {
-                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            corridor_candidates
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             corridor_candidates.truncate(20);
 
             for ((src_sys, dst_sys), _, _) in corridor_candidates {
@@ -823,8 +845,7 @@ pub fn find_chain_routes(
                         if sys_id == src_sys || sys_id == dst_sys {
                             continue;
                         }
-                        let detour =
-                            detour_cost(src_sys, sys_id, dst_sys, graph, config.safe_only);
+                        let detour = detour_cost(src_sys, sys_id, dst_sys, graph, config.safe_only);
                         if config.detour_enabled {
                             if detour <= config.max_detour_jumps {
                                 candidates_enroute.push((sys_id, detour, sys_deals));
@@ -955,7 +976,8 @@ pub fn find_chain_routes(
                 let new_total_jumps = candidate.total_jumps + leg_jumps.max(1);
                 let new_total_profit = candidate.total_profit + total_profit_sold;
                 let new_rem_vol = (current_rem_vol + volume_freed).min(config.ship_max_volume);
-                let new_rem_isk = (current_rem_isk + capital_freed + total_profit_sold).min(config.ship_max_budget);
+                let new_rem_isk = (current_rem_isk + capital_freed + total_profit_sold)
+                    .min(config.ship_max_budget);
                 let new_curr_vol = (current_vol - volume_freed).max(0.0);
 
                 let new_cand = BeamCandidate {

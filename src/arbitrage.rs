@@ -186,21 +186,14 @@ pub fn find_deals(
                     continue;
                 }
 
-                let spread_pct =
-                    ((dst_order.price - src_order.price) / src_order.price) * 100.0;
+                let spread_pct = ((dst_order.price - src_order.price) / src_order.price) * 100.0;
                 if spread_pct < cfg.min_spread {
                     continue;
                 }
 
-                if let Some(deal) = calculate_deal(
-                    type_id,
-                    &item_info,
-                    src_order,
-                    dst_order,
-                    cfg,
-                    sde,
-                    graph,
-                ) {
+                if let Some(deal) =
+                    calculate_deal(type_id, &item_info, src_order, dst_order, cfg, sde, graph)
+                {
                     deals.push(deal);
                 }
             }
@@ -351,32 +344,27 @@ pub fn calculate_deal(
         .or_else(|| sde.get_system_name(dst_system_id))
         .unwrap_or_else(|| format!("System #{}", dst_system_id));
 
-    let src_station_name = sde
-        .get_station_name(src_station)
-        .unwrap_or_else(|| {
-            if is_npc_station(src_station) {
-                format!("Station #{}", src_station)
-            } else {
-                format!("Citadel #{} ({})", src_station, src_system_name)
-            }
-        });
+    let src_station_name = sde.get_station_name(src_station).unwrap_or_else(|| {
+        if is_npc_station(src_station) {
+            format!("Station #{}", src_station)
+        } else {
+            format!("Citadel #{} ({})", src_station, src_system_name)
+        }
+    });
 
-    let dst_station_name = sde
-        .get_station_name(dst_station)
-        .unwrap_or_else(|| {
-            if is_npc_station(dst_station) {
-                format!("Station #{}", dst_station)
-            } else {
-                format!("Citadel #{} ({})", dst_station, dst_system_name)
-            }
-        });
+    let dst_station_name = sde.get_station_name(dst_station).unwrap_or_else(|| {
+        if is_npc_station(dst_station) {
+            format!("Station #{}", dst_station)
+        } else {
+            format!("Citadel #{} ({})", dst_station, dst_system_name)
+        }
+    });
 
     let src_security = graph.security(src_system_id).unwrap_or(1.0);
     let dst_security = graph.security(dst_system_id).unwrap_or(1.0);
 
-    let is_npc_trade = src_order.duration == 365
-        || dst_order.duration == 365
-        || item.is_npc_trade_commodity();
+    let is_npc_trade =
+        src_order.duration == 365 || dst_order.duration == 365 || item.is_npc_trade_commodity();
 
     Some(ArbitrageDeal {
         type_id,

@@ -1,188 +1,220 @@
 # EVE Traveling Merchant 🚀
 
-> **Location-Centric Arbitrage Engine & Multi-Item Corridor Route Planner for EVE Online**  
-> Written in Rust for maximum speed, type-safety, and reliability on Linux.
+[![CI](https://github.com/Flambello/eve-traveling-merchant/actions/workflows/ci.yml/badge.svg)](https://github.com/Flambello/eve-traveling-merchant/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Flambello/eve-traveling-merchant?color=orange&logo=github)](https://github.com/Flambello/eve-traveling-merchant/releases)
+[![Flathub](https://img.shields.io/badge/Flathub-io.github.flambello.eve__merchant-blue?logo=flathub)](https://flathub.org/apps/io.github.flambello.eve_merchant)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/Rust-1.78%2B-blue.svg?logo=rust)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%28Wayland%20%2F%20X11%29-green.svg?logo=linux)](https://kernel.org/)
+
+> **Location-Centric Cross-Station Arbitrage Engine & Multi-Item Corridor Route Planner for EVE Online**  
+> Pure compiled Rust binary (`eve-merchant`) with zero runtime dependencies, maximum performance, and native desktop GUI / TUI interfaces.
+
+---
+
+## What is EVE Traveling Merchant?
+
+Traditional trade finders often force you to haul single items, leave your hold mostly empty, or plan routes based on global galaxy spreads that require 40+ jumps through dangerous lowsec.
+
+**EVE Traveling Merchant** solves this by:
+1. **Scanning from where you actually are**: Analyzes your home solar system plus all **stargate-connected adjacent neighbor regions** via CCP's live EVE Swagger Interface (ESI) API.
+2. **Packing your hold via Knapsack Optimization**: Groups multiple high-margin commodities along identical station-to-station corridors to fully utilize your ship volume (60,000 m³ / 30,000 m³) and ISK wallet budget.
+3. **Calculating true Profit-Per-Jump (PPJ)**: Accounts for both the approach flight from your location to the buy station *and* the transit flight to the sell destination via Dijkstra pathfinding.
+4. **Guaranteed Safety & Invariants**: Strictly enforces safe highsec space (security $\ge 0.45$) by default and filters out low-margin traps with an enforced minimum 10.0% net return on capital after all broker fees and sales taxes.
 
 ---
 
 ## Features
 
-- ⚡ **Native Performance**: Pure compiled Rust binary (`eve-merchant`) with async networking powered by `tokio` and `reqwest`.
-- 📍 **Starting Location Centric Scans**: Directly scans the player's home solar system plus all **stargate-connected adjacent neighbor regions**, eliminating unnecessary galaxy-wide overhead while catching easy border corridors.
-- 💡 **Real-Time System Search & Autocomplete**: Instant search for any solar system in New Eden with security status and region display. 1-click autocomplete chips when typing incomplete system names.
-- 📦 **Knapsack Multi-Item Cargo Consolidation**: Bundles multiple profitable trade commodities moving between the same stations or systems into packed corridor manifests. Eliminates flying empty with a single item—fully packs your cargo hold (60,000 m³ for Big Hauler; 30,000 m³ for Small Hauler) and capital budget for 25M–60M+ ISK payouts per run!
-- 🔥 **High-ROI Detour Recognition (40%+ Badges)**: Prioritizes and rewards high-margin opportunities and dead ends ($\ge 40\%$ net ROI) with distinctive visual badges and tiebreaking in route planning.
+- ⚡ **Blazing Fast Native Rust**: Single compiled binary with asynchronous multi-region pagination and caching via `tokio` and `reqwest`.
+- 📦 **Knapsack Multi-Item Cargo Manifests**: Consolidates separate profitable deals moving along the same corridor into packed hauler runs netting 25M–60M+ ISK per flight.
+- 🔗 **Multi-Leg Chained Route Optimizer**: Beam-search route planner that chains consecutive pickup-delivery stops, supports en-route detour pickups, and recycles capital upon delivery.
+- 🔥 **High-ROI Dead-End Recognition ($\ge 40\%$)**: Automatically flags and prioritizes lucrative regional dead ends and high-margin opportunities.
 - 🚢 **Ship Profiles**:
-  - **Big Hauler**: 60,000 m³ capacity / 500M ISK budget constraint.
-  - **Small Hauler**: 30,000 m³ capacity / 50M ISK budget constraint.
-- 📈 **Enforced 15.0% Net Profitability**: Filters out low-margin traps. Automatically enforces a minimum 15% net return on capital after all taxes and broker fees (configurable via `--min-roi`).
-- 🛡️ **Highsec Only Space**: Excludes all lowsec and nullsec solar systems (security < 0.45). Only safe high security space is considered for arbitrage deals.
-- 🏛️ **Station Access Pool Toggle**: Toggle between preferred **Only NPC Stations** (guaranteed 100% public docking) or include **Player-Owned Citadels / Upwell Structures** in the trading pool.
-- 🎯 **True Profit-Per-Jump Ranking**: Every candidate deal accounts for both the travel jumps from your current location to the pick-up station **and** the delivery jumps to the destination.
-- 🗺️ **Multi-Stop Route Planning**: Greedily chains sequential trade deals together, providing step-by-step autopilot waypoints.
-- 📊 **Enriched Table Telemetry**:
-  - Security rating pills (`[1.0]`, `[0.9]`, etc.) with security-based color-coding
-  - Profit density (`ISK/m³`) column and sorting
-  - Ship capacity utilization (% cargo volume / % ISK budget)
-  - 1-Click Clipboard Actions: `📋 Item`, `📋 Buy`, `📋 Sell`, and `📋 Shopping List`
-- 🖥️ **Native Desktop GUI Window**: Built with `egui` and `eframe` for Linux (Wayland & X11 native). Dark sci-fi aesthetic, interactive deal tables, packed corridor manifests tab, clipboard copy buttons, multi-stop route visualizer, and live "Scan Market" button.
-- 💻 **Interactive Terminal UI (TUI)**: Built with `ratatui` with table navigation, tab switching, and route views for terminal users and headless/SSH sessions.
-- 📊 **CSV Export & Scripting**: Export all discovered trade deals to CSV or run in pure CLI mode for scripts and bots.
+  - **Big Hauler**: 60,000 m³ cargo capacity · 500,000,000 ISK budget.
+  - **Small Hauler**: 30,000 m³ cargo capacity · 50,000,000 ISK budget.
+- 🛡️ **Safe Highsec Routing**: Dijkstra pathfinding penalizes dangerous space, completely avoiding lowsec and nullsec gate networks.
+- 🏛️ **Station Docking Pool Toggle**: Choose between **NPC Stations Only** (guaranteed 100% public docking access) or include **Player Citadels / Upwell Structures**.
+- 💡 **Real-Time SDE Autocomplete**: Type any solar system name for instant prefix/substring search, security rating pills, and parent region tags from the embedded universe SQLite export.
+- 🔔 **Audible Sound Alerts**: Freedesktop audio alerts and desktop notifications when deals yielding $\ge 100\%$ ROI are detected.
+- 🖥️ **Native Desktop GUI**: Built with `egui` and `eframe` for Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting.
+- 💻 **Terminal Dashboard (TUI)**: Fully keyboard-driven `ratatui` terminal interface for SSH sessions and terminal enthusiasts.
+- 📊 **Headless Scripting & CSV Export**: Stream formatted tables to stdout or export deal rosters directly to CSV via `--no-ui` and `--export`.
 
 ---
 
 ## Installation
 
-### Prerequisites (Fedora Linux / Generic Linux)
-- Rust 1.78+ (via [rustup](https://rustup.rs/))
-- GCC and development headers:
-  ```bash
-  sudo dnf install gcc pkg-config -y
-  ```
-
-### Build & Run
-
-You can use standard `cargo` commands or the provided `Makefile`:
+### Option 1: Install from Flathub (Recommended for Linux Desktops)
 
 ```bash
-# Using Makefile on Fedora
-make check        # Verify compilation (0 warnings)
-make test         # Run unit tests (0 failures)
-make release      # Build optimized release binary
-make run          # Launch the tool
+flatpak install flathub io.github.flambello.eve_merchant
+flatpak run io.github.flambello.eve_merchant
 ```
 
-Or using `cargo` directly:
+### Option 2: Pre-compiled GitHub Release Binary
+
+Download the latest release tarball for Linux x86_64:
+
 ```bash
-cargo build --release
-./target/release/eve-merchant
+# Download latest release archive
+wget https://github.com/Flambello/eve-traveling-merchant/releases/latest/download/eve-traveling-merchant-linux-x86_64.tar.gz
+
+# Extract and run
+tar -xzf eve-traveling-merchant-linux-x86_64.tar.gz
+cd eve-traveling-merchant
+./eve-merchant --gui
 ```
 
-Optionally install it system-wide:
+### Option 3: Install via Cargo
+
 ```bash
-cargo install --path .
+cargo install eve-trade-scout
 eve-merchant
+```
+
+### Option 4: Build from Source
+
+**Prerequisites:** Rust 1.78+ (via [rustup](https://rustup.rs/)) and GCC/pkg-config headers:
+
+```bash
+# Fedora Linux:
+sudo dnf install gcc pkg-config git -y
+
+# Ubuntu / Debian:
+sudo apt install build-essential pkg-config git -y
+
+# Arch Linux:
+sudo pacman -S base-devel git
+```
+
+**Build & Run:**
+
+```bash
+git clone https://github.com/Flambello/eve-traveling-merchant.git
+cd eve-traveling-merchant
+
+# Verify tests pass
+make test
+
+# Build optimized release binary
+make release
+
+# Run desktop GUI
+./target/release/eve-merchant --gui
 ```
 
 ---
 
-## Usage
+## Usage Guide
 
-### 1. Native Desktop GUI Window (Default on Linux Desktop)
-Launch the graphical interface using the startup script or desktop shortcut:
+### 1. Native Desktop GUI (Default)
+
+Launch via desktop application launcher or terminal:
+
 ```bash
 ./start-gui.sh
-# or: make run
+# or: eve-merchant --gui
 ```
-**Desktop GUI Features:**
-- 🔄 **Live "Scan Market" Button**: Fetches live orders from CCP's ESI API in a background worker thread without freezing the UI.
-- 🚢 **Interactive Ship Selector**: Instantly toggle between Big Hauler (60k m³ / 500M) and Small Hauler (30k m³ / 50M).
-- 📍 **Starting Location & Autocomplete**: Type any solar system name with instant autocomplete suggestions.
-- 🌐 **+Adjacent Regions Toggle**: Automatically scans stargate-connected neighbor regions of your starting location.
-- 📦 **Packed Manifests Tab**: Review knapsack multi-item cargo manifests that pack your ship hold and budget.
-- 📋 **Copy to Clipboard**: One-click copy for item names, buy stations, sell stations, shopping lists, and autopilot waypoint trails.
-- 🔍 **Real-Time Item Search & Multi-Column Sorting**: Sort by Profit/Jump, Total Profit, Net ROI %, Profit/m³, Jumps, or Cost.
+
+- **Top Bar Controls**: Select Ship profile (Big / Small), type starting system with real-time autocomplete, toggle adjacent regions, and click **⚡ SCAN MARKET NOW**.
+- **Interactive Dossier**: Click any deal row to expand exact buy/sell stations, volume, capital required, and 1-click copy buttons (`📋 Item`, `📋 Buy Station`, `📋 Sell Station`).
+- **📦 Packed Manifests Tab**: View knapsack cargo lists grouping multiple items into unified origin-destination flights. Use `📋 Shopping List` to copy item names and quantities for in-game multi-buy.
+- **🔗 Chain Route Plotter**: Configure maximum legs (1–8) and detour tolerance (0–5 jumps) to plot multi-hop trading expeditions. Click `📋 Autopilot Trail` to paste the waypoint sequence directly into EVE chat.
 
 ### 2. Terminal Interactive Mode (TUI)
-Prefer the terminal or working over SSH? Use `--tui`:
+
 ```bash
 eve-merchant --tui
 ```
+
 **Keybindings:**
-- `[Tab]` — Switch between Deals Table, Planned Route, and Help
-- `[1]`, `[2]`, `[3]` — Direct jump to tabs
+- `[Tab]` — Switch between Deals Table, Planned Route, and Settings
 - `[↑] / [k]` — Select previous deal
 - `[↓] / [j]` — Select next deal
 - `[q] / [Esc]` — Quit
 
-### 3. CLI / Headless Scripting Mode
-Use `--no-ui` to print formatted tables and manifests straight to the console or pipe into scripts:
+### 3. Headless Scripting & Automation
+
 ```bash
-# Scan starting from Jita with Big Hauler (scans The Forge + adjacent neighbor regions)
+# Scan starting from Jita with Big Hauler (outputs formatted table)
 eve-merchant --ship big --system Jita --no-ui
 
-# Safe highsec routes only with Small Hauler from Amarr
+# Scan safe highsec routes with Small Hauler starting from Amarr
 eve-merchant --ship small --system Amarr --safe --no-ui
 
-# Specific custom regions (e.g. The Forge 10000002 and Domain 10000043)
-eve-merchant --regions 10000002,10000043 --top 30 --no-ui
+# Scan specific regions (The Forge + Domain) and show top 50 deals
+eve-merchant --regions 10000002,10000043 --top 50 --no-ui
 
-# Export deals to CSV for spreadsheets
+# Export ranked deals to CSV file
 eve-merchant --ship big --system Jita --export deals.csv
 ```
 
 ---
 
-## Command-Line Arguments
+## CLI Reference
 
 | Flag | Default | Description |
 |---|---|---|
 | `--gui` | `auto` | Force desktop GUI window mode (`egui` native window) |
 | `--tui` | `false` | Force terminal TUI mode (`ratatui`) |
-| `--no-ui` | `false` | Disable interactive UI (GUI & TUI) and output directly to console |
-| `-s, --ship` | `big` | Ship profile (`big` or `small`) |
-| `--system` | `Jita` | Starting solar system name |
+| `--no-ui` | `false` | Disable interactive interfaces and output directly to console |
+| `-s, --ship <SHIP>` | `big` | Ship profile (`big`: 60k m³/500M or `small`: 30k m³/50M) |
+| `--system <SYSTEM>` | `Jita` | Starting solar system name |
 | `--adjacent-regions` | `true` | Automatically scan stargate-connected neighbor regions |
-| `--regions` | `auto` | Comma-separated region IDs (overrides adjacent region scan) |
+| `--regions <IDS>` | `auto` | Comma-separated region IDs (overrides adjacent region scan) |
 | `--safe` | `true` | Avoid lowsec/nullsec gates (Highsec only) |
-| `--unsafe-routes` | `false` | Allow lowsec/nullsec gates |
+| `--unsafe-routes` | `false` | Allow lowsec and nullsec routes |
 | `--npc-only` | `true` | Restrict search strictly to NPC stations (preferred) |
 | `--allow-structures` | `false` | Include player-owned Citadels / Upwell structures |
-| `--min-profit` | `1,000,000` | Minimum net profit in ISK |
-| `--min-spread` | `3.0` | Minimum gross price spread (%) |
-| `--min-roi` | `15.0` | **Enforced minimum net profitability (ROI %) after taxes** |
-| `-t, --top` | `25` | Number of deals in CLI summary |
-| `--max-stops` | `5` | Maximum stops in planned route |
-| `--route` | `false` | Print planned route in CLI mode |
-| `--export <path>` | — | Export deals to CSV file |
-| `--update-sde` | — | Force re-download of SDE database |
+| `--min-profit <ISK>` | `1,000,000` | Minimum net profit in ISK |
+| `--min-spread <PCT>` | `3.0` | Minimum gross price spread (%) |
+| `--min-roi <PCT>` | `10.0` | Enforced minimum net ROI % after taxes |
+| `-t, --top <N>` | `25` | Number of deals in CLI summary |
+| `--max-stops <N>` | `5` | Maximum stops in planned route |
+| `--export <PATH>` | — | Export discovered deals to CSV file |
+| `--update-sde` | — | Force re-download / update of SDE SQLite database |
 
 ---
 
-## Architecture & Codebase
+## Packaging & Distribution
 
-- `src/lib.rs`: Shared crate root (`eve_trade_scout`) exposing clean APIs for integration testing and binaries.
-- `src/config.rs`: Ship limits, user settings, adjacent region settings, TOML loading.
-- `src/sde/loader.rs`: SQLite loader, automated Fuzzwork SDE sync, and `search_systems` autocomplete.
-- `src/graph.rs`: Stargate topology, adjacent region discovery, and Dijkstra routing with LRU cache.
-- `src/esi/`: Async REST client, ETag store, market order streaming and pagination.
-- `src/arbitrage.rs`: Quantity constraint solver, 15% ROI invariant, PPJ ranker, `is_high_roi()`, and `bundle_route_cargo()` knapsack consolidation.
-- `src/route_planner.rs`: Greedy sequential route builder with high-ROI priority.
-- `src/ui/gui.rs`: `egui`/`eframe` native desktop GUI window with dark sci-fi aesthetic, autocomplete suggestions, deals grid with telemetry pills, packed manifests tab, and dossier inspector.
-- `src/ui/tui.rs`: `ratatui` interactive terminal UI dashboard with enriched security ratings.
-
----
-
-## Automated Test Suites & Quality Assurance
-
-EVE Traveling Merchant enforces 100% passing test suites across all core features and domain invariants:
+### Building the Flatpak Locally
 
 ```bash
-# Run all tests with verbose output
-make test
-# or
-cargo test --verbose
+# Install flatpak-builder
+sudo dnf install flatpak-builder -y  # on Fedora
+
+# Build and install the Flatpak package locally
+flatpak-builder --user --install --force-clean build-dir packaging/flatpak/io.github.flambello.eve_merchant.yml
 ```
 
-### Test Suites Overview
+### Validating Desktop & Metadata Files
 
-| Test Suite | Purpose | Covered Invariants & Logic |
-|---|---|---|
-| **`tests/test_arbitrage.rs`** | Arbitrage & Knapsack Packing | • Enforced 15.0% net ROI threshold after taxes & broker fees<br>• Station pool toggle (NPC stations only vs Citadels)<br>• Highsec space security restriction ($\ge 0.45$)<br>• Quantity solver (volume, budget, supply, demand limits)<br>• Profit-per-jump (PPJ) formula with starting system jumps<br>• Knapsack multi-item cargo consolidation (`bundle_route_cargo`)<br>• High-ROI threshold detection (`is_high_roi`)<br>• Big Hauler (60k m³ / 500M ISK) & Small Hauler (30k m³ / 50M ISK) |
-| **`tests/test_config.rs`** | Configuration & Profiles | • Profile parsing from CLI arguments & config strings<br>• Case-insensitivity & aliases ("big", "b", "small", "s")<br>• Default configuration settings and invariant preservation<br>• Full TOML serialization & round-trip verification |
-| **`tests/test_graph.rs`** | Topology & Neighbors | • Solar system security lookup & classification<br>• Adjacent region discovery via stargates (`adjacent_regions`)<br>• Dijkstra jump distance calculation<br>• Safe routing highsec detour around lowsec systems |
-| **`tests/test_route_planner.rs`** | Route Optimization | • Empty opportunity handling<br>• Greedy multi-stop route construction<br>• Cargo volume and budget replenishment/deduction<br>• Maximum stop constraint cutoff |
-| **`tests/test_sde_search.rs`** | System Search & Autocomplete | • Real-time prefix/substring search across New Eden systems<br>• System ID, security rating, and region resolution |
-| **`tests/test_esi_models.rs`** | ESI Models & Deserialization | • Real CCP ESI market order JSON deserialization<br>• Buy order vs sell order discrimination<br>• Cheapest sell and best buy order discovery |
+```bash
+# Validate desktop entry
+desktop-file-validate packaging/flatpak/io.github.flambello.eve_merchant.desktop
+
+# Validate AppStream metainfo XML
+appstreamcli validate --no-net packaging/flatpak/io.github.flambello.eve_merchant.metainfo.xml
+```
+
+---
+
+## Contributing
+
+We welcome contributions from pilots, developers, and open-source enthusiasts! Please check out [CONTRIBUTING.md](CONTRIBUTING.md) for architecture guidelines, setup steps, and the testing protocol.
 
 ---
 
 ## Legal & EULA Compliance
 
-This software is an external market analysis tool that interacts solely with CCP Games' public **EVE Swagger Interface (ESI)**. It does not automate any in-game actions, client inputs, or game memory, fully complying with the **EVE Online EULA** and Developer License Agreement.
+This software is an external market analysis aid that interacts strictly with CCP Games' public **EVE Swagger Interface (ESI)**. It does not automate any in-game actions, client inputs, or game memory, fully complying with the **EVE Online EULA** and CCP Developer License Agreement.
+
+*EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights reserved.*
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for full text.

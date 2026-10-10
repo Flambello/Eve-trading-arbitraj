@@ -1,6 +1,4 @@
-use eve_trade_scout::config::{
-    profile_from_str, UserConfig, BIG_HAULER, SMALL_HAULER,
-};
+use eve_trade_scout::config::{profile_from_str, UserConfig, BIG_HAULER, SMALL_HAULER};
 
 #[test]
 fn test_ship_profile_parsing_valid() {
@@ -12,7 +10,14 @@ fn test_ship_profile_parsing_valid() {
         assert_eq!(profile.max_budget, 500_000_000.0);
     }
 
-    let small_cases = ["small", "SMALL", "Small Hauler", "s", "  small  ", "small hauler"];
+    let small_cases = [
+        "small",
+        "SMALL",
+        "Small Hauler",
+        "s",
+        "  small  ",
+        "small hauler",
+    ];
     for case in small_cases {
         let profile = profile_from_str(case).expect("Should parse small hauler profile");
         assert_eq!(profile.name, "Small Hauler");
@@ -49,12 +54,24 @@ fn test_user_config_defaults_and_invariants() {
     assert_eq!(cfg.location.home_system, "Jita");
 
     // Scan defaults
-    assert!(cfg.scan.regions.contains(&10000002), "Default regions must include The Forge (Jita)");
-    assert!(cfg.scan.safe_route_only, "Safe routing must default to true");
-    assert!(cfg.scan.npc_stations_only, "NPC stations only must default to true");
+    assert!(
+        cfg.scan.regions.contains(&10000002),
+        "Default regions must include The Forge (Jita)"
+    );
+    assert!(
+        cfg.scan.safe_route_only,
+        "Safe routing must default to true"
+    );
+    assert!(
+        cfg.scan.npc_stations_only,
+        "NPC stations only must default to true"
+    );
     assert!(!cfg.scan.auto_refresh, "Auto-refresh must default to false");
     assert!(cfg.scan.sound_alerts, "Sound alerts must default to true");
-    assert_eq!(cfg.scan.sound_min_roi_pct, 100.0, "Sound alert threshold must default to 100.0%");
+    assert_eq!(
+        cfg.scan.sound_min_roi_pct, 100.0,
+        "Sound alert threshold must default to 100.0%"
+    );
 
     // Filter invariants: 10% minimum net ROI
     assert_eq!(
@@ -81,7 +98,8 @@ fn test_user_config_toml_roundtrip() {
     cfg.filters.min_net_profit_pct = 20.0;
 
     let toml_str = toml::to_string(&cfg).expect("Serialization to TOML must succeed");
-    let parsed: UserConfig = toml::from_str(&toml_str).expect("Deserialization from TOML must succeed");
+    let parsed: UserConfig =
+        toml::from_str(&toml_str).expect("Deserialization from TOML must succeed");
 
     assert_eq!(parsed.ship.profile, "small");
     assert_eq!(parsed.location.home_system, "Amarr");

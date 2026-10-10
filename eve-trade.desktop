@@ -1,12 +1,12 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=EVE Trade Scout
+Name=EVE Traveling Merchant
 GenericName=EVE Online Trading Tool
-Comment=Find profitable cross-station arbitrage opportunities in EVE Online
-Exec=/bin/bash "/mnt/Projects/Eve trading arbitraj/start-gui.sh"
-Path=/mnt/Projects/Eve trading arbitraj
-Icon=applications-games
+Comment=Location-centric arbitrage engine & multi-item route planner for EVE Online
+Exec=bash -c "cd \"$(dirname %k)\" && ./start-gui.sh"
+Icon=io.github.flambello.eve_merchant
 Terminal=false
 Categories=Game;Utility;Economy;
+Keywords=eve;online;trading;arbitrage;market;jita;hauler;route;isk;
 StartupNotify=true

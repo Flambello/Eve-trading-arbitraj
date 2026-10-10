@@ -59,9 +59,13 @@ mod tests {
         // Net ROI%: 7.4 / 100 = 7.4% (Below 10%, should be rejected)
         let buy_a = 100.0;
         let sell_a = 120.0;
-        let net_a = (sell_a - buy_a) - (buy_a * broker_fee_pct / 100.0) - (sell_a * sales_tax_pct / 100.0);
+        let net_a =
+            (sell_a - buy_a) - (buy_a * broker_fee_pct / 100.0) - (sell_a * sales_tax_pct / 100.0);
         let roi_a = (net_a / buy_a) * 100.0;
-        assert!(roi_a < min_net_profit_pct, "Deal A should fail the 10% net threshold");
+        assert!(
+            roi_a < min_net_profit_pct,
+            "Deal A should fail the 10% net threshold"
+        );
 
         // Deal B: 100 buy, 125 sell (Gross spread is 25%)
         // Broker fee: 100 * 0.03 = 3.0
@@ -70,9 +74,13 @@ mod tests {
         // Net ROI%: 12.0 / 100 = 12.0% (Above 10%, should be accepted)
         let buy_b = 100.0;
         let sell_b = 125.0;
-        let net_b = (sell_b - buy_b) - (buy_b * broker_fee_pct / 100.0) - (sell_b * sales_tax_pct / 100.0);
+        let net_b =
+            (sell_b - buy_b) - (buy_b * broker_fee_pct / 100.0) - (sell_b * sales_tax_pct / 100.0);
         let roi_b = (net_b / buy_b) * 100.0;
-        assert!(roi_b >= min_net_profit_pct, "Deal B should pass the 10% net threshold");
+        assert!(
+            roi_b >= min_net_profit_pct,
+            "Deal B should pass the 10% net threshold"
+        );
     }
 
     #[test]
@@ -106,16 +114,28 @@ mod tests {
         let npc_accepted = !npc_only || is_npc(npc_station_id);
         let citadel_accepted = !npc_only || is_npc(citadel_id);
 
-        assert!(npc_accepted, "NPC station must be accepted in NPC-only mode");
-        assert!(!citadel_accepted, "Player citadel must be rejected in NPC-only mode");
+        assert!(
+            npc_accepted,
+            "NPC station must be accepted in NPC-only mode"
+        );
+        assert!(
+            !citadel_accepted,
+            "Player citadel must be rejected in NPC-only mode"
+        );
 
         // Mode 2: npc_stations_only = false (Include player citadels in pool)
         let allow_citadels = false;
         let npc_accepted_in_all = !allow_citadels || is_npc(npc_station_id);
         let citadel_accepted_in_all = !allow_citadels || is_npc(citadel_id);
 
-        assert!(npc_accepted_in_all, "NPC station must be accepted when citadels allowed");
-        assert!(citadel_accepted_in_all, "Player citadel must be accepted when citadels allowed");
+        assert!(
+            npc_accepted_in_all,
+            "NPC station must be accepted when citadels allowed"
+        );
+        assert!(
+            citadel_accepted_in_all,
+            "Player citadel must be accepted when citadels allowed"
+        );
     }
 
     #[test]
@@ -164,7 +184,10 @@ mod tests {
         let qty_vol_2 = (max_volume / unit_volume_2).floor() as u32;
         let qty_budget_2 = (max_budget / buy_price_2).floor() as u32; // 20
         let final_qty_2 = qty_vol_2.min(qty_budget_2).min(supply_2).min(demand_2);
-        assert_eq!(final_qty_2, 20, "Should be constrained by ISK capital budget");
+        assert_eq!(
+            final_qty_2, 20,
+            "Should be constrained by ISK capital budget"
+        );
 
         // Case 3: Constrained by supply
         let supply_3 = 8;
@@ -188,10 +211,26 @@ mod tests {
         }
 
         let mut deals = [
-            MockDeal { id: 1, ppj: 1.5, net: 10_000_000.0 },
-            MockDeal { id: 2, ppj: 4.2, net: 8_000_000.0 },
-            MockDeal { id: 3, ppj: 2.1, net: 15_000_000.0 },
-            MockDeal { id: 4, ppj: 4.2, net: 12_000_000.0 }, // Same PPJ as #2, but higher net
+            MockDeal {
+                id: 1,
+                ppj: 1.5,
+                net: 10_000_000.0,
+            },
+            MockDeal {
+                id: 2,
+                ppj: 4.2,
+                net: 8_000_000.0,
+            },
+            MockDeal {
+                id: 3,
+                ppj: 2.1,
+                net: 15_000_000.0,
+            },
+            MockDeal {
+                id: 4,
+                ppj: 4.2,
+                net: 12_000_000.0,
+            }, // Same PPJ as #2, but higher net
         ];
 
         deals.sort_by(|a, b| {
@@ -266,41 +305,42 @@ mod tests {
         use eve_trade_scout::arbitrage::{bundle_route_cargo, ArbitrageDeal};
         use eve_trade_scout::config::BIG_HAULER;
 
-        let make_deal = |id: u32, name: &str, vol: f64, cost: f64, profit: f64, ppm3: f64| ArbitrageDeal {
-            type_id: id,
-            item_name: name.to_string(),
-            source_order_id: 100_000 + id as u64,
-            dest_order_id: 200_000 + id as u64,
-            source_order_volume_remain: 100,
-            dest_order_volume_remain: 100,
-            dest_order_min_volume: 1,
-            is_npc_trade: false,
-            buy_price: cost / 100.0,
-            sell_price: (cost + profit) / 100.0,
-            spread_pct: 50.0,
-            source_station_id: 60003760,
-            source_system_id: 30000142,
-            source_system_name: "Jita".to_string(),
-            source_station_name: "Jita IV-4".to_string(),
-            source_security: 1.0,
-            dest_station_id: 60008494,
-            dest_system_id: 30002187,
-            dest_system_name: "Amarr".to_string(),
-            dest_station_name: "Amarr VIII-4".to_string(),
-            dest_security: 0.9,
-            quantity: 100,
-            volume_used: vol,
-            capital_required: cost,
-            gross_profit: profit * 1.1,
-            taxes_and_fees: profit * 0.1,
-            net_profit: profit,
-            net_profit_pct: (profit / cost) * 100.0,
-            jumps_from_home: 0,
-            jumps_source_dest: 9,
-            total_jumps: 9,
-            profit_per_jump: profit / 9.0,
-            profit_per_m3: ppm3,
-        };
+        let make_deal =
+            |id: u32, name: &str, vol: f64, cost: f64, profit: f64, ppm3: f64| ArbitrageDeal {
+                type_id: id,
+                item_name: name.to_string(),
+                source_order_id: 100_000 + id as u64,
+                dest_order_id: 200_000 + id as u64,
+                source_order_volume_remain: 100,
+                dest_order_volume_remain: 100,
+                dest_order_min_volume: 1,
+                is_npc_trade: false,
+                buy_price: cost / 100.0,
+                sell_price: (cost + profit) / 100.0,
+                spread_pct: 50.0,
+                source_station_id: 60003760,
+                source_system_id: 30000142,
+                source_system_name: "Jita".to_string(),
+                source_station_name: "Jita IV-4".to_string(),
+                source_security: 1.0,
+                dest_station_id: 60008494,
+                dest_system_id: 30002187,
+                dest_system_name: "Amarr".to_string(),
+                dest_station_name: "Amarr VIII-4".to_string(),
+                dest_security: 0.9,
+                quantity: 100,
+                volume_used: vol,
+                capital_required: cost,
+                gross_profit: profit * 1.1,
+                taxes_and_fees: profit * 0.1,
+                net_profit: profit,
+                net_profit_pct: (profit / cost) * 100.0,
+                jumps_from_home: 0,
+                jumps_source_dest: 9,
+                total_jumps: 9,
+                profit_per_jump: profit / 9.0,
+                profit_per_m3: ppm3,
+            };
 
         let deals = vec![
             make_deal(1, "Item A", 20_000.0, 100_000_000.0, 25_000_000.0, 1250.0),
@@ -309,12 +349,19 @@ mod tests {
         ];
 
         let manifests = bundle_route_cargo(&deals, BIG_HAULER);
-        assert!(!manifests.is_empty(), "Should generate at least one packed corridor manifest");
+        assert!(
+            !manifests.is_empty(),
+            "Should generate at least one packed corridor manifest"
+        );
 
         let m = &manifests[0];
         assert_eq!(m.source_system_name, "Jita");
         assert_eq!(m.dest_system_name, "Amarr");
-        assert_eq!(m.deals.len(), 2, "Should pack exactly Item B and Item A (highest profit density)");
+        assert_eq!(
+            m.deals.len(),
+            2,
+            "Should pack exactly Item B and Item A (highest profit density)"
+        );
         assert_eq!(m.deals[0].item_name, "Item B"); // higher ppm3
         assert_eq!(m.deals[1].item_name, "Item A");
         assert_eq!(m.total_volume_used, 45_000.0);
@@ -338,7 +385,9 @@ mod tests {
             return;
         }
 
-        let sde = SdeLoader::open(&sde_path, 30).await.expect("Failed to open SDE");
+        let sde = SdeLoader::open(&sde_path, 30)
+            .await
+            .expect("Failed to open SDE");
 
         let systems = vec![
             SystemNode {
@@ -409,8 +458,12 @@ mod tests {
             range: Some("region".to_string()),
         };
 
-        let same_station_res = calculate_deal(34, &item, &src_order, &same_station_dst, &cfg, &sde, &graph);
-        assert!(same_station_res.is_none(), "Same station trade must be strictly rejected");
+        let same_station_res =
+            calculate_deal(34, &item, &src_order, &same_station_dst, &cfg, &sde, &graph);
+        assert!(
+            same_station_res.is_none(),
+            "Same station trade must be strictly rejected"
+        );
 
         // 2. Cross-station trade where dest min_volume > available volume
         let unmet_min_vol_dst = MarketOrder {
@@ -428,8 +481,19 @@ mod tests {
             range: Some("region".to_string()),
         };
 
-        let unmet_min_res = calculate_deal(34, &item, &src_order, &unmet_min_vol_dst, &cfg, &sde, &graph);
-        assert!(unmet_min_res.is_none(), "Deal must be rejected when buyer min_volume cannot be fulfilled");
+        let unmet_min_res = calculate_deal(
+            34,
+            &item,
+            &src_order,
+            &unmet_min_vol_dst,
+            &cfg,
+            &sde,
+            &graph,
+        );
+        assert!(
+            unmet_min_res.is_none(),
+            "Deal must be rejected when buyer min_volume cannot be fulfilled"
+        );
 
         // 3. Cross-station trade where dest min_volume is satisfied (<= available volume)
         let satisfied_min_vol_dst = MarketOrder {
@@ -447,12 +511,26 @@ mod tests {
             range: Some("region".to_string()),
         };
 
-        let ok_res = calculate_deal(34, &item, &src_order, &satisfied_min_vol_dst, &cfg, &sde, &graph);
-        assert!(ok_res.is_some(), "Deal must be accepted when buyer min_volume is fulfilled");
+        let ok_res = calculate_deal(
+            34,
+            &item,
+            &src_order,
+            &satisfied_min_vol_dst,
+            &cfg,
+            &sde,
+            &graph,
+        );
+        assert!(
+            ok_res.is_some(),
+            "Deal must be accepted when buyer min_volume is fulfilled"
+        );
         let deal = ok_res.unwrap();
         assert_eq!(deal.dest_order_min_volume, 5_000);
         assert_eq!(deal.quantity, 10_000);
-        assert!(!deal.is_npc_trade, "Regular player mineral deal must not be flagged as NPC trade");
+        assert!(
+            !deal.is_npc_trade,
+            "Regular player mineral deal must not be flagged as NPC trade"
+        );
     }
 
     #[tokio::test]
@@ -469,7 +547,9 @@ mod tests {
             return;
         }
 
-        let sde = SdeLoader::open(&sde_path, 30).await.expect("Failed to open SDE");
+        let sde = SdeLoader::open(&sde_path, 30)
+            .await
+            .expect("Failed to open SDE");
 
         let systems = vec![
             SystemNode {
@@ -501,8 +581,13 @@ mod tests {
         };
 
         // 1. Spirits (Type ID 9850, Group 280, Category 17: Commodity) -> NPC trade good
-        let spirits_info = sde.get_item_info(9850).expect("Spirits should exist in SDE");
-        assert!(spirits_info.is_npc_trade_commodity(), "Spirits must be detected as an NPC trade commodity");
+        let spirits_info = sde
+            .get_item_info(9850)
+            .expect("Spirits should exist in SDE");
+        assert!(
+            spirits_info.is_npc_trade_commodity(),
+            "Spirits must be detected as an NPC trade commodity"
+        );
 
         let src_spirits = MarketOrder {
             order_id: 501,
@@ -534,10 +619,21 @@ mod tests {
             range: Some("region".to_string()),
         };
 
-        let deal_spirits = calculate_deal(9850, &spirits_info, &src_spirits, &dst_spirits, &cfg, &sde, &graph);
+        let deal_spirits = calculate_deal(
+            9850,
+            &spirits_info,
+            &src_spirits,
+            &dst_spirits,
+            &cfg,
+            &sde,
+            &graph,
+        );
         assert!(deal_spirits.is_some());
         let deal_spirits = deal_spirits.unwrap();
-        assert!(deal_spirits.is_npc_trade, "Spirits deal must be flagged as an NPC trade");
+        assert!(
+            deal_spirits.is_npc_trade,
+            "Spirits deal must be flagged as an NPC trade"
+        );
 
         // 2. Regular item with a 365-day NPC seeded buy order (duration = 365)
         let tritanium_info = ItemInfo {
@@ -579,10 +675,21 @@ mod tests {
             range: Some("region".to_string()),
         };
 
-        let deal_npc_seeded = calculate_deal(34, &tritanium_info, &src_player, &dst_npc_order, &cfg, &sde, &graph);
+        let deal_npc_seeded = calculate_deal(
+            34,
+            &tritanium_info,
+            &src_player,
+            &dst_npc_order,
+            &cfg,
+            &sde,
+            &graph,
+        );
         assert!(deal_npc_seeded.is_some());
         let deal_npc_seeded = deal_npc_seeded.unwrap();
-        assert!(deal_npc_seeded.is_npc_trade, "Deal with 365-day NPC order must be flagged as an NPC trade");
+        assert!(
+            deal_npc_seeded.is_npc_trade,
+            "Deal with 365-day NPC order must be flagged as an NPC trade"
+        );
 
         // 3. Regular player-to-player deal (duration = 90, non-commodity item)
         let dst_player_order = MarketOrder {
@@ -600,10 +707,21 @@ mod tests {
             range: Some("region".to_string()),
         };
 
-        let deal_player = calculate_deal(34, &tritanium_info, &src_player, &dst_player_order, &cfg, &sde, &graph);
+        let deal_player = calculate_deal(
+            34,
+            &tritanium_info,
+            &src_player,
+            &dst_player_order,
+            &cfg,
+            &sde,
+            &graph,
+        );
         assert!(deal_player.is_some());
         let deal_player = deal_player.unwrap();
-        assert!(!deal_player.is_npc_trade, "Player-to-player deal must not be flagged as NPC trade");
+        assert!(
+            !deal_player.is_npc_trade,
+            "Player-to-player deal must not be flagged as NPC trade"
+        );
 
         // 4. Test filtering: with hide_npc_trades = true, NPC deals are excluded while player deals remain
         let all_deals = [deal_spirits, deal_npc_seeded, deal_player];
@@ -613,7 +731,11 @@ mod tests {
             .filter(|d| !hide_npc_trades || !d.is_npc_trade)
             .collect();
 
-        assert_eq!(filtered.len(), 1, "Only the 1 player deal should pass when hide_npc_trades is active");
+        assert_eq!(
+            filtered.len(),
+            1,
+            "Only the 1 player deal should pass when hide_npc_trades is active"
+        );
         assert_eq!(filtered[0].item_name, "Tritanium");
         assert!(!filtered[0].is_npc_trade);
     }

@@ -1,4 +1,4 @@
-name: CI (Fedora Linux)
+name: CI (Fedora Linux & Standards QA)
 
 on:
   push:
@@ -11,31 +11,45 @@ env:
 
 jobs:
   build_and_test_fedora:
-    name: Fedora Linux Build & Test
+    name: Fedora Linux Build, Test & Standards QA
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
 
     steps:
-    - name: Install Fedora System Dependencies
+    - name: Install Fedora System Dependencies & Packaging Tools
       run: |
-        dnf install -y git gcc pkg-config rust cargo
+        dnf install -y git gcc pkg-config rust cargo clippy rustfmt desktop-file-utils appstream
 
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
-    - name: Verify Fedora Environment
+    - name: Verify Environment Toolchains
       run: |
         cat /etc/fedora-release
         gcc --version
         rustc --version
         cargo --version
+        desktop-file-validate --version || true
+        appstreamcli --version || true
+
+    - name: Validate Desktop Entry File
+      run: desktop-file-validate packaging/flatpak/io.github.flambello.eve_merchant.desktop
+
+    - name: Validate AppStream Metainfo XML
+      run: appstreamcli validate --no-net packaging/flatpak/io.github.flambello.eve_merchant.metainfo.xml
+
+    - name: Check Code Formatting
+      run: cargo fmt --check
 
     - name: Cargo Check
-      run: cargo check --verbose
+      run: cargo check --all-targets --verbose
 
-    - name: Run Tests
+    - name: Clippy Linter
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Run Test Suites
       run: cargo test --verbose
 
     - name: Build Optimized Release Binary
-      run: cargo build --release --verbose
+      run: cargo build --release --verbose --bin eve-merchant

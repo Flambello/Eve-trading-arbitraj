@@ -240,7 +240,9 @@ impl SdeLoader {
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
-            HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            ),
         );
 
         let client = reqwest::Client::builder()
@@ -370,7 +372,9 @@ impl SdeLoader {
         // 2. Direct or converted match on staStations
         let sde_name = station_name_to_sde(cleaned);
         let mut stmt_sta = conn
-            .prepare_cached("SELECT solarSystemID FROM staStations WHERE LOWER(stationName) = LOWER(?1)")
+            .prepare_cached(
+                "SELECT solarSystemID FROM staStations WHERE LOWER(stationName) = LOWER(?1)",
+            )
             .ok()?;
         if let Ok(id) = stmt_sta.query_row(params![sde_name], |row| row.get(0)) {
             return Some(id);
@@ -525,7 +529,8 @@ impl SdeLoader {
 
     pub fn all_regions(&self) -> Result<Vec<(u32, String)>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-        let mut stmt = conn.prepare("SELECT regionID, regionName FROM mapRegions ORDER BY regionName")?;
+        let mut stmt =
+            conn.prepare("SELECT regionID, regionName FROM mapRegions ORDER BY regionName")?;
         let mut rows = stmt.query([])?;
         let mut list = Vec::new();
         while let Some(row) = rows.next()? {
@@ -555,9 +560,8 @@ impl SdeLoader {
 
     pub fn all_jumps(&self) -> Result<Vec<(u32, u32)>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT fromSolarSystemID, toSolarSystemID FROM mapSolarSystemJumps",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT fromSolarSystemID, toSolarSystemID FROM mapSolarSystemJumps")?;
         let mut rows = stmt.query([])?;
         let mut list = Vec::new();
         while let Some(row) = rows.next()? {

@@ -7,15 +7,41 @@ use std::path::PathBuf;
 fn test_roman_numeral_conversion() {
     // 1 to 20
     let expected = [
-        (1, "I"), (2, "II"), (3, "III"), (4, "IV"), (5, "V"),
-        (6, "VI"), (7, "VII"), (8, "VIII"), (9, "IX"), (10, "X"),
-        (11, "XI"), (12, "XII"), (13, "XIII"), (14, "XIV"), (15, "XV"),
-        (16, "XVI"), (17, "XVII"), (18, "XVIII"), (19, "XIX"), (20, "XX"),
+        (1, "I"),
+        (2, "II"),
+        (3, "III"),
+        (4, "IV"),
+        (5, "V"),
+        (6, "VI"),
+        (7, "VII"),
+        (8, "VIII"),
+        (9, "IX"),
+        (10, "X"),
+        (11, "XI"),
+        (12, "XII"),
+        (13, "XIII"),
+        (14, "XIV"),
+        (15, "XV"),
+        (16, "XVI"),
+        (17, "XVII"),
+        (18, "XVIII"),
+        (19, "XIX"),
+        (20, "XX"),
     ];
 
     for (arabic, roman) in expected {
-        assert_eq!(arabic_to_roman(arabic), roman, "arabic_to_roman({}) failed", arabic);
-        assert_eq!(roman_to_arabic(roman), Some(arabic), "roman_to_arabic({}) failed", roman);
+        assert_eq!(
+            arabic_to_roman(arabic),
+            roman,
+            "arabic_to_roman({}) failed",
+            arabic
+        );
+        assert_eq!(
+            roman_to_arabic(roman),
+            Some(arabic),
+            "roman_to_arabic({}) failed",
+            roman
+        );
         // Case-insensitivity test
         assert_eq!(roman_to_arabic(&roman.to_lowercase()), Some(arabic));
     }
@@ -40,7 +66,10 @@ fn test_station_name_formatting_and_canonicalization() {
     // 1. Planet number converted to Roman, moon number remains Arabic
     let sde_jita = "Jita 4 - Moon 4 - Caldari Navy Assembly Plant";
     let ingame_jita = format_station_name(sde_jita);
-    assert_eq!(ingame_jita, "Jita IV - Moon 4 - Caldari Navy Assembly Plant");
+    assert_eq!(
+        ingame_jita,
+        "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
+    );
     assert_eq!(station_name_to_sde(&ingame_jita), sde_jita);
 
     // 2. Direct planet station without moon
@@ -63,7 +92,10 @@ fn test_station_name_formatting_and_canonicalization() {
     // 5. Non-planetary station (Zarzakh)
     let sde_zarzakh = "Zarzakh - Deathless Custodians - The Fulcrum";
     let ingame_zarzakh = format_station_name(sde_zarzakh);
-    assert_eq!(ingame_zarzakh, "Zarzakh - Deathless Custodians - The Fulcrum");
+    assert_eq!(
+        ingame_zarzakh,
+        "Zarzakh - Deathless Custodians - The Fulcrum"
+    );
 }
 
 #[tokio::test]
@@ -73,7 +105,9 @@ async fn test_sde_search_systems_autocomplete() {
         return;
     }
 
-    let sde = SdeLoader::open(&sde_path, 30).await.expect("Failed to open SDE");
+    let sde = SdeLoader::open(&sde_path, 30)
+        .await
+        .expect("Failed to open SDE");
 
     // Exact search / prefix search for "Jit"
     let results = sde.search_systems("Jit", 5);
@@ -110,13 +144,16 @@ async fn test_sde_station_canonical_name_and_system_resolution() {
         return;
     }
 
-    let sde = SdeLoader::open(&sde_path, 30).await.expect("Failed to open SDE");
+    let sde = SdeLoader::open(&sde_path, 30)
+        .await
+        .expect("Failed to open SDE");
 
     // 1. Station name canonicalization on read (station 60003760 is Jita 4-4)
-    let sta_name = sde.get_station_name(60003760).expect("Station 60003760 should exist");
+    let sta_name = sde
+        .get_station_name(60003760)
+        .expect("Station 60003760 should exist");
     assert_eq!(
-        sta_name,
-        "Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+        sta_name, "Jita IV - Moon 4 - Caldari Navy Assembly Plant",
         "get_station_name must return canonical in-game format with Roman planet numeral"
     );
 

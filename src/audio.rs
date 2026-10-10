@@ -23,7 +23,14 @@ pub fn send_desktop_notification(summary: &str, body: &str) {
     let body = body.to_string();
     thread::spawn(move || {
         let _ = Command::new("notify-send")
-            .args(["-a", "EVE Traveling Merchant", "-u", "normal", &summary, &body])
+            .args([
+                "-a",
+                "EVE Traveling Merchant",
+                "-u",
+                "normal",
+                &summary,
+                &body,
+            ])
             .status();
     });
 }
@@ -52,7 +59,10 @@ fn play_sound_internal(sound_theme_id: &str) {
     }
 
     // 2. PipeWire native player (pw-play) with freedesktop stereo oga
-    let oga_path = format!("/usr/share/sounds/freedesktop/stereo/{}.oga", sound_theme_id);
+    let oga_path = format!(
+        "/usr/share/sounds/freedesktop/stereo/{}.oga",
+        sound_theme_id
+    );
     if Path::new(&oga_path).exists() {
         if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
             if status.success() {

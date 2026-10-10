@@ -50,7 +50,7 @@ pub async fn fetch_markets(
 
     for &rid in region_ids {
         let client_ref = client; // or clone if needed, but client has Arc inside or we can spawn
-        // We can create a task for each region:
+                                 // We can create a task for each region:
         tasks.push(async move {
             let market = fetch_region_market(client_ref, rid).await?;
             Ok::<(u32, RegionMarket), anyhow::Error>((rid, market))
@@ -73,12 +73,20 @@ pub fn cheapest_sell(orders: &[MarketOrder]) -> Option<&MarketOrder> {
     orders
         .iter()
         .filter(|o| !o.is_buy_order && o.volume_remain > 0)
-        .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| {
+            a.price
+                .partial_cmp(&b.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
 }
 
 pub fn best_buy(orders: &[MarketOrder]) -> Option<&MarketOrder> {
     orders
         .iter()
         .filter(|o| o.is_buy_order && o.volume_remain > 0)
-        .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|a, b| {
+            a.price
+                .partial_cmp(&b.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
 }

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a0f1d"/>
+      <stop offset="50%" stop-color="#111927"/>
+      <stop offset="100%" stop-color="#182337"/>
+    </linearGradient>
+
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f2fe"/>
+      <stop offset="50%" stop-color="#4facfe"/>
+      <stop offset="100%" stop-color="#f5af19"/>
+    </linearGradient>
+
+    <!-- Gold Ship Gradient -->
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffe259"/>
+      <stop offset="50%" stop-color="#ffa751"/>
+      <stop offset="100%" stop-color="#e67e22"/>
+    </linearGradient>
+
+    <!-- Cyan Warp Stargate Gradient -->
+    <linearGradient id="cyanGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00c6ff"/>
+      <stop offset="100%" stop-color="#0072ff"/>
+    </linearGradient>
+
+    <!-- Emerald Profit Pulse Gradient -->
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f260"/>
+      <stop offset="100%" stop-color="#0575e6"/>
+    </linearGradient>
+
+    <!-- Filter for Sci-Fi Glow -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Base Hex-Squircle Container -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="8" />
+
+  <!-- Background Radar / System Coordinate Rings -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#1f2d44" stroke-width="2" stroke-dasharray="6,6" opacity="0.6"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#1f2d44" stroke-width="2" opacity="0.4"/>
+  <circle cx="256" cy="256" r="80" fill="none" stroke="#1f2d44" stroke-width="1.5" stroke-dasharray="4,4" opacity="0.4"/>
+
+  <!-- Stargate Jump Network Axes -->
+  <line x1="256" y1="50" x2="256" y2="462" stroke="#1b2a3f" stroke-width="2" stroke-dasharray="8,8" />
+  <line x1="50" y1="256" x2="462" y2="256" stroke="#1b2a3f" stroke-width="2" stroke-dasharray="8,8" />
+
+  <!-- Outer Stargate Resonance Ring -->
+  <circle cx="256" cy="256" r="148" fill="none" stroke="url(#cyanGrad)" stroke-width="6" opacity="0.85" filter="url(#glow)"/>
+
+  <!-- Orbital Trade Waypoint Nodes -->
+  <!-- Top Node (Home / Jita) -->
+  <circle cx="256" cy="108" r="14" fill="#00f2fe" filter="url(#glow)" />
+  <circle cx="256" cy="108" r="6" fill="#ffffff" />
+
+  <!-- Bottom Right Node (Sell Station) -->
+  <circle cx="360" cy="360" r="14" fill="#00f260" filter="url(#glow)" />
+  <circle cx="360" cy="360" r="6" fill="#ffffff" />
+
+  <!-- Bottom Left Node (Detour Station) -->
+  <circle cx="152" cy="360" r="12" fill="#ffa751" filter="url(#glow)" />
+  <circle cx="152" cy="360" r="5" fill="#ffffff" />
+
+  <!-- Transit Jump Route Arcs -->
+  <path d="M 256 108 Q 380 200 360 360" fill="none" stroke="#00f2fe" stroke-width="4" stroke-dasharray="8,4" opacity="0.85" />
+  <path d="M 360 360 Q 256 410 152 360" fill="none" stroke="#00f260" stroke-width="4" stroke-dasharray="8,4" opacity="0.85" />
+  <path d="M 152 360 Q 130 200 256 108" fill="none" stroke="#ffa751" stroke-width="4" stroke-dasharray="8,4" opacity="0.85" />
+
+  <!-- Central Traveling Merchant Hauler Vessel (Stylized Sci-Fi Chevron) -->
+  <!-- Main Ship Hull Shadow -->
+  <polygon points="256,150 330,310 256,275 182,310" fill="#0b111c" opacity="0.5" transform="translate(0, 10)" />
+
+  <!-- Main Ship Hull Wings -->
+  <polygon points="256,150 330,310 256,275 182,310" fill="url(#goldGrad)" stroke="#fff" stroke-width="2" filter="url(#glow)" />
+
+  <!-- Hull Center Line & Cargo Core Deck -->
+  <polygon points="256,170 295,285 256,265 217,285" fill="#ffd700" />
+  <polygon points="256,190 278,270 256,255 234,270" fill="#ffffff" opacity="0.9" />
+
+  <!-- Warp Engine Plasma Trail -->
+  <polygon points="256,280 268,340 256,365 244,340" fill="url(#cyanGrad)" filter="url(#glow)" opacity="0.9" />
+  <polygon points="256,290 262,330 256,345 250,330" fill="#ffffff" />
+
+  <!-- Knapsack Cargo Box Indicators (Golden Crates on Wings) -->
+  <rect x="210" y="240" width="14" height="14" rx="3" fill="#ffe259" stroke="#b7791f" stroke-width="1.5" />
+  <rect x="288" y="240" width="14" height="14" rx="3" fill="#ffe259" stroke="#b7791f" stroke-width="1.5" />
+
+  <!-- ISK Currency Orbit Spark -->
+  <circle cx="340" cy="180" r="7" fill="#ffe259" filter="url(#glow)" />
+  <circle cx="340" cy="180" r="3" fill="#ffffff" />
+</svg>

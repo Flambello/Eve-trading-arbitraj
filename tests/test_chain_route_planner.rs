@@ -579,7 +579,10 @@ fn test_chain_cannot_multiply_same_source_order_in_single_stop() {
 
     // Because both share the same source order of 100 units, total packed cannot exceed 100 units!
     let total_packed_units: u32 = packed.iter().map(|s| s.deal.quantity).sum();
-    assert_eq!(total_packed_units, 100, "Should not exceed the single order volume of 100 units");
+    assert_eq!(
+        total_packed_units, 100,
+        "Should not exceed the single order volume of 100 units"
+    );
     assert!((total_vol - 50.0).abs() < 1e-4);
     assert!((total_cap - 10_000.0).abs() < 1e-4);
     assert!((total_profit - 2_500.0).abs() < 1e-4);
@@ -776,7 +779,11 @@ fn test_chain_capital_recycled_after_delivery() {
     let routes = find_chain_routes(&[d1, d2], &graph, &cfg);
     assert!(!routes.is_empty(), "Should find a 2-leg chain route");
     let best = &routes[0];
-    assert_eq!(best.legs.len(), 2, "Chain must have 2 legs because capital was freed and recycled");
+    assert_eq!(
+        best.legs.len(),
+        2,
+        "Chain must have 2 legs because capital was freed and recycled"
+    );
     assert_eq!(best.legs[0].sell.system_name, "Perimeter");
     assert_eq!(best.legs[1].sell.system_name, "Amarr");
 }
@@ -808,7 +815,10 @@ fn test_chain_knapsack_respects_dest_order_min_volume() {
     };
 
     let routes = find_chain_routes(&[d1.clone()], &graph, &cfg);
-    assert!(routes.is_empty(), "Should reject deal because ship capacity cannot meet buyer's min_volume requirement");
+    assert!(
+        routes.is_empty(),
+        "Should reject deal because ship capacity cannot meet buyer's min_volume requirement"
+    );
 
     // Now give enough cargo space to fit 60 units (>= 50 min_volume)
     let cfg_ok = ChainConfig {
@@ -820,5 +830,8 @@ fn test_chain_knapsack_respects_dest_order_min_volume() {
     };
 
     let routes_ok = find_chain_routes(&[d1], &graph, &cfg_ok);
-    assert!(!routes_ok.is_empty(), "Should accept deal when ship capacity can meet min_volume");
+    assert!(
+        !routes_ok.is_empty(),
+        "Should accept deal when ship capacity can meet min_volume"
+    );
 }

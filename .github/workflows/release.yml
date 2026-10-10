@@ -1,4 +1,4 @@
-name: Release (Fedora Linux)
+name: Release
 
 on:
   push:
@@ -6,33 +6,45 @@ on:
       - "v*"
 
 jobs:
-  build_release_fedora:
-    name: Build Fedora Linux x86_64 Binary
+  build_release_linux:
+    name: Build & Package Linux x86_64 Release
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
 
     steps:
-    - name: Install Fedora System Dependencies
+    - name: Install Fedora Build Dependencies
       run: |
-        dnf install -y git gcc pkg-config rust cargo tar gzip
+        dnf install -y git gcc pkg-config rust cargo tar gzip sha256sum
 
     - name: Checkout Source Code
       uses: actions/checkout@v4
 
     - name: Build Optimized Release Binary
-      run: cargo build --release
+      run: cargo build --release --bin eve-merchant
 
-    - name: Package Fedora Release Archive
+    - name: Package Release Distribution
       run: |
-        mkdir -p package
-        cp target/release/eve-trade package/
-        cp README.md LICENSE package/
-        tar -czf eve-trade-scout-fedora-x86_64.tar.gz -C package .
+        DIST_DIR="eve-traveling-merchant"
+        mkdir -p "$DIST_DIR"
+        cp target/release/eve-merchant "$DIST_DIR/"
+        cp README.md LICENSE CHANGELOG.md "$DIST_DIR/"
+        cp packaging/flatpak/io.github.flambello.eve_merchant.desktop "$DIST_DIR/"
+        cp assets/icons/io.github.flambello.eve_merchant.svg "$DIST_DIR/"
+        cp assets/icons/io.github.flambello.eve_merchant.png "$DIST_DIR/"
+        cp start-gui.sh "$DIST_DIR/"
+        chmod +x "$DIST_DIR/eve-merchant" "$DIST_DIR/start-gui.sh"
 
-    - name: Upload to GitHub Release
+        ARCHIVE_NAME="eve-traveling-merchant-linux-x86_64.tar.gz"
+        tar -czf "$ARCHIVE_NAME" "$DIST_DIR"
+        sha256sum "$ARCHIVE_NAME" > SHA256SUMS
+
+    - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: eve-trade-scout-fedora-x86_64.tar.gz
+        files: |
+          eve-traveling-merchant-linux-x86_64.tar.gz
+          SHA256SUMS
+        generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

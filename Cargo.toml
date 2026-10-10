@@ -2,9 +2,15 @@
 name = "eve-trade-scout"
 version = "0.1.0"
 edition = "2021"
-description = "EVE Online arbitrage route planner — find profitable trades between stations"
-authors = ["EVE Trader"]
+description = "EVE Online location-centric arbitrage route planner & multi-item cargo knapsack optimizer"
+authors = ["Flambello <28274575+Flambello@users.noreply.github.com>"]
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Flambello/eve-traveling-merchant"
+homepage = "https://github.com/Flambello/eve-traveling-merchant"
+keywords = ["eve-online", "trading", "arbitrage", "route-planner", "flathub"]
+categories = ["games", "gui", "command-line-utilities"]
+exclude = [".agents/", "data/", "cache/", "*.sqlite*", "*.bz2", ".github/"]
 
 [lib]
 name = "eve_trade_scout"

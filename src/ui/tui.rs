@@ -108,7 +108,14 @@ pub fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut state = AppState::new(deals, route, ship, home_system.to_string(), safe_only, npc_stations_only);
+    let mut state = AppState::new(
+        deals,
+        route,
+        ship,
+        home_system.to_string(),
+        safe_only,
+        npc_stations_only,
+    );
 
     let res = main_loop(&mut terminal, &mut state);
 
@@ -296,7 +303,10 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
 
         let buy_sys_text = format!("[{:.1}] {}", d.source_security, d.source_system_name);
         let sell_sys_text = format!("[{:.1}] {}", d.dest_security, d.dest_system_name);
-        let jumps_text = format!("{}+{}={}", d.jumps_from_home, d.jumps_source_dest, d.total_jumps);
+        let jumps_text = format!(
+            "{}+{}={}",
+            d.jumps_from_home, d.jumps_source_dest, d.total_jumps
+        );
 
         Row::new(vec![
             Cell::from(format!("{}", idx + 1)).style(Style::default().fg(Color::DarkGray)),
@@ -304,14 +314,18 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
             Cell::from(buy_sys_text).style(Style::default().fg(Color::LightBlue)),
             Cell::from(format_unit_price(d.buy_price)).style(Style::default().fg(Color::Cyan)),
             Cell::from(sell_sys_text).style(Style::default().fg(Color::Magenta)),
-            Cell::from(format_unit_price(d.sell_price)).style(Style::default().fg(Color::Rgb(255, 160, 240))),
+            Cell::from(format_unit_price(d.sell_price))
+                .style(Style::default().fg(Color::Rgb(255, 160, 240))),
             Cell::from(format!("{}", d.quantity)),
             Cell::from(format!("{:.1}", d.volume_used)),
             Cell::from(format!("{:.2}M", d.capital_required / 1_000_000.0)),
             Cell::from(format!("{:.2}M", d.net_profit / 1_000_000.0))
                 .style(Style::default().fg(Color::Green)),
-            Cell::from(format!("+{:.1}%", d.net_profit_pct))
-                .style(Style::default().fg(Color::Rgb(0, 255, 128)).add_modifier(Modifier::BOLD)),
+            Cell::from(format!("+{:.1}%", d.net_profit_pct)).style(
+                Style::default()
+                    .fg(Color::Rgb(0, 255, 128))
+                    .add_modifier(Modifier::BOLD),
+            ),
             Cell::from(jumps_text).style(Style::default().fg(Color::Gray)),
             Cell::from(format!("{:.2}M", d.profit_per_jump / 1_000_000.0))
                 .style(Style::default().fg(ppj_color).add_modifier(Modifier::BOLD)),
@@ -334,7 +348,10 @@ fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
         Constraint::Length(12), // Profit/Jump
     ];
 
-    let title = format!(" Arbitrage Deals ({}) - Ranked by Profit/Jump ", state.deals.len());
+    let title = format!(
+        " Arbitrage Deals ({}) - Ranked by Profit/Jump ",
+        state.deals.len()
+    );
 
     let table = Table::new(rows, widths)
         .header(header)
@@ -358,27 +375,51 @@ fn render_route_view(f: &mut Frame, area: Rect, state: &AppState) {
 
     let mut text_lines = Vec::new();
 
+    text_lines.push(Line::from(vec![Span::styled(
+        format!(
+            "═══ Planned Multi-Stop Route Summary ({} Stops) ═══\n",
+            r.stops.len()
+        ),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
     text_lines.push(Line::from(vec![
+        Span::raw(" Total Jumps: "),
         Span::styled(
-            format!("═══ Planned Multi-Stop Route Summary ({} Stops) ═══\n", r.stops.len()),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            format!("{}", r.total_jumps),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" │ Total Net Profit: "),
+        Span::styled(
+            format!("{:.2} M ISK", r.total_profit / 1_000_000.0),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" │ Avg Profit / Jump: "),
+        Span::styled(
+            format!("{:.2} M ISK/jump", r.avg_profit_per_jump / 1_000_000.0),
+            Style::default()
+                .fg(Color::Rgb(0, 255, 128))
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
 
     text_lines.push(Line::from(vec![
-        Span::raw(" Total Jumps: "),
-        Span::styled(format!("{}", r.total_jumps), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::raw(" │ Total Net Profit: "),
-        Span::styled(format!("{:.2} M ISK", r.total_profit / 1_000_000.0), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw(" │ Avg Profit / Jump: "),
-        Span::styled(format!("{:.2} M ISK/jump", r.avg_profit_per_jump / 1_000_000.0), Style::default().fg(Color::Rgb(0, 255, 128)).add_modifier(Modifier::BOLD)),
-    ]));
-
-    text_lines.push(Line::from(vec![
         Span::raw(" Capital Required: "),
-        Span::styled(format!("{:.2} M ISK", r.total_capital_required / 1_000_000.0), Style::default().fg(Color::LightBlue)),
+        Span::styled(
+            format!("{:.2} M ISK", r.total_capital_required / 1_000_000.0),
+            Style::default().fg(Color::LightBlue),
+        ),
         Span::raw(" │ Peak Cargo Used: "),
-        Span::styled(format!("{:.1} / {:.1} m³", r.max_volume_used, state.ship.max_volume), Style::default().fg(Color::Magenta)),
+        Span::styled(
+            format!("{:.1} / {:.1} m³", r.max_volume_used, state.ship.max_volume),
+            Style::default().fg(Color::Magenta),
+        ),
     ]));
 
     text_lines.push(Line::from(""));
@@ -390,36 +431,82 @@ fn render_route_view(f: &mut Frame, area: Rect, state: &AppState) {
     for stop in &r.stops {
         text_lines.push(Line::from(""));
         text_lines.push(Line::from(vec![
-            Span::styled(format!(" [STOP {}]", stop.step), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!(" [STOP {}]", stop.step),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!(" Travel {} jumps to ", stop.jumps_from_prev)),
-            Span::styled(&stop.deal.source_system_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &stop.deal.source_system_name,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         text_lines.push(Line::from(vec![
             Span::raw("   BUY:  "),
-            Span::styled(format!("{}x {}", stop.deal.quantity, stop.deal.item_name), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{}x {}", stop.deal.quantity, stop.deal.item_name),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!(" @ {:.2} ISK/unit", stop.deal.buy_price)),
-            Span::styled(format!(" (Total: {:.2}M ISK)", stop.deal.capital_required / 1_000_000.0), Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!(
+                    " (Total: {:.2}M ISK)",
+                    stop.deal.capital_required / 1_000_000.0
+                ),
+                Style::default().fg(Color::Gray),
+            ),
         ]));
         text_lines.push(Line::from(vec![
             Span::raw("   AT:   "),
-            Span::styled(&stop.deal.source_station_name, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                &stop.deal.source_station_name,
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
 
         text_lines.push(Line::from(vec![
-            Span::raw(format!("   WARP: {} jumps to ", stop.deal.jumps_source_dest)),
-            Span::styled(&stop.deal.dest_system_name, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::raw(format!(
+                "   WARP: {} jumps to ",
+                stop.deal.jumps_source_dest
+            )),
+            Span::styled(
+                &stop.deal.dest_system_name,
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         text_lines.push(Line::from(vec![
             Span::raw("   SELL: "),
-            Span::styled(format!("{}x {}", stop.deal.quantity, stop.deal.item_name), Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{}x {}", stop.deal.quantity, stop.deal.item_name),
+                Style::default().fg(Color::White),
+            ),
             Span::raw(format!(" @ {:.2} ISK/unit", stop.deal.sell_price)),
-            Span::styled(format!(" -> Profit: +{:.2}M ISK", stop.deal.net_profit / 1_000_000.0), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!(
+                    " -> Profit: +{:.2}M ISK",
+                    stop.deal.net_profit / 1_000_000.0
+                ),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         text_lines.push(Line::from(vec![
             Span::raw("   AT:   "),
-            Span::styled(&stop.deal.dest_station_name, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                &stop.deal.dest_station_name,
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
     }
 
@@ -474,8 +561,9 @@ fn render_help_view(f: &mut Frame, area: Rect) {
 }
 
 fn render_status_bar(f: &mut Frame, area: Rect, _state: &AppState) {
-    let bar = Paragraph::new(Line::from(vec![
-        Span::styled(" [Tab] Switch Tab │ [↑/↓] Select Deal │ [Q] Quit ", Style::default().fg(Color::DarkGray)),
-    ]));
+    let bar = Paragraph::new(Line::from(vec![Span::styled(
+        " [Tab] Switch Tab │ [↑/↓] Select Deal │ [Q] Quit ",
+        Style::default().fg(Color::DarkGray),
+    )]));
     f.render_widget(bar, area);
 }

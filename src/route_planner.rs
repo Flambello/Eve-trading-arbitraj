@@ -100,12 +100,17 @@ pub fn plan_route(
             .to_string();
 
         // Trace detailed waypoints for in-game autopilot
-        let path_to_src = graph.shortest_path(departure_system, chosen_deal.source_system_id, safe_only);
+        let path_to_src =
+            graph.shortest_path(departure_system, chosen_deal.source_system_id, safe_only);
         for &sys in path_to_src.iter().skip(1) {
             waypoints.push(sys);
         }
 
-        let path_to_dst = graph.shortest_path(chosen_deal.source_system_id, chosen_deal.dest_system_id, safe_only);
+        let path_to_dst = graph.shortest_path(
+            chosen_deal.source_system_id,
+            chosen_deal.dest_system_id,
+            safe_only,
+        );
         for &sys in path_to_dst.iter().skip(1) {
             waypoints.push(sys);
         }
@@ -132,12 +137,7 @@ pub fn plan_route(
 
     let waypoint_names = waypoints
         .iter()
-        .map(|&id| {
-            graph
-                .system_name(id)
-                .unwrap_or("Unknown")
-                .to_string()
-        })
+        .map(|&id| graph.system_name(id).unwrap_or("Unknown").to_string())
         .collect();
 
     let avg_profit_per_jump = if total_jumps > 0 {

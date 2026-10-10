@@ -318,7 +318,8 @@ impl EsiClient {
                         match req.send().await {
                             Ok(r) => {
                                 let status = r.status();
-                                if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                                if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420
+                                {
                                     eprintln!(
                                         " [ESI] Page {} rate limited ({}). Retrying in {:?}...",
                                         page, status, page_backoff

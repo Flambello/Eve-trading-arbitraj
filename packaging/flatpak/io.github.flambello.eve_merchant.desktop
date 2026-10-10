@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=EVE Traveling Merchant
+GenericName=EVE Online Trading Tool
+Comment=Location-centric arbitrage engine & multi-item route planner for EVE Online
+Exec=eve-merchant --gui
+Icon=io.github.flambello.eve_merchant
+Terminal=false
+Categories=Game;
+Keywords=eve;online;trading;arbitrage;market;jita;hauler;route;isk;
+StartupNotify=true

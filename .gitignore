@@ -3,3 +3,6 @@
 /data/eve_sde.sqlite.bz2
 /cache/
 *.log
+*.tar.gz
+SHA256SUMS
+packaging/flatpak/.flatpak-cargo-generator.py

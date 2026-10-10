@@ -1,4 +1,6 @@
-use crate::arbitrage::{bundle_route_cargo, find_deals, ArbitrageConfig, ArbitrageDeal, TradeCorridorManifest};
+use crate::arbitrage::{
+    bundle_route_cargo, find_deals, ArbitrageConfig, ArbitrageDeal, TradeCorridorManifest,
+};
 use crate::config::{BIG_HAULER, SMALL_HAULER};
 use crate::esi::{fetch_markets, EsiClient};
 use crate::graph::SystemGraph;
@@ -149,7 +151,6 @@ enum ChainSearchResult {
     Success(Vec<crate::chain_route_planner::ChainRoute>),
     Error(String),
 }
-
 
 /// Helper to ensure clipboard contents are copied both via context and output_mut across all Linux windowing backends
 fn copy_to_clipboard(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -320,7 +321,10 @@ impl DesktopApp {
         let initial_status = if initial_deals.is_empty() {
             "Ready. Configure ship & location, then click SCAN MARKET.".to_string()
         } else {
-            format!("Loaded {} profitable arbitrage deals (ROI >= 10.0%).", initial_deals.len())
+            format!(
+                "Loaded {} profitable arbitrage deals (ROI >= 10.0%).",
+                initial_deals.len()
+            )
         };
 
         let has_forge = false;
@@ -329,7 +333,11 @@ impl DesktopApp {
         let has_heim = false;
         let has_metr = false;
 
-        let initial_ship = if initial_ship_is_big { BIG_HAULER } else { SMALL_HAULER };
+        let initial_ship = if initial_ship_is_big {
+            BIG_HAULER
+        } else {
+            SMALL_HAULER
+        };
         let initial_manifests = bundle_route_cargo(&initial_deals, initial_ship);
 
         let mut initial_alerted_keys = std::collections::HashSet::new();
@@ -349,7 +357,11 @@ impl DesktopApp {
             safe_only: initial_safe_only,
             npc_stations_only: initial_npc_stations_only,
             min_roi_pct: initial_min_roi.max(10.0),
-            min_profit_isk: if initial_min_profit <= 0.0 { 1_000_000.0 } else { initial_min_profit },
+            min_profit_isk: if initial_min_profit <= 0.0 {
+                1_000_000.0
+            } else {
+                initial_min_profit
+            },
             broker_fee_pct: 3.0,
             sales_tax_pct: 8.0,
             max_route_stops: 5,
@@ -358,7 +370,11 @@ impl DesktopApp {
             auto_refresh_secs: 300,
             last_scan_completed: Some(Instant::now()),
             sound_alerts_enabled: initial_sound_alerts,
-            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 { 100.0 } else { initial_sound_min_roi },
+            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 {
+                100.0
+            } else {
+                initial_sound_min_roi
+            },
             alerted_deal_keys: initial_alerted_keys,
 
             region_the_forge: has_forge,
@@ -446,7 +462,11 @@ impl DesktopApp {
             safe_only: initial_safe_only,
             npc_stations_only: initial_npc_stations_only,
             min_roi_pct: initial_min_roi.max(10.0),
-            min_profit_isk: if initial_min_profit <= 0.0 { 1_000_000.0 } else { initial_min_profit },
+            min_profit_isk: if initial_min_profit <= 0.0 {
+                1_000_000.0
+            } else {
+                initial_min_profit
+            },
             broker_fee_pct: 3.0,
             sales_tax_pct: 8.0,
             max_route_stops: 5,
@@ -455,7 +475,11 @@ impl DesktopApp {
             auto_refresh_secs: 300,
             last_scan_completed: Some(Instant::now()),
             sound_alerts_enabled: initial_sound_alerts,
-            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 { 100.0 } else { initial_sound_min_roi },
+            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 {
+                100.0
+            } else {
+                initial_sound_min_roi
+            },
             alerted_deal_keys: std::collections::HashSet::new(),
 
             region_the_forge: false,
@@ -509,7 +533,6 @@ impl DesktopApp {
         }
     }
 
-
     pub fn current_ship(&self) -> crate::config::ShipProfile {
         if self.use_custom_ship {
             crate::config::ShipProfile {
@@ -544,11 +567,21 @@ impl DesktopApp {
             }
         }
 
-        if self.region_the_forge { set.insert(10000002); }
-        if self.region_domain { set.insert(10000043); }
-        if self.region_sinq_laison { set.insert(10000032); }
-        if self.region_heimatar { set.insert(10000030); }
-        if self.region_metropolis { set.insert(10000042); }
+        if self.region_the_forge {
+            set.insert(10000002);
+        }
+        if self.region_domain {
+            set.insert(10000043);
+        }
+        if self.region_sinq_laison {
+            set.insert(10000032);
+        }
+        if self.region_heimatar {
+            set.insert(10000030);
+        }
+        if self.region_metropolis {
+            set.insert(10000042);
+        }
 
         if set.is_empty() {
             set.insert(10000002); // Default to The Forge (Jita)
@@ -595,7 +628,10 @@ impl DesktopApp {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(ScanResult::Error(format!("Failed to start Tokio runtime: {}", e)));
+                    let _ = tx.send(ScanResult::Error(format!(
+                        "Failed to start Tokio runtime: {}",
+                        e
+                    )));
                     return;
                 }
             };
@@ -682,7 +718,16 @@ impl eframe::App for DesktopApp {
                             manifests,
                             route,
                         } => {
-                            startup_complete = Some((sde, graph, esi, home_system_name, scan_regions, deals, manifests, route));
+                            startup_complete = Some((
+                                sde,
+                                graph,
+                                esi,
+                                home_system_name,
+                                scan_regions,
+                                deals,
+                                manifests,
+                                route,
+                            ));
                             break;
                         }
                         StartupMsg::Error(err) => {
@@ -693,7 +738,17 @@ impl eframe::App for DesktopApp {
                 }
             }
 
-            if let Some((sde, graph, esi, home_system_name, _scan_regions, deals, manifests, route)) = startup_complete {
+            if let Some((
+                sde,
+                graph,
+                esi,
+                home_system_name,
+                _scan_regions,
+                deals,
+                manifests,
+                route,
+            )) = startup_complete
+            {
                 self.sde = Some(sde);
                 self.graph = Some(graph);
                 self.esi = Some(esi);
@@ -757,7 +812,8 @@ impl eframe::App for DesktopApp {
                         .filter(|d| d.net_profit_pct >= self.sound_min_roi_pct)
                         .map(|d| (d.type_id, d.source_station_id, d.dest_station_id))
                         .collect();
-                    self.alerted_deal_keys.retain(|k| current_high_profit_keys.contains(k));
+                    self.alerted_deal_keys
+                        .retain(|k| current_high_profit_keys.contains(k));
 
                     if new_high_profit_count > 0 {
                         crate::audio::play_high_profit_alert();
@@ -767,7 +823,10 @@ impl eframe::App for DesktopApp {
                         ));
                     } else {
                         // Completely silent on normal refresh
-                        self.set_toast(format!("Discovered {} profitable deals ({} manifests)!", count, manifest_count));
+                        self.set_toast(format!(
+                            "Discovered {} profitable deals ({} manifests)!",
+                            count, manifest_count
+                        ));
                     }
 
                     self.deals = deals;
@@ -795,7 +854,10 @@ impl eframe::App for DesktopApp {
                         Some(0)
                     };
                     if count > 0 {
-                        self.set_toast(format!("Found {} optimized chained trade route(s)!", count));
+                        self.set_toast(format!(
+                            "Found {} optimized chained trade route(s)!",
+                            count
+                        ));
                     } else {
                         self.set_toast("No chain routes found with current parameters.");
                     }
@@ -856,7 +918,8 @@ impl eframe::App for DesktopApp {
         visuals.extreme_bg_color = Color32::from_rgb(5, 7, 18);
         visuals.override_text_color = Some(Color32::from_rgb(230, 240, 255));
         visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(14, 19, 38);
-        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(28, 40, 65));
+        visuals.widgets.noninteractive.bg_stroke =
+            Stroke::new(1.0_f32, Color32::from_rgb(28, 40, 65));
         visuals.widgets.inactive.bg_fill = Color32::from_rgb(18, 26, 48);
         visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 240));
         visuals.widgets.hovered.bg_fill = Color32::from_rgb(28, 40, 72);
@@ -903,9 +966,18 @@ impl eframe::App for DesktopApp {
                         (Color32::from_rgb(0, 240, 160), "🟢 READY")
                     };
 
-                    ui.label(RichText::new(indicator_sym).size(11.0).color(indicator_color).strong());
+                    ui.label(
+                        RichText::new(indicator_sym)
+                            .size(11.0)
+                            .color(indicator_color)
+                            .strong(),
+                    );
                     if self.auto_refresh {
-                        let audio_tag = if self.sound_alerts_enabled { " • 🔔 SOUND ON" } else { " • 🔕 MUTED" };
+                        let audio_tag = if self.sound_alerts_enabled {
+                            " • 🔔 SOUND ON"
+                        } else {
+                            " • 🔕 MUTED"
+                        };
                         ui.label(
                             RichText::new(format!("• 🔄 AUTO-REFRESH ON{}", audio_tag))
                                 .size(11.0)
@@ -914,7 +986,11 @@ impl eframe::App for DesktopApp {
                         );
                     }
                     ui.separator();
-                    ui.label(RichText::new(&self.status_text).size(12.0).color(Color32::from_rgb(200, 220, 245)));
+                    ui.label(
+                        RichText::new(&self.status_text)
+                            .size(12.0)
+                            .color(Color32::from_rgb(200, 220, 245)),
+                    );
 
                     // Toast notification — fading glowing card
                     if let Some((ref msg, time)) = self.toast {
@@ -922,8 +998,10 @@ impl eframe::App for DesktopApp {
                         if elapsed < 4.0 {
                             let alpha = ((4.0 - elapsed) / 4.0 * 220.0) as u8;
                             let toast_col = Color32::from_rgba_unmultiplied(0, 220, 255, alpha);
-                            let frame_fill = Color32::from_rgba_unmultiplied(0, 15, 35, (alpha / 6).max(10));
-                            let frame_stroke = Color32::from_rgba_unmultiplied(0, 190, 255, (alpha / 2).max(18));
+                            let frame_fill =
+                                Color32::from_rgba_unmultiplied(0, 15, 35, (alpha / 6).max(10));
+                            let frame_stroke =
+                                Color32::from_rgba_unmultiplied(0, 190, 255, (alpha / 2).max(18));
                             ui.separator();
                             egui::Frame::none()
                                 .fill(frame_fill)
@@ -1012,16 +1090,25 @@ fn render_ship_util_bars(ui: &mut egui::Ui, vol_frac: f32, budget_frac: f32) -> 
     let bar_w = 80.0_f32;
     let bar_h = 5.0_f32;
     let gap = 3.0_f32;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(bar_w, bar_h * 2.0 + gap), egui::Sense::hover());
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(bar_w, bar_h * 2.0 + gap), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
 
         // Cargo volume bar (cyan, top)
         let vol_track = egui::Rect::from_min_size(rect.min, Vec2::new(bar_w, bar_h));
-        painter.rect_filled(vol_track, egui::Rounding::same(2.0), Color32::from_rgb(16, 32, 58));
+        painter.rect_filled(
+            vol_track,
+            egui::Rounding::same(2.0),
+            Color32::from_rgb(16, 32, 58),
+        );
         let vol_w = (bar_w * vol_frac.clamp(0.0, 1.0)).max(0.0);
         if vol_w > 0.0 {
-            let vol_col = if vol_frac >= 0.9 { Color32::from_rgb(255, 90, 50) } else { Color32::from_rgb(0, 200, 255) };
+            let vol_col = if vol_frac >= 0.9 {
+                Color32::from_rgb(255, 90, 50)
+            } else {
+                Color32::from_rgb(0, 200, 255)
+            };
             painter.rect_filled(
                 egui::Rect::from_min_size(rect.min, Vec2::new(vol_w, bar_h)),
                 egui::Rounding::same(2.0),
@@ -1032,10 +1119,18 @@ fn render_ship_util_bars(ui: &mut egui::Ui, vol_frac: f32, budget_frac: f32) -> 
         // ISK budget bar (gold, bottom)
         let isk_min = egui::pos2(rect.min.x, rect.min.y + bar_h + gap);
         let isk_track = egui::Rect::from_min_size(isk_min, Vec2::new(bar_w, bar_h));
-        painter.rect_filled(isk_track, egui::Rounding::same(2.0), Color32::from_rgb(38, 28, 10));
+        painter.rect_filled(
+            isk_track,
+            egui::Rounding::same(2.0),
+            Color32::from_rgb(38, 28, 10),
+        );
         let isk_w = (bar_w * budget_frac.clamp(0.0, 1.0)).max(0.0);
         if isk_w > 0.0 {
-            let isk_col = if budget_frac >= 0.9 { Color32::from_rgb(255, 70, 70) } else { Color32::from_rgb(255, 200, 50) };
+            let isk_col = if budget_frac >= 0.9 {
+                Color32::from_rgb(255, 70, 70)
+            } else {
+                Color32::from_rgb(255, 200, 50)
+            };
             painter.rect_filled(
                 egui::Rect::from_min_size(isk_min, Vec2::new(isk_w, bar_h)),
                 egui::Rounding::same(2.0),
@@ -1053,12 +1148,23 @@ impl DesktopApp {
         // Header primary action buttons (Scan, Auto-Refresh, Audio, Zoom, Fullscreen)
         let render_primary_actions = |app: &mut Self, ui: &mut egui::Ui, ctx: &egui::Context| {
             // Fullscreen toggle button
-            let fs_label = if app.is_fullscreen { "🗗 Windowed" } else { "⛶ Fullscreen" };
+            let fs_label = if app.is_fullscreen {
+                "🗗 Windowed"
+            } else {
+                "⛶ Fullscreen"
+            };
             let fs_btn = egui::Button::new(
-                RichText::new(fs_label).size(12.0).color(Color32::from_rgb(0, 220, 255)).strong(),
+                RichText::new(fs_label)
+                    .size(12.0)
+                    .color(Color32::from_rgb(0, 220, 255))
+                    .strong(),
             )
             .fill(Color32::from_rgb(16, 26, 46));
-            if ui.add(fs_btn).on_hover_text("Toggle borderless fullscreen mode (F11)").clicked() {
+            if ui
+                .add(fs_btn)
+                .on_hover_text("Toggle borderless fullscreen mode (F11)")
+                .clicked()
+            {
                 app.is_fullscreen = !app.is_fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(app.is_fullscreen));
                 app.set_toast(if app.is_fullscreen {
@@ -1078,19 +1184,33 @@ impl DesktopApp {
                 .inner_margin(egui::vec2(6.0, 3.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if ui.small_button("➖").on_hover_text("Zoom Out (Ctrl -)").clicked() {
+                        if ui
+                            .small_button("➖")
+                            .on_hover_text("Zoom Out (Ctrl -)")
+                            .clicked()
+                        {
                             app.ui_scale = (app.ui_scale - 0.05).max(0.75);
                             app.set_toast(format!("UI Zoom: {:.0}%", app.ui_scale * 100.0));
                         }
                         let zoom_pct = format!("{:.0}%", app.ui_scale * 100.0);
-                        if ui.button(RichText::new(zoom_pct).size(11.5).strong().color(Color32::from_rgb(0, 220, 255)))
+                        if ui
+                            .button(
+                                RichText::new(zoom_pct)
+                                    .size(11.5)
+                                    .strong()
+                                    .color(Color32::from_rgb(0, 220, 255)),
+                            )
                             .on_hover_text("Click to reset zoom to 100% (Ctrl 0)")
                             .clicked()
                         {
                             app.ui_scale = 1.0;
                             app.set_toast("UI Zoom reset to 100%");
                         }
-                        if ui.small_button("➕").on_hover_text("Zoom In (Ctrl +)").clicked() {
+                        if ui
+                            .small_button("➕")
+                            .on_hover_text("Zoom In (Ctrl +)")
+                            .clicked()
+                        {
                             app.ui_scale = (app.ui_scale + 0.05).min(1.50);
                             app.set_toast(format!("UI Zoom: {:.0}%", app.ui_scale * 100.0));
                         }
@@ -1106,13 +1226,13 @@ impl DesktopApp {
                     Color32::from_rgb(0, 230, 255),
                 )
             } else {
-                (
-                    "🔕 Muted".to_string(),
-                    Color32::from_rgb(130, 145, 170),
-                )
+                ("🔕 Muted".to_string(), Color32::from_rgb(130, 145, 170))
             };
             let sound_btn = egui::Button::new(
-                RichText::new(sound_icon).size(12.0).color(sound_color).strong(),
+                RichText::new(sound_icon)
+                    .size(12.0)
+                    .color(sound_color)
+                    .strong(),
             )
             .fill(Color32::from_rgb(16, 24, 42));
             if ui
@@ -1439,18 +1559,37 @@ impl DesktopApp {
         });
 
         // Autocomplete suggestion strip when typing an incomplete system name
-        let home_id_opt = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
+        let home_id_opt = self
+            .sde
+            .as_ref()
+            .and_then(|s| s.get_system_id(&self.home_system));
         let trimmed_query = self.home_system.trim();
         if home_id_opt.is_none() && trimmed_query.len() >= 2 {
-            let suggestions = self.sde.as_ref().map(|s| s.search_systems(trimmed_query, 6)).unwrap_or_default();
+            let suggestions = self
+                .sde
+                .as_ref()
+                .map(|s| s.search_systems(trimmed_query, 6))
+                .unwrap_or_default();
             if !suggestions.is_empty() {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("💡 Autocomplete Matches:").size(11.0).color(Color32::from_rgb(255, 210, 0)).strong());
+                    ui.label(
+                        RichText::new("💡 Autocomplete Matches:")
+                            .size(11.0)
+                            .color(Color32::from_rgb(255, 210, 0))
+                            .strong(),
+                    );
                     for s in suggestions {
                         let sec_col = security_color(s.security_status);
-                        let chip_text = format!("{} [{:.1}] ({})", s.system_name, s.security_status, s.region_name);
-                        if ui.button(RichText::new(chip_text).size(11.0).color(sec_col)).on_hover_text("Click to set as starting system & scan").clicked() {
+                        let chip_text = format!(
+                            "{} [{:.1}] ({})",
+                            s.system_name, s.security_status, s.region_name
+                        );
+                        if ui
+                            .button(RichText::new(chip_text).size(11.0).color(sec_col))
+                            .on_hover_text("Click to set as starting system & scan")
+                            .clicked()
+                        {
                             self.home_system = s.system_name;
                             self.start_scan();
                         }
@@ -1474,8 +1613,16 @@ impl DesktopApp {
         let top_profit = self.deals.first().map(|d| d.net_profit).unwrap_or(0.0);
         let top_ppj = self.deals.first().map(|d| d.profit_per_jump).unwrap_or(0.0);
         let deal_count = self.deals.len();
-        let top_roi = self.deals.iter().map(|d| d.net_profit_pct).fold(0.0_f64, f64::max);
-        let top_density = self.deals.iter().map(|d| d.profit_per_m3).fold(0.0_f64, f64::max);
+        let top_roi = self
+            .deals
+            .iter()
+            .map(|d| d.net_profit_pct)
+            .fold(0.0_f64, f64::max);
+        let top_density = self
+            .deals
+            .iter()
+            .map(|d| d.profit_per_m3)
+            .fold(0.0_f64, f64::max);
         let current_ship = self.current_ship();
         let ship_name = if self.use_custom_ship {
             format!("Custom ({:.0}k m³)", current_ship.max_volume / 1000.0)
@@ -1498,8 +1645,18 @@ impl DesktopApp {
                     .rounding(4.0)
                     .inner_margin(egui::vec2(8.0, 4.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("💎 BEST PROFIT:").size(10.5).color(Color32::from_rgb(0, 190, 110)).strong());
-                        ui.label(RichText::new(format!("+{:.2}M ISK", top_profit / 1_000_000.0)).size(12.5).color(Color32::from_rgb(0, 255, 150)).strong());
+                        ui.label(
+                            RichText::new("💎 BEST PROFIT:")
+                                .size(10.5)
+                                .color(Color32::from_rgb(0, 190, 110))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("+{:.2}M ISK", top_profit / 1_000_000.0))
+                                .size(12.5)
+                                .color(Color32::from_rgb(0, 255, 150))
+                                .strong(),
+                        );
                     });
 
                 // Pill 2: Top Profit/Jump
@@ -1509,8 +1666,18 @@ impl DesktopApp {
                     .rounding(4.0)
                     .inner_margin(egui::vec2(8.0, 4.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("⚡ TOP PROFIT/JUMP:").size(10.5).color(Color32::from_rgb(195, 155, 0)).strong());
-                        ui.label(RichText::new(format!("{:.2}M / jump", top_ppj / 1_000_000.0)).size(12.5).color(Color32::from_rgb(255, 215, 0)).strong());
+                        ui.label(
+                            RichText::new("⚡ TOP PROFIT/JUMP:")
+                                .size(10.5)
+                                .color(Color32::from_rgb(195, 155, 0))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("{:.2}M / jump", top_ppj / 1_000_000.0))
+                                .size(12.5)
+                                .color(Color32::from_rgb(255, 215, 0))
+                                .strong(),
+                        );
                     });
 
                 // Pill 3: Max ROI
@@ -1520,8 +1687,18 @@ impl DesktopApp {
                     .rounding(4.0)
                     .inner_margin(egui::vec2(8.0, 4.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("🔥 MAX ROI:").size(10.5).color(Color32::from_rgb(255, 140, 0)).strong());
-                        ui.label(RichText::new(format!("+{:.1}%", top_roi)).size(12.5).color(Color32::from_rgb(255, 185, 60)).strong());
+                        ui.label(
+                            RichText::new("🔥 MAX ROI:")
+                                .size(10.5)
+                                .color(Color32::from_rgb(255, 140, 0))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("+{:.1}%", top_roi))
+                                .size(12.5)
+                                .color(Color32::from_rgb(255, 185, 60))
+                                .strong(),
+                        );
                     });
 
                 // Pill 4: Density
@@ -1531,8 +1708,18 @@ impl DesktopApp {
                     .rounding(4.0)
                     .inner_margin(egui::vec2(8.0, 4.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("📦 DENSITY:").size(10.5).color(Color32::from_rgb(0, 200, 200)).strong());
-                        ui.label(RichText::new(format!("{} ISK/m³", format_rate_isk(top_density))).size(12.5).color(Color32::from_rgb(0, 245, 245)).strong());
+                        ui.label(
+                            RichText::new("📦 DENSITY:")
+                                .size(10.5)
+                                .color(Color32::from_rgb(0, 200, 200))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} ISK/m³", format_rate_isk(top_density)))
+                                .size(12.5)
+                                .color(Color32::from_rgb(0, 245, 245))
+                                .strong(),
+                        );
                     });
 
                 // Pill 5: Deals Count
@@ -1542,8 +1729,18 @@ impl DesktopApp {
                     .rounding(4.0)
                     .inner_margin(egui::vec2(8.0, 4.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("📊 DEALS:").size(10.5).color(Color32::from_rgb(0, 180, 240)).strong());
-                        ui.label(RichText::new(format!("{} profitable", deal_count)).size(12.5).color(Color32::from_rgb(0, 220, 255)).strong());
+                        ui.label(
+                            RichText::new("📊 DEALS:")
+                                .size(10.5)
+                                .color(Color32::from_rgb(0, 180, 240))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} profitable", deal_count))
+                                .size(12.5)
+                                .color(Color32::from_rgb(0, 220, 255))
+                                .strong(),
+                        );
                     });
 
                 // Pill 6: Fleet
@@ -1553,12 +1750,30 @@ impl DesktopApp {
                     .rounding(4.0)
                     .inner_margin(egui::vec2(8.0, 4.0))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("🛡️ FLEET:").size(10.5).color(Color32::from_rgb(150, 175, 210)).strong());
-                        ui.label(RichText::new(ship_name).size(12.5).color(Color32::from_rgb(200, 220, 255)).strong());
+                        ui.label(
+                            RichText::new("🛡️ FLEET:")
+                                .size(10.5)
+                                .color(Color32::from_rgb(150, 175, 210))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(ship_name)
+                                .size(12.5)
+                                .color(Color32::from_rgb(200, 220, 255))
+                                .strong(),
+                        );
                     });
 
-                let toggle_label = if self.compact_kpi { "▼ Expand KPIs" } else { "▲ Compact KPIs" };
-                if ui.small_button(toggle_label).on_hover_text("Toggle between compact bar and full KPI cards").clicked() {
+                let toggle_label = if self.compact_kpi {
+                    "▼ Expand KPIs"
+                } else {
+                    "▲ Compact KPIs"
+                };
+                if ui
+                    .small_button(toggle_label)
+                    .on_hover_text("Toggle between compact bar and full KPI cards")
+                    .clicked()
+                {
                     self.compact_kpi = !self.compact_kpi;
                 }
             });
@@ -1572,8 +1787,17 @@ impl DesktopApp {
                     .rounding(6.0)
                     .inner_margin(8.0)
                     .show(&mut cols[0], |ui| {
-                        ui.label(RichText::new("💎  BEST PROFIT").size(10.0).color(Color32::from_rgb(0, 140, 75)));
-                        ui.label(RichText::new(format!("+{:.2}M ISK", top_profit / 1_000_000.0)).size(18.0).color(Color32::from_rgb(0, 255, 150)).strong());
+                        ui.label(
+                            RichText::new("💎  BEST PROFIT")
+                                .size(10.0)
+                                .color(Color32::from_rgb(0, 140, 75)),
+                        );
+                        ui.label(
+                            RichText::new(format!("+{:.2}M ISK", top_profit / 1_000_000.0))
+                                .size(18.0)
+                                .color(Color32::from_rgb(0, 255, 150))
+                                .strong(),
+                        );
                     });
 
                 // Card 2: Top Profit/Jump
@@ -1583,8 +1807,17 @@ impl DesktopApp {
                     .rounding(6.0)
                     .inner_margin(8.0)
                     .show(&mut cols[1], |ui| {
-                        ui.label(RichText::new("⚡  TOP PROFIT / JUMP").size(10.0).color(Color32::from_rgb(145, 108, 0)));
-                        ui.label(RichText::new(format!("{:.2}M / jump", top_ppj / 1_000_000.0)).size(18.0).color(Color32::from_rgb(255, 215, 0)).strong());
+                        ui.label(
+                            RichText::new("⚡  TOP PROFIT / JUMP")
+                                .size(10.0)
+                                .color(Color32::from_rgb(145, 108, 0)),
+                        );
+                        ui.label(
+                            RichText::new(format!("{:.2}M / jump", top_ppj / 1_000_000.0))
+                                .size(18.0)
+                                .color(Color32::from_rgb(255, 215, 0))
+                                .strong(),
+                        );
                     });
 
                 // Card 3: Max Net ROI
@@ -1594,8 +1827,17 @@ impl DesktopApp {
                     .rounding(6.0)
                     .inner_margin(8.0)
                     .show(&mut cols[2], |ui| {
-                        ui.label(RichText::new("🔥  MAX NET ROI").size(10.0).color(Color32::from_rgb(200, 90, 0)));
-                        ui.label(RichText::new(format!("+{:.1}%", top_roi)).size(18.0).color(Color32::from_rgb(255, 170, 50)).strong());
+                        ui.label(
+                            RichText::new("🔥  MAX NET ROI")
+                                .size(10.0)
+                                .color(Color32::from_rgb(200, 90, 0)),
+                        );
+                        ui.label(
+                            RichText::new(format!("+{:.1}%", top_roi))
+                                .size(18.0)
+                                .color(Color32::from_rgb(255, 170, 50))
+                                .strong(),
+                        );
                     });
 
                 // Card 4: Profit Density
@@ -1605,8 +1847,17 @@ impl DesktopApp {
                     .rounding(6.0)
                     .inner_margin(8.0)
                     .show(&mut cols[3], |ui| {
-                        ui.label(RichText::new("📦  PROFIT DENSITY").size(10.0).color(Color32::from_rgb(0, 150, 150)));
-                        ui.label(RichText::new(format!("{} ISK/m³", format_rate_isk(top_density))).size(18.0).color(Color32::from_rgb(0, 240, 240)).strong());
+                        ui.label(
+                            RichText::new("📦  PROFIT DENSITY")
+                                .size(10.0)
+                                .color(Color32::from_rgb(0, 150, 150)),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} ISK/m³", format_rate_isk(top_density)))
+                                .size(18.0)
+                                .color(Color32::from_rgb(0, 240, 240))
+                                .strong(),
+                        );
                     });
 
                 // Card 5: Deals Discovered
@@ -1616,8 +1867,17 @@ impl DesktopApp {
                     .rounding(6.0)
                     .inner_margin(8.0)
                     .show(&mut cols[4], |ui| {
-                        ui.label(RichText::new("📊  ACTIVE DEALS").size(10.0).color(Color32::from_rgb(0, 115, 172)));
-                        ui.label(RichText::new(format!("{} profitable", deal_count)).size(18.0).color(Color32::from_rgb(0, 210, 255)).strong());
+                        ui.label(
+                            RichText::new("📊  ACTIVE DEALS")
+                                .size(10.0)
+                                .color(Color32::from_rgb(0, 115, 172)),
+                        );
+                        ui.label(
+                            RichText::new(format!("{} profitable", deal_count))
+                                .size(18.0)
+                                .color(Color32::from_rgb(0, 210, 255))
+                                .strong(),
+                        );
                     });
 
                 // Card 6: Ship & Safety with collapse button
@@ -1628,14 +1888,30 @@ impl DesktopApp {
                     .inner_margin(8.0)
                     .show(&mut cols[5], |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("🛡️  FLEET PROFILE").size(10.0).color(Color32::from_rgb(120, 145, 180)));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("▲").on_hover_text("Collapse to compact KPI strip").clicked() {
-                                    self.compact_kpi = true;
-                                }
-                            });
+                            ui.label(
+                                RichText::new("🛡️  FLEET PROFILE")
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(120, 145, 180)),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button("▲")
+                                        .on_hover_text("Collapse to compact KPI strip")
+                                        .clicked()
+                                    {
+                                        self.compact_kpi = true;
+                                    }
+                                },
+                            );
                         });
-                        ui.label(RichText::new(ship_name).size(15.0).color(Color32::from_rgb(200, 220, 255)).strong());
+                        ui.label(
+                            RichText::new(ship_name)
+                                .size(15.0)
+                                .color(Color32::from_rgb(200, 220, 255))
+                                .strong(),
+                        );
                     });
             });
         } else {
@@ -1693,11 +1969,18 @@ impl DesktopApp {
                                     .size(10.0)
                                     .color(Color32::from_rgb(0, 115, 172)),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("▲").on_hover_text("Collapse to compact KPI strip").clicked() {
-                                    self.compact_kpi = true;
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button("▲")
+                                        .on_hover_text("Collapse to compact KPI strip")
+                                        .clicked()
+                                    {
+                                        self.compact_kpi = true;
+                                    }
+                                },
+                            );
                         });
                         ui.label(
                             RichText::new(format!("{} profitable", deal_count))
@@ -1713,11 +1996,23 @@ impl DesktopApp {
     fn render_tab_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let tabs: &[(ActiveTab, String)] = &[
-                (ActiveTab::Deals,     format!("📊 Deals ({})",     self.deals.len())),
-                (ActiveTab::Manifests, format!("📦 Manifests ({})", self.manifests.len())),
-                (ActiveTab::Route,     format!("🗺️ Route ({})",      self.route.as_ref().map(|r| r.stops.len()).unwrap_or(0))),
-                (ActiveTab::ChainRoute, format!("🔗 Chain Route ({})", self.chain_results.len())),
-                (ActiveTab::Settings,  "⚙️ Settings & Fees".to_string()),
+                (ActiveTab::Deals, format!("📊 Deals ({})", self.deals.len())),
+                (
+                    ActiveTab::Manifests,
+                    format!("📦 Manifests ({})", self.manifests.len()),
+                ),
+                (
+                    ActiveTab::Route,
+                    format!(
+                        "🗺️ Route ({})",
+                        self.route.as_ref().map(|r| r.stops.len()).unwrap_or(0)
+                    ),
+                ),
+                (
+                    ActiveTab::ChainRoute,
+                    format!("🔗 Chain Route ({})", self.chain_results.len()),
+                ),
+                (ActiveTab::Settings, "⚙️ Settings & Fees".to_string()),
             ];
 
             let mut new_tab: Option<ActiveTab> = None;
@@ -1737,7 +2032,10 @@ impl DesktopApp {
 
                 let resp = ui.add(
                     egui::Button::new(
-                        RichText::new(label.as_str()).size(13.5).color(text_col).strong(),
+                        RichText::new(label.as_str())
+                            .size(13.5)
+                            .color(text_col)
+                            .strong(),
                     )
                     .fill(fill)
                     .min_size(Vec2::new(0.0, 30.0)),
@@ -1749,12 +2047,18 @@ impl DesktopApp {
                     let y = resp.rect.bottom() - 1.0;
                     // Outer glow
                     painter.line_segment(
-                        [egui::pos2(resp.rect.left() - 1.0, y), egui::pos2(resp.rect.right() + 1.0, y)],
+                        [
+                            egui::pos2(resp.rect.left() - 1.0, y),
+                            egui::pos2(resp.rect.right() + 1.0, y),
+                        ],
                         Stroke::new(4.0_f32, Color32::from_rgba_unmultiplied(0, 180, 255, 45)),
                     );
                     // Bright core
                     painter.line_segment(
-                        [egui::pos2(resp.rect.left(), y), egui::pos2(resp.rect.right(), y)],
+                        [
+                            egui::pos2(resp.rect.left(), y),
+                            egui::pos2(resp.rect.right(), y),
+                        ],
                         Stroke::new(2.0_f32, Color32::from_rgb(0, 220, 255)),
                     );
                 }
@@ -1973,36 +2277,52 @@ impl DesktopApp {
             DealSortBy::ProfitPerJump => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.profit_per_jump.partial_cmp(&a.profit_per_jump).unwrap_or(std::cmp::Ordering::Equal)
+                        b.profit_per_jump
+                            .partial_cmp(&a.profit_per_jump)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.profit_per_jump.partial_cmp(&b.profit_per_jump).unwrap_or(std::cmp::Ordering::Equal)
+                        a.profit_per_jump
+                            .partial_cmp(&b.profit_per_jump)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
             DealSortBy::TotalProfit => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.net_profit.partial_cmp(&a.net_profit).unwrap_or(std::cmp::Ordering::Equal)
+                        b.net_profit
+                            .partial_cmp(&a.net_profit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.net_profit.partial_cmp(&b.net_profit).unwrap_or(std::cmp::Ordering::Equal)
+                        a.net_profit
+                            .partial_cmp(&b.net_profit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
             DealSortBy::RoiPct => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.net_profit_pct.partial_cmp(&a.net_profit_pct).unwrap_or(std::cmp::Ordering::Equal)
+                        b.net_profit_pct
+                            .partial_cmp(&a.net_profit_pct)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.net_profit_pct.partial_cmp(&b.net_profit_pct).unwrap_or(std::cmp::Ordering::Equal)
+                        a.net_profit_pct
+                            .partial_cmp(&b.net_profit_pct)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
             DealSortBy::ProfitPerM3 => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.profit_per_m3.partial_cmp(&a.profit_per_m3).unwrap_or(std::cmp::Ordering::Equal)
+                        b.profit_per_m3
+                            .partial_cmp(&a.profit_per_m3)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.profit_per_m3.partial_cmp(&b.profit_per_m3).unwrap_or(std::cmp::Ordering::Equal)
+                        a.profit_per_m3
+                            .partial_cmp(&b.profit_per_m3)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
@@ -2018,9 +2338,13 @@ impl DesktopApp {
             DealSortBy::Cost => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.capital_required.partial_cmp(&a.capital_required).unwrap_or(std::cmp::Ordering::Equal)
+                        b.capital_required
+                            .partial_cmp(&a.capital_required)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.capital_required.partial_cmp(&b.capital_required).unwrap_or(std::cmp::Ordering::Equal)
+                        a.capital_required
+                            .partial_cmp(&b.capital_required)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
@@ -2036,36 +2360,52 @@ impl DesktopApp {
             DealSortBy::BuySystem => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.source_system_name.to_lowercase().cmp(&a.source_system_name.to_lowercase())
+                        b.source_system_name
+                            .to_lowercase()
+                            .cmp(&a.source_system_name.to_lowercase())
                     } else {
-                        a.source_system_name.to_lowercase().cmp(&b.source_system_name.to_lowercase())
+                        a.source_system_name
+                            .to_lowercase()
+                            .cmp(&b.source_system_name.to_lowercase())
                     }
                 });
             }
             DealSortBy::BuyPrice => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.buy_price.partial_cmp(&a.buy_price).unwrap_or(std::cmp::Ordering::Equal)
+                        b.buy_price
+                            .partial_cmp(&a.buy_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.buy_price.partial_cmp(&b.buy_price).unwrap_or(std::cmp::Ordering::Equal)
+                        a.buy_price
+                            .partial_cmp(&b.buy_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
             DealSortBy::SellSystem => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.dest_system_name.to_lowercase().cmp(&a.dest_system_name.to_lowercase())
+                        b.dest_system_name
+                            .to_lowercase()
+                            .cmp(&a.dest_system_name.to_lowercase())
                     } else {
-                        a.dest_system_name.to_lowercase().cmp(&b.dest_system_name.to_lowercase())
+                        a.dest_system_name
+                            .to_lowercase()
+                            .cmp(&b.dest_system_name.to_lowercase())
                     }
                 });
             }
             DealSortBy::SellPrice => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.sell_price.partial_cmp(&a.sell_price).unwrap_or(std::cmp::Ordering::Equal)
+                        b.sell_price
+                            .partial_cmp(&a.sell_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.sell_price.partial_cmp(&b.sell_price).unwrap_or(std::cmp::Ordering::Equal)
+                        a.sell_price
+                            .partial_cmp(&b.sell_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
@@ -2081,9 +2421,13 @@ impl DesktopApp {
             DealSortBy::Volume => {
                 filtered.sort_by(|(_, a), (_, b)| {
                     if self.sort_descending {
-                        b.volume_used.partial_cmp(&a.volume_used).unwrap_or(std::cmp::Ordering::Equal)
+                        b.volume_used
+                            .partial_cmp(&a.volume_used)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     } else {
-                        a.volume_used.partial_cmp(&b.volume_used).unwrap_or(std::cmp::Ordering::Equal)
+                        a.volume_used
+                            .partial_cmp(&b.volume_used)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 });
             }
@@ -2223,7 +2567,11 @@ impl DesktopApp {
         let mut render_header_btn = |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
             let is_active = current_sort == sort_target;
             let arrow = if is_active {
-                if is_desc { " ▼" } else { " ▲" }
+                if is_desc {
+                    " ▼"
+                } else {
+                    " ▲"
+                }
             } else {
                 ""
             };
@@ -2233,11 +2581,20 @@ impl DesktopApp {
             } else {
                 Color32::from_rgb(255, 205, 0)
             };
-            let resp = ui.add(
-                egui::Button::new(RichText::new(label_text).color(text_color).strong())
-                    .frame(false),
-            )
-            .on_hover_text(format!("Click to sort by {} ({})", title, if is_active && is_desc { "switch to Ascending" } else { "switch to Descending" }));
+            let resp = ui
+                .add(
+                    egui::Button::new(RichText::new(label_text).color(text_color).strong())
+                        .frame(false),
+                )
+                .on_hover_text(format!(
+                    "Click to sort by {} ({})",
+                    title,
+                    if is_active && is_desc {
+                        "switch to Ascending"
+                    } else {
+                        "switch to Descending"
+                    }
+                ));
             if resp.clicked() {
                 ui.ctx().request_repaint();
                 if is_active {
@@ -2276,7 +2633,20 @@ impl DesktopApp {
         let w_jumps = 5.0_f32;
         let w_profit_jump = 9.0_f32;
 
-        let total_w = w_item + w_buy_sys + w_buy_price + w_sell_sys + w_sell_price + w_qty + w_vol + w_profit_m3 + w_cost + w_ship_util + w_net_profit + w_net_roi + w_jumps + w_profit_jump;
+        let total_w = w_item
+            + w_buy_sys
+            + w_buy_price
+            + w_sell_sys
+            + w_sell_price
+            + w_qty
+            + w_vol
+            + w_profit_m3
+            + w_cost
+            + w_ship_util
+            + w_net_profit
+            + w_net_roi
+            + w_jumps
+            + w_profit_jump;
 
         let col_item = (pool * (w_item / total_w)).max(120.0);
         let col_buy_sys = (pool * (w_buy_sys / total_w)).max(75.0);
@@ -2301,27 +2671,51 @@ impl DesktopApp {
             .column(Column::exact(rank_w)) // 1: #
             .column(Column::remainder().at_least(col_item).resizable(true)) // 2: ITEM (flexible expanding remainder)
             .column(Column::initial(col_buy_sys).at_least(70.0).resizable(true)) // 3: BUY SYSTEM
-            .column(Column::initial(col_buy_price).at_least(60.0).resizable(true))  // 4: BUY / ITEM
+            .column(
+                Column::initial(col_buy_price)
+                    .at_least(60.0)
+                    .resizable(true),
+            ) // 4: BUY / ITEM
             .column(Column::initial(col_sell_sys).at_least(70.0).resizable(true)) // 5: SELL SYSTEM
-            .column(Column::initial(col_sell_price).at_least(60.0).resizable(true))  // 6: SELL / ITEM
-            .column(Column::initial(col_qty).at_least(40.0).resizable(true))  // 7: QTY
+            .column(
+                Column::initial(col_sell_price)
+                    .at_least(60.0)
+                    .resizable(true),
+            ) // 6: SELL / ITEM
+            .column(Column::initial(col_qty).at_least(40.0).resizable(true)) // 7: QTY
             .column(Column::initial(col_vol).at_least(45.0).resizable(true)); // 8: VOL (m³)
 
         if !is_compact_tier {
-            builder = builder.column(Column::initial(col_profit_m3).at_least(55.0).resizable(true)); // 9: PROFIT/m³
+            builder = builder.column(
+                Column::initial(col_profit_m3)
+                    .at_least(55.0)
+                    .resizable(true),
+            ); // 9: PROFIT/m³
         }
 
         builder = builder.column(Column::initial(col_cost).at_least(55.0).resizable(true)); // 10: COST (M)
 
         if !is_compact_tier {
-            builder = builder.column(Column::initial(col_ship_util).at_least(60.0).resizable(true)); // 11: SHIP UTIL
+            builder = builder.column(
+                Column::initial(col_ship_util)
+                    .at_least(60.0)
+                    .resizable(true),
+            ); // 11: SHIP UTIL
         }
 
         builder = builder
-            .column(Column::initial(col_net_profit).at_least(75.0).resizable(true)) // 12: NET PROFIT
-            .column(Column::initial(col_net_roi).at_least(45.0).resizable(true))  // 13: NET ROI
-            .column(Column::initial(col_jumps).at_least(35.0).resizable(true))  // 14: JUMPS
-            .column(Column::initial(col_profit_jump).at_least(75.0).resizable(true)) // 15: PROFIT/JUMP
+            .column(
+                Column::initial(col_net_profit)
+                    .at_least(75.0)
+                    .resizable(true),
+            ) // 12: NET PROFIT
+            .column(Column::initial(col_net_roi).at_least(45.0).resizable(true)) // 13: NET ROI
+            .column(Column::initial(col_jumps).at_least(35.0).resizable(true)) // 14: JUMPS
+            .column(
+                Column::initial(col_profit_jump)
+                    .at_least(75.0)
+                    .resizable(true),
+            ) // 15: PROFIT/JUMP
             .column(Column::initial(actions_w).at_least(115.0).resizable(true)); // 16: QUICK ACTIONS
 
         builder
@@ -2577,7 +2971,11 @@ impl DesktopApp {
                         if ui.button("✖ Close").clicked() {
                             close_requested = true;
                         }
-                        let dock_text = if is_side_panel { "▬ Dock Bottom" } else { "◫ Dock Side" };
+                        let dock_text = if is_side_panel {
+                            "▬ Dock Bottom"
+                        } else {
+                            "◫ Dock Side"
+                        };
                         let can_dock_side = ui.available_width() >= 1150.0 || is_side_panel;
                         let dock_btn = egui::Button::new(RichText::new(dock_text).size(12.0));
                         let resp = ui.add_enabled(can_dock_side, dock_btn);
@@ -2605,31 +3003,64 @@ impl DesktopApp {
                                 .rounding(6.0)
                                 .inner_margin(8.0)
                                 .show(ui, |ui| {
-                                    ui.heading(RichText::new("🛒 PURCHASE").size(13.0).color(Color32::from_rgb(100, 200, 255)));
-                                    let src_is_npc = crate::arbitrage::is_npc_station(deal.source_station_id);
+                                    ui.heading(
+                                        RichText::new("🛒 PURCHASE")
+                                            .size(13.0)
+                                            .color(Color32::from_rgb(100, 200, 255)),
+                                    );
+                                    let src_is_npc =
+                                        crate::arbitrage::is_npc_station(deal.source_station_id);
                                     let (src_badge, src_badge_color) = if src_is_npc {
                                         ("🏛️ NPC Station", Color32::from_rgb(100, 210, 255))
                                     } else {
                                         ("🏰 Upwell Citadel", Color32::from_rgb(255, 185, 60))
                                     };
-                                    ui.label(RichText::new(&deal.source_station_name).size(12.0).strong());
+                                    ui.label(
+                                        RichText::new(&deal.source_station_name)
+                                            .size(12.0)
+                                            .strong(),
+                                    );
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(src_badge).size(11.0).color(src_badge_color).strong());
+                                        ui.label(
+                                            RichText::new(src_badge)
+                                                .size(11.0)
+                                                .color(src_badge_color)
+                                                .strong(),
+                                        );
                                         if deal.is_npc_trade {
-                                            ui.label(RichText::new("📦 NPC Commodity").size(11.0).color(Color32::from_rgb(0, 220, 255)).strong());
+                                            ui.label(
+                                                RichText::new("📦 NPC Commodity")
+                                                    .size(11.0)
+                                                    .color(Color32::from_rgb(0, 220, 255))
+                                                    .strong(),
+                                            );
                                         }
                                     });
                                     let src_sec_col = security_color(deal.source_security);
                                     ui.label(
-                                        RichText::new(format!("System: {} [{:.1}] ({} jumps from home)", deal.source_system_name, deal.source_security, deal.jumps_from_home))
-                                            .color(src_sec_col),
+                                        RichText::new(format!(
+                                            "System: {} [{:.1}] ({} jumps from home)",
+                                            deal.source_system_name,
+                                            deal.source_security,
+                                            deal.jumps_from_home
+                                        ))
+                                        .color(src_sec_col),
                                     );
-                                    ui.label(format!("Buy Price / Item: {:.2} ISK (Sell Order)", deal.buy_price));
+                                    ui.label(format!(
+                                        "Buy Price / Item: {:.2} ISK (Sell Order)",
+                                        deal.buy_price
+                                    ));
                                     ui.label(format!("Quantity: {} units", deal.quantity));
-                                    ui.label(format!("Capital Cost: {:.2}M ISK", deal.capital_required / 1_000_000.0));
+                                    ui.label(format!(
+                                        "Capital Cost: {:.2}M ISK",
+                                        deal.capital_required / 1_000_000.0
+                                    ));
                                     if ui.small_button("📋 Copy Buy Station").clicked() {
                                         copy_to_clipboard(ui, deal.source_station_name.clone());
-                                        *toast = Some(format!("Copied buy station '{}'", deal.source_station_name));
+                                        *toast = Some(format!(
+                                            "Copied buy station '{}'",
+                                            deal.source_station_name
+                                        ));
                                     }
                                 });
                         };
@@ -2641,31 +3072,62 @@ impl DesktopApp {
                                 .rounding(6.0)
                                 .inner_margin(8.0)
                                 .show(ui, |ui| {
-                                    ui.heading(RichText::new("💰 SALE").size(13.0).color(Color32::from_rgb(255, 140, 240)));
-                                    let dst_is_npc = crate::arbitrage::is_npc_station(deal.dest_station_id);
+                                    ui.heading(
+                                        RichText::new("💰 SALE")
+                                            .size(13.0)
+                                            .color(Color32::from_rgb(255, 140, 240)),
+                                    );
+                                    let dst_is_npc =
+                                        crate::arbitrage::is_npc_station(deal.dest_station_id);
                                     let (dst_badge, dst_badge_color) = if dst_is_npc {
                                         ("🏛️ NPC Station", Color32::from_rgb(100, 210, 255))
                                     } else {
                                         ("🏰 Upwell Citadel", Color32::from_rgb(255, 185, 60))
                                     };
-                                    ui.label(RichText::new(&deal.dest_station_name).size(12.0).strong());
+                                    ui.label(
+                                        RichText::new(&deal.dest_station_name).size(12.0).strong(),
+                                    );
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(dst_badge).size(11.0).color(dst_badge_color).strong());
+                                        ui.label(
+                                            RichText::new(dst_badge)
+                                                .size(11.0)
+                                                .color(dst_badge_color)
+                                                .strong(),
+                                        );
                                         if deal.is_npc_trade {
-                                            ui.label(RichText::new("📦 NPC Commodity").size(11.0).color(Color32::from_rgb(0, 220, 255)).strong());
+                                            ui.label(
+                                                RichText::new("📦 NPC Commodity")
+                                                    .size(11.0)
+                                                    .color(Color32::from_rgb(0, 220, 255))
+                                                    .strong(),
+                                            );
                                         }
                                     });
                                     let dst_sec_col = security_color(deal.dest_security);
                                     ui.label(
-                                        RichText::new(format!("System: {} [{:.1}] ({} jumps delivery)", deal.dest_system_name, deal.dest_security, deal.jumps_source_dest))
-                                            .color(dst_sec_col),
+                                        RichText::new(format!(
+                                            "System: {} [{:.1}] ({} jumps delivery)",
+                                            deal.dest_system_name,
+                                            deal.dest_security,
+                                            deal.jumps_source_dest
+                                        ))
+                                        .color(dst_sec_col),
                                     );
-                                    ui.label(format!("Sell Price / Item: {:.2} ISK (Buy Order)", deal.sell_price));
-                                    ui.label(format!("Gross Revenue: {:.2}M ISK", (deal.sell_price * deal.quantity as f64) / 1_000_000.0));
+                                    ui.label(format!(
+                                        "Sell Price / Item: {:.2} ISK (Buy Order)",
+                                        deal.sell_price
+                                    ));
+                                    ui.label(format!(
+                                        "Gross Revenue: {:.2}M ISK",
+                                        (deal.sell_price * deal.quantity as f64) / 1_000_000.0
+                                    ));
                                     ui.label(format!("Price Spread: +{:.1}%", deal.spread_pct));
                                     if ui.small_button("📋 Copy Sell Station").clicked() {
                                         copy_to_clipboard(ui, deal.dest_station_name.clone());
-                                        *toast = Some(format!("Copied sell station '{}'", deal.dest_station_name));
+                                        *toast = Some(format!(
+                                            "Copied sell station '{}'",
+                                            deal.dest_station_name
+                                        ));
                                     }
                                 });
                         };
@@ -2683,25 +3145,48 @@ impl DesktopApp {
                                 .rounding(6.0)
                                 .inner_margin(8.0)
                                 .show(ui, |ui| {
-                                    ui.heading(RichText::new("📈 FINANCIAL SUMMARY").size(13.0).color(Color32::from_rgb(0, 240, 160)));
-                                    ui.label(
-                                        RichText::new(format!("NET PROFIT: +{:.2}M ISK", deal.net_profit / 1_000_000.0))
-                                            .color(Color32::from_rgb(0, 255, 150))
-                                            .strong(),
+                                    ui.heading(
+                                        RichText::new("📈 FINANCIAL SUMMARY")
+                                            .size(13.0)
+                                            .color(Color32::from_rgb(0, 240, 160)),
                                     );
                                     ui.label(
-                                        RichText::new(format!("NET ROI: +{:.1}%", deal.net_profit_pct))
-                                            .color(Color32::from_rgb(0, 240, 180))
-                                            .strong(),
+                                        RichText::new(format!(
+                                            "NET PROFIT: +{:.2}M ISK",
+                                            deal.net_profit / 1_000_000.0
+                                        ))
+                                        .color(Color32::from_rgb(0, 255, 150))
+                                        .strong(),
                                     );
                                     ui.label(
-                                        RichText::new(format!("PROFIT / JUMP: {:.2}M ISK", deal.profit_per_jump / 1_000_000.0))
-                                            .color(Color32::from_rgb(255, 215, 0))
-                                            .strong(),
+                                        RichText::new(format!(
+                                            "NET ROI: +{:.1}%",
+                                            deal.net_profit_pct
+                                        ))
+                                        .color(Color32::from_rgb(0, 240, 180))
+                                        .strong(),
                                     );
-                                    ui.label(format!("Profit Density: {} ISK/m³", format_rate_isk(deal.profit_per_m3)));
-                                    ui.label(format!("Cargo: {:.1} m³ ({:.1}%)", deal.volume_used, vol_pct));
-                                    ui.label(format!("Budget: {:.2}M ({:.1}%)", deal.capital_required / 1_000_000.0, budget_pct));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "PROFIT / JUMP: {:.2}M ISK",
+                                            deal.profit_per_jump / 1_000_000.0
+                                        ))
+                                        .color(Color32::from_rgb(255, 215, 0))
+                                        .strong(),
+                                    );
+                                    ui.label(format!(
+                                        "Profit Density: {} ISK/m³",
+                                        format_rate_isk(deal.profit_per_m3)
+                                    ));
+                                    ui.label(format!(
+                                        "Cargo: {:.1} m³ ({:.1}%)",
+                                        deal.volume_used, vol_pct
+                                    ));
+                                    ui.label(format!(
+                                        "Budget: {:.2}M ({:.1}%)",
+                                        deal.capital_required / 1_000_000.0,
+                                        budget_pct
+                                    ));
                                     ui.label(format!("Travel: {} total jumps", deal.total_jumps));
                                 });
                         };
@@ -2965,10 +3450,22 @@ impl DesktopApp {
                         let m0 = &self.manifests[idx0];
                         let m1 = &self.manifests[idx1];
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_manifest_card(&mut cols[0], idx0, m0, max_vol, max_budget) {
+                            if let Some(msg) = self.render_manifest_card(
+                                &mut cols[0],
+                                idx0,
+                                m0,
+                                max_vol,
+                                max_budget,
+                            ) {
                                 manifest_toast = Some(msg);
                             }
-                            if let Some(msg) = self.render_manifest_card(&mut cols[1], idx1, m1, max_vol, max_budget) {
+                            if let Some(msg) = self.render_manifest_card(
+                                &mut cols[1],
+                                idx1,
+                                m1,
+                                max_vol,
+                                max_budget,
+                            ) {
                                 manifest_toast = Some(msg);
                             }
                         });
@@ -2976,7 +3473,13 @@ impl DesktopApp {
                         let idx0 = chunk[0];
                         let m0 = &self.manifests[idx0];
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_manifest_card(&mut cols[0], idx0, m0, max_vol, max_budget) {
+                            if let Some(msg) = self.render_manifest_card(
+                                &mut cols[0],
+                                idx0,
+                                m0,
+                                max_vol,
+                                max_budget,
+                            ) {
                                 manifest_toast = Some(msg);
                             }
                         });
@@ -3015,7 +3518,10 @@ impl DesktopApp {
                             .size(14.0)
                             .strong(),
                     );
-                    ui.label(format!("Travel {} jumps to pickup at", stop.jumps_from_prev));
+                    ui.label(format!(
+                        "Travel {} jumps to pickup at",
+                        stop.jumps_from_prev
+                    ));
                     ui.label(
                         RichText::new(&stop.deal.source_system_name)
                             .color(Color32::from_rgb(0, 210, 255))
@@ -3032,27 +3538,67 @@ impl DesktopApp {
                 // Actions breakdown
                 ui.columns(2, |cols| {
                     // Buy side
-                    cols[0].label(RichText::new("1. BUY AT SOURCE:").color(Color32::from_rgb(0, 230, 150)).strong());
-                    cols[0].label(RichText::new(format!("{}x {}", stop.deal.quantity, stop.deal.item_name)).strong());
-                    cols[0].label(format!("Unit: {:.2} ISK (Total: {:.2}M ISK)", stop.deal.buy_price, stop.deal.capital_required / 1_000_000.0));
-                    cols[0].label(RichText::new(&stop.deal.source_station_name).color(Color32::GRAY).size(11.0));
+                    cols[0].label(
+                        RichText::new("1. BUY AT SOURCE:")
+                            .color(Color32::from_rgb(0, 230, 150))
+                            .strong(),
+                    );
+                    cols[0].label(
+                        RichText::new(format!("{}x {}", stop.deal.quantity, stop.deal.item_name))
+                            .strong(),
+                    );
+                    cols[0].label(format!(
+                        "Unit: {:.2} ISK (Total: {:.2}M ISK)",
+                        stop.deal.buy_price,
+                        stop.deal.capital_required / 1_000_000.0
+                    ));
+                    cols[0].label(
+                        RichText::new(&stop.deal.source_station_name)
+                            .color(Color32::GRAY)
+                            .size(11.0),
+                    );
                     if cols[0].small_button("📋 Copy Buy Station").clicked() {
                         copy_to_clipboard(&mut cols[0], stop.deal.source_station_name.clone());
-                        toast = Some(format!("Copied buy station '{}'", stop.deal.source_station_name));
+                        toast = Some(format!(
+                            "Copied buy station '{}'",
+                            stop.deal.source_station_name
+                        ));
                     }
 
                     // Sell side
-                    cols[1].label(RichText::new(format!("2. WARP {} JUMPS & SELL:", stop.deal.jumps_source_dest)).color(Color32::from_rgb(255, 180, 50)).strong());
-                    cols[1].label(RichText::new(format!("Destination: {}", stop.deal.dest_system_name)).color(Color32::from_rgb(255, 140, 240)).strong());
                     cols[1].label(
-                        RichText::new(format!("Net Profit: +{:.2}M ISK (+{:.1}% ROI)", stop.deal.net_profit / 1_000_000.0, stop.deal.net_profit_pct))
-                            .color(Color32::from_rgb(0, 255, 140))
+                        RichText::new(format!(
+                            "2. WARP {} JUMPS & SELL:",
+                            stop.deal.jumps_source_dest
+                        ))
+                        .color(Color32::from_rgb(255, 180, 50))
+                        .strong(),
+                    );
+                    cols[1].label(
+                        RichText::new(format!("Destination: {}", stop.deal.dest_system_name))
+                            .color(Color32::from_rgb(255, 140, 240))
                             .strong(),
                     );
-                    cols[1].label(RichText::new(&stop.deal.dest_station_name).color(Color32::GRAY).size(11.0));
+                    cols[1].label(
+                        RichText::new(format!(
+                            "Net Profit: +{:.2}M ISK (+{:.1}% ROI)",
+                            stop.deal.net_profit / 1_000_000.0,
+                            stop.deal.net_profit_pct
+                        ))
+                        .color(Color32::from_rgb(0, 255, 140))
+                        .strong(),
+                    );
+                    cols[1].label(
+                        RichText::new(&stop.deal.dest_station_name)
+                            .color(Color32::GRAY)
+                            .size(11.0),
+                    );
                     if cols[1].small_button("📋 Copy Sell Station").clicked() {
                         copy_to_clipboard(&mut cols[1], stop.deal.dest_station_name.clone());
-                        toast = Some(format!("Copied sell station '{}'", stop.deal.dest_station_name));
+                        toast = Some(format!(
+                            "Copied sell station '{}'",
+                            stop.deal.dest_station_name
+                        ));
                     }
                 });
             });
@@ -3111,17 +3657,48 @@ impl DesktopApp {
                 };
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("Total Jumps: {}", route.total_jumps)).strong().color(Color32::from_rgb(255, 205, 0)));
+                    ui.label(
+                        RichText::new(format!("Total Jumps: {}", route.total_jumps))
+                            .strong()
+                            .color(Color32::from_rgb(255, 205, 0)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Total Profit: +{:.2}M ISK", route.total_profit / 1_000_000.0)).strong().color(Color32::from_rgb(0, 255, 140)));
+                    ui.label(
+                        RichText::new(format!(
+                            "Total Profit: +{:.2}M ISK",
+                            route.total_profit / 1_000_000.0
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(0, 255, 140)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Overall ROI: +{:.1}%", route_roi)).strong().color(Color32::from_rgb(0, 240, 180)));
+                    ui.label(
+                        RichText::new(format!("Overall ROI: +{:.1}%", route_roi))
+                            .strong()
+                            .color(Color32::from_rgb(0, 240, 180)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Avg Profit/Jump: {:.2}M ISK", route.avg_profit_per_jump / 1_000_000.0)).strong().color(Color32::from_rgb(255, 215, 0)));
+                    ui.label(
+                        RichText::new(format!(
+                            "Avg Profit/Jump: {:.2}M ISK",
+                            route.avg_profit_per_jump / 1_000_000.0
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(255, 215, 0)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Capital Needed: {:.2}M ISK", route.total_capital_required / 1_000_000.0)).color(Color32::LIGHT_BLUE));
+                    ui.label(
+                        RichText::new(format!(
+                            "Capital Needed: {:.2}M ISK",
+                            route.total_capital_required / 1_000_000.0
+                        ))
+                        .color(Color32::LIGHT_BLUE),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Peak Cargo: {:.1} m³", route.max_volume_used)).color(Color32::from_rgb(255, 140, 240)));
+                    ui.label(
+                        RichText::new(format!("Peak Cargo: {:.1} m³", route.max_volume_used))
+                            .color(Color32::from_rgb(255, 140, 240)),
+                    );
                 });
             });
 
@@ -3138,16 +3715,19 @@ impl DesktopApp {
                 for chunk in route.stops.chunks(2) {
                     if chunk.len() == 2 {
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_route_stop_card(&mut cols[0], &chunk[0]) {
+                            if let Some(msg) = self.render_route_stop_card(&mut cols[0], &chunk[0])
+                            {
                                 route_toast = Some(msg);
                             }
-                            if let Some(msg) = self.render_route_stop_card(&mut cols[1], &chunk[1]) {
+                            if let Some(msg) = self.render_route_stop_card(&mut cols[1], &chunk[1])
+                            {
                                 route_toast = Some(msg);
                             }
                         });
                     } else {
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_route_stop_card(&mut cols[0], &chunk[0]) {
+                            if let Some(msg) = self.render_route_stop_card(&mut cols[0], &chunk[0])
+                            {
                                 route_toast = Some(msg);
                             }
                         });
@@ -3189,9 +3769,7 @@ impl DesktopApp {
         let graph = Arc::clone(graph);
         let tx = self.chain_tx.clone();
 
-        let home_id = sde
-            .get_system_id(&self.home_system)
-            .unwrap_or(30000142);
+        let home_id = sde.get_system_id(&self.home_system).unwrap_or(30000142);
 
         let cfg = crate::chain_route_planner::ChainConfig {
             home_system: home_id,
@@ -3475,7 +4053,11 @@ impl DesktopApp {
     }
 
     /// Interactive visual flowchart of stops along the chained trade route.
-    fn render_chain_flowchart(&mut self, ui: &mut egui::Ui, route: &crate::chain_route_planner::ChainRoute) {
+    fn render_chain_flowchart(
+        &mut self,
+        ui: &mut egui::Ui,
+        route: &crate::chain_route_planner::ChainRoute,
+    ) {
         // Flowchart Header Frame
         egui::Frame::none()
             .fill(Color32::from_rgb(18, 25, 42))
@@ -3503,7 +4085,10 @@ impl DesktopApp {
         let mut stop_idx = 1;
 
         // ── 1. Start / Departure Node ──
-        let home_id = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
+        let home_id = self
+            .sde
+            .as_ref()
+            .and_then(|s| s.get_system_id(&self.home_system));
         let home_sec = home_id
             .and_then(|id| self.sde.as_ref().and_then(|s| s.get_system_security(id)))
             .unwrap_or(1.0);
@@ -3522,12 +4107,20 @@ impl DesktopApp {
                             .color(Color32::from_rgb(0, 220, 255))
                             .strong(),
                     );
-                    ui.label(RichText::new("DEPARTURE POINT").size(13.0).strong().color(Color32::WHITE));
+                    ui.label(
+                        RichText::new("DEPARTURE POINT")
+                            .size(13.0)
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let home_copy = self.home_system.clone();
                         let sys_btn = egui::Button::new(
-                            RichText::new("📋 System").size(11.0).color(Color32::BLACK).strong(),
+                            RichText::new("📋 System")
+                                .size(11.0)
+                                .color(Color32::BLACK)
+                                .strong(),
                         )
                         .fill(Color32::from_rgb(0, 200, 255));
                         if ui.add(sys_btn).clicked() {
@@ -3551,7 +4144,11 @@ impl DesktopApp {
                             .color(Color32::from_rgb(200, 230, 255))
                             .strong(),
                     );
-                    ui.label(RichText::new("• Starting system location").size(11.0).color(Color32::GRAY));
+                    ui.label(
+                        RichText::new("• Starting system location")
+                            .size(11.0)
+                            .color(Color32::GRAY),
+                    );
                 });
             });
 
@@ -3559,7 +4156,11 @@ impl DesktopApp {
         let render_connector = |ui: &mut egui::Ui, jumps: u32| {
             ui.vertical_centered(|ui| {
                 ui.add_space(3.0);
-                ui.label(RichText::new("│").size(13.0).color(Color32::from_rgb(0, 180, 255)));
+                ui.label(
+                    RichText::new("│")
+                        .size(13.0)
+                        .color(Color32::from_rgb(0, 180, 255)),
+                );
                 let jump_text = if jumps == 0 {
                     "⚡ Intra-System Warp (0 jumps)".to_string()
                 } else {
@@ -3578,7 +4179,11 @@ impl DesktopApp {
                                 .strong(),
                         );
                     });
-                ui.label(RichText::new("▼").size(13.0).color(Color32::from_rgb(0, 180, 255)));
+                ui.label(
+                    RichText::new("▼")
+                        .size(13.0)
+                        .color(Color32::from_rgb(0, 180, 255)),
+                );
                 ui.add_space(3.0);
             });
         };
@@ -3607,7 +4212,11 @@ impl DesktopApp {
                     .cargo_loaded
                     .first()
                     .map(|s| s.deal.source_security)
-                    .or_else(|| self.sde.as_ref().and_then(|s| s.get_system_security(pickup.system_id)))
+                    .or_else(|| {
+                        self.sde
+                            .as_ref()
+                            .and_then(|s| s.get_system_security(pickup.system_id))
+                    })
                     .unwrap_or(1.0);
                 let sec_col = security_color(sec);
 
@@ -3636,37 +4245,56 @@ impl DesktopApp {
                             } else {
                                 "🛒 BUY STOP".to_string()
                             };
-                            ui.label(RichText::new(badge_text).size(13.0).color(stroke_col).strong());
+                            ui.label(
+                                RichText::new(badge_text)
+                                    .size(13.0)
+                                    .color(stroke_col)
+                                    .strong(),
+                            );
 
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if !primary_station.is_empty() {
-                                    let st_copy = primary_station.clone();
-                                    let st_btn = egui::Button::new(
-                                        RichText::new("📋 Station").size(11.0).color(Color32::BLACK).strong(),
-                                    )
-                                    .fill(Color32::from_rgb(0, 230, 170));
-                                    if ui.add(st_btn).clicked() {
-                                        copy_to_clipboard(ui, st_copy.clone());
-                                        self.set_toast(format!("Copied station '{}'", st_copy));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if !primary_station.is_empty() {
+                                        let st_copy = primary_station.clone();
+                                        let st_btn = egui::Button::new(
+                                            RichText::new("📋 Station")
+                                                .size(11.0)
+                                                .color(Color32::BLACK)
+                                                .strong(),
+                                        )
+                                        .fill(Color32::from_rgb(0, 230, 170));
+                                        if ui.add(st_btn).clicked() {
+                                            copy_to_clipboard(ui, st_copy.clone());
+                                            self.set_toast(format!("Copied station '{}'", st_copy));
+                                        }
                                     }
-                                }
-                                let sys_copy = pickup.system_name.clone();
-                                let sys_btn = egui::Button::new(
-                                    RichText::new("📋 System").size(11.0).color(Color32::BLACK).strong(),
-                                )
-                                .fill(Color32::from_rgb(0, 200, 255));
-                                if ui.add(sys_btn).clicked() {
-                                    copy_to_clipboard(ui, sys_copy.clone());
-                                    self.set_toast(format!("Copied system '{}'", sys_copy));
-                                }
-                            });
+                                    let sys_copy = pickup.system_name.clone();
+                                    let sys_btn = egui::Button::new(
+                                        RichText::new("📋 System")
+                                            .size(11.0)
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(0, 200, 255));
+                                    if ui.add(sys_btn).clicked() {
+                                        copy_to_clipboard(ui, sys_copy.clone());
+                                        self.set_toast(format!("Copied system '{}'", sys_copy));
+                                    }
+                                },
+                            );
                         });
 
                         ui.add_space(3.0);
 
                         // Location info
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(format!("[{:.1}]", sec)).size(12.0).color(sec_col).strong());
+                            ui.label(
+                                RichText::new(format!("[{:.1}]", sec))
+                                    .size(12.0)
+                                    .color(sec_col)
+                                    .strong(),
+                            );
                             ui.label(
                                 RichText::new(&pickup.system_name)
                                     .size(13.0)
@@ -3704,15 +4332,21 @@ impl DesktopApp {
                                     });
 
                                 ui.label(
-                                    RichText::new(format!("{}x {}", slot.deal.quantity, slot.deal.item_name))
-                                        .size(12.5)
-                                        .color(Color32::WHITE)
-                                        .strong(),
+                                    RichText::new(format!(
+                                        "{}x {}",
+                                        slot.deal.quantity, slot.deal.item_name
+                                    ))
+                                    .size(12.5)
+                                    .color(Color32::WHITE)
+                                    .strong(),
                                 );
 
                                 let item_copy = slot.deal.item_name.clone();
                                 let item_btn = egui::Button::new(
-                                    RichText::new("📋 Item").size(11.0).color(Color32::BLACK).strong(),
+                                    RichText::new("📋 Item")
+                                        .size(11.0)
+                                        .color(Color32::BLACK)
+                                        .strong(),
                                 )
                                 .fill(Color32::from_rgb(0, 220, 255));
                                 if ui.add(item_btn).clicked() {
@@ -3723,9 +4357,12 @@ impl DesktopApp {
 
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
-                                    RichText::new(format!("Cost: {:.2}M ISK", slot.capital / 1_000_000.0))
-                                        .size(11.0)
-                                        .color(Color32::LIGHT_BLUE),
+                                    RichText::new(format!(
+                                        "Cost: {:.2}M ISK",
+                                        slot.capital / 1_000_000.0
+                                    ))
+                                    .size(11.0)
+                                    .color(Color32::LIGHT_BLUE),
                                 );
                                 ui.label(
                                     RichText::new(format!("• Vol: {:.1} m³", slot.volume))
@@ -3739,15 +4376,22 @@ impl DesktopApp {
                                 );
                                 if slot.deal.source_order_volume_remain > 0 {
                                     ui.label(
-                                        RichText::new(format!("• Stock: {}/{} avail", slot.deal.quantity, slot.deal.source_order_volume_remain))
-                                            .size(11.0)
-                                            .color(Color32::from_rgb(180, 210, 245)),
+                                        RichText::new(format!(
+                                            "• Stock: {}/{} avail",
+                                            slot.deal.quantity,
+                                            slot.deal.source_order_volume_remain
+                                        ))
+                                        .size(11.0)
+                                        .color(Color32::from_rgb(180, 210, 245)),
                                     );
                                 }
                                 ui.label(
-                                    RichText::new(format!("(+{:.2}M ISK net)", slot.net_profit / 1_000_000.0))
-                                        .size(11.0)
-                                        .color(Color32::from_rgb(0, 255, 140)),
+                                    RichText::new(format!(
+                                        "(+{:.2}M ISK net)",
+                                        slot.net_profit / 1_000_000.0
+                                    ))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(0, 255, 140)),
                                 );
                             });
 
@@ -3757,9 +4401,12 @@ impl DesktopApp {
                             {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(format!("Station: {}", slot.deal.source_station_name))
-                                            .size(10.5)
-                                            .color(Color32::GRAY),
+                                        RichText::new(format!(
+                                            "Station: {}",
+                                            slot.deal.source_station_name
+                                        ))
+                                        .size(10.5)
+                                        .color(Color32::GRAY),
                                     );
                                     let st_copy = slot.deal.source_station_name.clone();
                                     if ui.small_button("📋 Station").clicked() {
@@ -3790,7 +4437,11 @@ impl DesktopApp {
                 .cargo_sold
                 .first()
                 .map(|s| s.deal.dest_security)
-                .or_else(|| self.sde.as_ref().and_then(|s| s.get_system_security(leg.sell.system_id)))
+                .or_else(|| {
+                    self.sde
+                        .as_ref()
+                        .and_then(|s| s.get_system_security(leg.sell.system_id))
+                })
                 .unwrap_or(1.0);
             let sec_col = security_color(sec);
 
@@ -3826,7 +4477,10 @@ impl DesktopApp {
                             if !sell_station.is_empty() {
                                 let st_copy = sell_station.clone();
                                 let st_btn = egui::Button::new(
-                                    RichText::new("📋 Station").size(11.0).color(Color32::BLACK).strong(),
+                                    RichText::new("📋 Station")
+                                        .size(11.0)
+                                        .color(Color32::BLACK)
+                                        .strong(),
                                 )
                                 .fill(Color32::from_rgb(0, 230, 170));
                                 if ui.add(st_btn).clicked() {
@@ -3836,7 +4490,10 @@ impl DesktopApp {
                             }
                             let sys_copy = leg.sell.system_name.clone();
                             let sys_btn = egui::Button::new(
-                                RichText::new("📋 System").size(11.0).color(Color32::BLACK).strong(),
+                                RichText::new("📋 System")
+                                    .size(11.0)
+                                    .color(Color32::BLACK)
+                                    .strong(),
                             )
                             .fill(Color32::from_rgb(0, 200, 255));
                             if ui.add(sys_btn).clicked() {
@@ -3850,7 +4507,12 @@ impl DesktopApp {
 
                     // Location info
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(format!("[{:.1}]", sec)).size(12.0).color(sec_col).strong());
+                        ui.label(
+                            RichText::new(format!("[{:.1}]", sec))
+                                .size(12.0)
+                                .color(sec_col)
+                                .strong(),
+                        );
                         ui.label(
                             RichText::new(&leg.sell.system_name)
                                 .size(13.0)
@@ -3888,15 +4550,21 @@ impl DesktopApp {
                                 });
 
                             ui.label(
-                                RichText::new(format!("{}x {}", slot.deal.quantity, slot.deal.item_name))
-                                    .size(12.5)
-                                    .color(Color32::WHITE)
-                                    .strong(),
+                                RichText::new(format!(
+                                    "{}x {}",
+                                    slot.deal.quantity, slot.deal.item_name
+                                ))
+                                .size(12.5)
+                                .color(Color32::WHITE)
+                                .strong(),
                             );
 
                             let item_copy = slot.deal.item_name.clone();
                             let item_btn = egui::Button::new(
-                                RichText::new("📋 Item").size(11.0).color(Color32::BLACK).strong(),
+                                RichText::new("📋 Item")
+                                    .size(11.0)
+                                    .color(Color32::BLACK)
+                                    .strong(),
                             )
                             .fill(Color32::from_rgb(0, 220, 255));
                             if ui.add(item_btn).clicked() {
@@ -3943,8 +4611,16 @@ impl DesktopApp {
         // ── 3. Route Finish Node ──
         ui.vertical_centered(|ui| {
             ui.add_space(3.0);
-            ui.label(RichText::new("│").size(13.0).color(Color32::from_rgb(0, 255, 140)));
-            ui.label(RichText::new("▼").size(13.0).color(Color32::from_rgb(0, 255, 140)));
+            ui.label(
+                RichText::new("│")
+                    .size(13.0)
+                    .color(Color32::from_rgb(0, 255, 140)),
+            );
+            ui.label(
+                RichText::new("▼")
+                    .size(13.0)
+                    .color(Color32::from_rgb(0, 255, 140)),
+            );
             ui.add_space(3.0);
         });
 
@@ -3961,14 +4637,22 @@ impl DesktopApp {
                             .color(Color32::from_rgb(0, 255, 140))
                             .strong(),
                     );
-                    ui.label(RichText::new("CHAIN ROUTE COMPLETED").size(13.0).color(Color32::WHITE).strong());
+                    ui.label(
+                        RichText::new("CHAIN ROUTE COMPLETED")
+                            .size(13.0)
+                            .color(Color32::WHITE)
+                            .strong(),
+                    );
                 });
                 ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new(format!("Total Profit: +{:.2}M ISK", route.total_profit / 1_000_000.0))
-                            .strong()
-                            .color(Color32::from_rgb(0, 255, 140)),
+                        RichText::new(format!(
+                            "Total Profit: +{:.2}M ISK",
+                            route.total_profit / 1_000_000.0
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(0, 255, 140)),
                     );
                     ui.separator();
                     ui.label(
@@ -4001,9 +4685,12 @@ impl DesktopApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading(
-                        RichText::new(format!("🔗 Chain Route #{}: Complete Visual Flight Dossier", selected_idx + 1))
-                            .color(Color32::from_rgb(0, 220, 255))
-                            .strong(),
+                        RichText::new(format!(
+                            "🔗 Chain Route #{}: Complete Visual Flight Dossier",
+                            selected_idx + 1
+                        ))
+                        .color(Color32::from_rgb(0, 220, 255))
+                        .strong(),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4026,22 +4713,57 @@ impl DesktopApp {
 
                 // Route Telemetry Badges
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("Total Jumps: {}", route.total_jumps)).strong().color(Color32::from_rgb(255, 205, 0)));
+                    ui.label(
+                        RichText::new(format!("Total Jumps: {}", route.total_jumps))
+                            .strong()
+                            .color(Color32::from_rgb(255, 205, 0)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Total Net Profit: +{:.2}M ISK", route.total_profit / 1_000_000.0)).strong().color(Color32::from_rgb(0, 255, 140)));
+                    ui.label(
+                        RichText::new(format!(
+                            "Total Net Profit: +{:.2}M ISK",
+                            route.total_profit / 1_000_000.0
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(0, 255, 140)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Overall Net ROI: +{:.1}%", route.overall_roi_pct)).strong().color(Color32::from_rgb(0, 240, 180)));
+                    ui.label(
+                        RichText::new(format!("Overall Net ROI: +{:.1}%", route.overall_roi_pct))
+                            .strong()
+                            .color(Color32::from_rgb(0, 240, 180)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Profit / Jump: {:.2}M ISK", route.profit_per_jump / 1_000_000.0)).strong().color(Color32::from_rgb(255, 215, 0)));
+                    ui.label(
+                        RichText::new(format!(
+                            "Profit / Jump: {:.2}M ISK",
+                            route.profit_per_jump / 1_000_000.0
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(255, 215, 0)),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Capital Invested: {:.2}M ISK", route.total_capital / 1_000_000.0)).color(Color32::LIGHT_BLUE));
+                    ui.label(
+                        RichText::new(format!(
+                            "Capital Invested: {:.2}M ISK",
+                            route.total_capital / 1_000_000.0
+                        ))
+                        .color(Color32::LIGHT_BLUE),
+                    );
                     ui.separator();
-                    ui.label(RichText::new(format!("Peak Cargo Hold: {:.1} m³", route.peak_volume_m3)).color(Color32::from_rgb(255, 140, 240)));
+                    ui.label(
+                        RichText::new(format!("Peak Cargo Hold: {:.1} m³", route.peak_volume_m3))
+                            .color(Color32::from_rgb(255, 140, 240)),
+                    );
                 });
             });
 
         ui.add_space(10.0);
-        ui.label(RichText::new("Step-by-Step Leg Timeline & Knapsack Cargo Tracking:").strong().size(14.0));
+        ui.label(
+            RichText::new("Step-by-Step Leg Timeline & Knapsack Cargo Tracking:")
+                .strong()
+                .size(14.0),
+        );
         ui.add_space(6.0);
 
         // Render Each Leg
@@ -4060,12 +4782,18 @@ impl DesktopApp {
                                 .color(Color32::from_rgb(0, 220, 255)),
                         );
                         ui.separator();
-                        ui.label(RichText::new(format!("{} jumps", leg.leg_total_jumps)).color(Color32::from_rgb(255, 205, 0)));
+                        ui.label(
+                            RichText::new(format!("{} jumps", leg.leg_total_jumps))
+                                .color(Color32::from_rgb(255, 205, 0)),
+                        );
                         ui.separator();
                         ui.label(
-                            RichText::new(format!("Leg Profit: +{:.2}M ISK", leg.leg_total_profit / 1_000_000.0))
-                                .strong()
-                                .color(Color32::from_rgb(0, 255, 140)),
+                            RichText::new(format!(
+                                "Leg Profit: +{:.2}M ISK",
+                                leg.leg_total_profit / 1_000_000.0
+                            ))
+                            .strong()
+                            .color(Color32::from_rgb(0, 255, 140)),
                         );
                     });
 
@@ -4081,7 +4809,10 @@ impl DesktopApp {
                         };
 
                         let header_text = if is_detour {
-                            format!("🛒 EN-ROUTE PICKUP — {} (+{} detour jumps)", pickup.system_name, pickup.detour_jumps)
+                            format!(
+                                "🛒 EN-ROUTE PICKUP — {} (+{} detour jumps)",
+                                pickup.system_name, pickup.detour_jumps
+                            )
                         } else {
                             format!("🛒 PICKUP STOP — {}", pickup.system_name)
                         };
@@ -4090,7 +4821,13 @@ impl DesktopApp {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(header_text).strong().color(badge_col));
                                 if pickup.jumps_from_prev > 0 {
-                                    ui.label(RichText::new(format!("({} jumps from prev)", pickup.jumps_from_prev)).color(Color32::GRAY));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "({} jumps from prev)",
+                                            pickup.jumps_from_prev
+                                        ))
+                                        .color(Color32::GRAY),
+                                    );
                                 }
                             });
 
@@ -4099,11 +4836,36 @@ impl DesktopApp {
                             // Item Slots
                             for slot in &pickup.cargo_loaded {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("+ {}x {}", slot.deal.quantity, slot.deal.item_name)).strong().color(Color32::WHITE));
-                                    ui.label(RichText::new(format!("{:.1} m³", slot.volume)).color(Color32::from_rgb(255, 140, 240)));
-                                    ui.label(RichText::new(format!("{:.2}M ISK", slot.capital / 1_000_000.0)).color(Color32::LIGHT_BLUE));
-                                    ui.label(RichText::new(format!("➔ Sell at {}", slot.sell_name)).color(Color32::from_rgb(0, 220, 255)));
-                                    ui.label(RichText::new(format!("(+{:.2}M ISK net)", slot.net_profit / 1_000_000.0)).color(Color32::from_rgb(0, 255, 140)));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "+ {}x {}",
+                                            slot.deal.quantity, slot.deal.item_name
+                                        ))
+                                        .strong()
+                                        .color(Color32::WHITE),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("{:.1} m³", slot.volume))
+                                            .color(Color32::from_rgb(255, 140, 240)),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{:.2}M ISK",
+                                            slot.capital / 1_000_000.0
+                                        ))
+                                        .color(Color32::LIGHT_BLUE),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("➔ Sell at {}", slot.sell_name))
+                                            .color(Color32::from_rgb(0, 220, 255)),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "(+{:.2}M ISK net)",
+                                            slot.net_profit / 1_000_000.0
+                                        ))
+                                        .color(Color32::from_rgb(0, 255, 140)),
+                                    );
                                 });
                             }
 
@@ -4124,7 +4886,14 @@ impl DesktopApp {
 
                     // Flight Arrow
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("▼ Fly {} jump(s) to destination", leg.sell.jumps_from_prev)).color(Color32::from_rgb(255, 205, 0)).strong());
+                        ui.label(
+                            RichText::new(format!(
+                                "▼ Fly {} jump(s) to destination",
+                                leg.sell.jumps_from_prev
+                            ))
+                            .color(Color32::from_rgb(255, 205, 0))
+                            .strong(),
+                        );
                     });
 
                     ui.add_space(4.0);
@@ -4133,9 +4902,12 @@ impl DesktopApp {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new(format!("💰 SELL DESTINATION — {}", leg.sell.system_name))
-                                    .strong()
-                                    .color(Color32::from_rgb(0, 255, 140)),
+                                RichText::new(format!(
+                                    "💰 SELL DESTINATION — {}",
+                                    leg.sell.system_name
+                                ))
+                                .strong()
+                                .color(Color32::from_rgb(0, 255, 140)),
                             );
                         });
 
@@ -4143,9 +4915,25 @@ impl DesktopApp {
 
                         for slot in &leg.sell.cargo_sold {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("✔ Sold {}x {}", slot.deal.quantity, slot.deal.item_name)).color(Color32::WHITE));
-                                ui.label(RichText::new(format!("+{:.2}M ISK net profit", slot.net_profit / 1_000_000.0)).color(Color32::from_rgb(0, 255, 140)).strong());
-                                ui.label(RichText::new(format!("(freed {:.1} m³)", slot.volume)).color(Color32::GRAY));
+                                ui.label(
+                                    RichText::new(format!(
+                                        "✔ Sold {}x {}",
+                                        slot.deal.quantity, slot.deal.item_name
+                                    ))
+                                    .color(Color32::WHITE),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "+{:.2}M ISK net profit",
+                                        slot.net_profit / 1_000_000.0
+                                    ))
+                                    .color(Color32::from_rgb(0, 255, 140))
+                                    .strong(),
+                                );
+                                ui.label(
+                                    RichText::new(format!("(freed {:.1} m³)", slot.volume))
+                                        .color(Color32::GRAY),
+                                );
                             });
                         }
 
@@ -4527,13 +5315,18 @@ impl DesktopApp {
                     let base_radius = 120.0_f32;
 
                     // Range rings
-                    for (idx, r_factor) in [0.35_f32, 0.65_f32, 1.0_f32, 1.35_f32].iter().enumerate() {
+                    for (idx, r_factor) in
+                        [0.35_f32, 0.65_f32, 1.0_f32, 1.35_f32].iter().enumerate()
+                    {
                         let r = base_radius * r_factor;
                         let alpha = if idx == 2 { 60 } else { 25 };
                         painter.circle_stroke(
                             radar_center,
                             r,
-                            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 229, 255, alpha)),
+                            Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgba_unmultiplied(0, 229, 255, alpha),
+                            ),
                         );
                     }
 
@@ -4627,11 +5420,18 @@ impl DesktopApp {
                     let bar_width = 540.0_f32.min(total_rect.width() - 60.0);
                     let bar_height = 20.0;
 
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(bar_width, bar_height), egui::Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(bar_width, bar_height),
+                        egui::Sense::hover(),
+                    );
                     let bar_painter = ui.painter();
 
                     bar_painter.rect_filled(rect, 4.0, Color32::from_rgb(12, 17, 30));
-                    bar_painter.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, Color32::from_rgb(30, 48, 78)));
+                    bar_painter.rect_stroke(
+                        rect,
+                        4.0,
+                        Stroke::new(1.0_f32, Color32::from_rgb(30, 48, 78)),
+                    );
 
                     if progress > 0.001 {
                         let fill_rect = egui::Rect::from_min_size(
@@ -4677,7 +5477,10 @@ impl DesktopApp {
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
                                     if ui
-                                        .button(RichText::new("⚡ Enter Offline Mode").color(Color32::from_rgb(0, 229, 255)))
+                                        .button(
+                                            RichText::new("⚡ Enter Offline Mode")
+                                                .color(Color32::from_rgb(0, 229, 255)),
+                                        )
                                         .clicked()
                                     {
                                         self.is_startup = false;

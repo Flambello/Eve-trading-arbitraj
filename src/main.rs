@@ -186,10 +186,13 @@ async fn main() -> Result<()> {
     println!();
 
     let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
-    let launch_gui = (args.gui || (has_display && !args.tui)) && !args.no_tui && !args.no_ui && args.export.is_none();
+    let launch_gui = (args.gui || (has_display && !args.tui))
+        && !args.no_tui
+        && !args.no_ui
+        && args.export.is_none();
 
-    let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
-    let cache_dir = PathBuf::from(&cfg.cache.directory);
+    let sde_path = resolve_sde_path();
+    let cache_dir = resolve_cache_dir(&cfg.cache.directory);
 
     if launch_gui {
         println!(" Launching EVE Traveling Merchant Native Desktop GUI Window (Instant Startup & Splash Screen)...");
@@ -230,7 +233,10 @@ async fn main() -> Result<()> {
             let sde = match SdeLoader::open(&sde_path_clone, sde_max_age_days).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
-                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to load SDE database: {}", e)));
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!(
+                        "Failed to load SDE database: {}",
+                        e
+                    )));
                     return;
                 }
             };
@@ -253,7 +259,10 @@ async fn main() -> Result<()> {
             let graph = match SystemGraph::from_sde(&sde) {
                 Ok(g) => Arc::new(g),
                 Err(e) => {
-                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to construct stargate network: {}", e)));
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!(
+                        "Failed to construct stargate network: {}",
+                        e
+                    )));
                     return;
                 }
             };
@@ -285,7 +294,10 @@ async fn main() -> Result<()> {
                 stage_index: 3,
                 total_stages: 5,
                 stage_name: "Live Regional Order Books".to_string(),
-                detail: format!("Connecting to CCP ESI: fetching order books for {} region(s)...", scan_regions.len()),
+                detail: format!(
+                    "Connecting to CCP ESI: fetching order books for {} region(s)...",
+                    scan_regions.len()
+                ),
                 percent: 0.55,
                 completed: false,
                 error: None,
@@ -294,7 +306,10 @@ async fn main() -> Result<()> {
             let esi = match EsiClient::new(&cache_dir_clone) {
                 Ok(c) => Arc::new(c),
                 Err(e) => {
-                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to initialize ESI API client: {}", e)));
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!(
+                        "Failed to initialize ESI API client: {}",
+                        e
+                    )));
                     return;
                 }
             };
@@ -302,14 +317,23 @@ async fn main() -> Result<()> {
             let markets = match fetch_markets(&esi, &scan_regions).await {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = startup_tx.send(ui::StartupMsg::Error(format!("Failed to fetch ESI market data: {}", e)));
+                    let _ = startup_tx.send(ui::StartupMsg::Error(format!(
+                        "Failed to fetch ESI market data: {}",
+                        e
+                    )));
                     return;
                 }
             };
             let _ = esi.save_cache().await;
 
-            let total_sells: usize = markets.values().map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>()).sum();
-            let total_buys: usize = markets.values().map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>()).sum();
+            let total_sells: usize = markets
+                .values()
+                .map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>())
+                .sum();
+            let total_buys: usize = markets
+                .values()
+                .map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>())
+                .sum();
 
             let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
                 stage_index: 4,
@@ -339,14 +363,24 @@ async fn main() -> Result<()> {
                 stage_index: 5,
                 total_stages: 5,
                 stage_name: "Corridor Manifests & Route Planning".to_string(),
-                detail: format!("Found {} profitable trade deals! Consolidating corridors & planning route...", deals.len()),
+                detail: format!(
+                    "Found {} profitable trade deals! Consolidating corridors & planning route...",
+                    deals.len()
+                ),
                 percent: 0.95,
                 completed: false,
                 error: None,
             }));
 
             let manifests = bundle_route_cargo(&deals, ship_profile);
-            let route = plan_route(&deals, ship_profile, home_system_id, &graph, safe_only, max_stops);
+            let route = plan_route(
+                &deals,
+                ship_profile,
+                home_system_id,
+                &graph,
+                safe_only,
+                max_stops,
+            );
 
             let _ = startup_tx.send(ui::StartupMsg::Ready {
                 sde,
@@ -444,7 +478,7 @@ async fn main() -> Result<()> {
     };
 
     // 4. Initialize ESI Client & Fetch Market Data
-    let cache_dir = PathBuf::from(&cfg.cache.directory);
+    let cache_dir = resolve_cache_dir(&cfg.cache.directory);
     let esi = EsiClient::new(&cache_dir).context("Failed to initialize ESI API client")?;
     let esi = Arc::new(esi);
 
@@ -457,8 +491,14 @@ async fn main() -> Result<()> {
         .context("Failed to fetch market data from EVE ESI")?;
     let _ = esi.save_cache().await;
 
-    let total_sells: usize = markets.values().map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>()).sum();
-    let total_buys: usize = markets.values().map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>()).sum();
+    let total_sells: usize = markets
+        .values()
+        .map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>())
+        .sum();
+    let total_buys: usize = markets
+        .values()
+        .map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>())
+        .sum();
     println!(
         " Retrieved {} sell orders and {} buy orders.",
         total_sells, total_buys
@@ -483,14 +523,24 @@ async fn main() -> Result<()> {
     println!();
 
     let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
-    let launch_gui = (args.gui || (has_display && !args.tui)) && !args.no_tui && !args.no_ui && args.export.is_none();
-    let is_interactive = stdout().is_terminal() && !args.no_tui && !args.no_ui && args.export.is_none();
+    let launch_gui = (args.gui || (has_display && !args.tui))
+        && !args.no_tui
+        && !args.no_ui
+        && args.export.is_none();
+    let is_interactive =
+        stdout().is_terminal() && !args.no_tui && !args.no_ui && args.export.is_none();
 
     if deals.is_empty() && !launch_gui {
         println!(" No profitable deals met your current filters.");
         println!(" Suggestions:");
-        println!("   - Try lowering --min-profit (currently {:.0} ISK)", cfg.filters.min_profit_isk);
-        println!("   - Try lowering --min-spread (currently {:.1}%)", cfg.filters.min_spread_pct);
+        println!(
+            "   - Try lowering --min-profit (currently {:.0} ISK)",
+            cfg.filters.min_profit_isk
+        );
+        println!(
+            "   - Try lowering --min-spread (currently {:.1}%)",
+            cfg.filters.min_spread_pct
+        );
         println!("   - Add more scanning regions with --regions");
         return Ok(());
     }
@@ -549,16 +599,34 @@ fn print_cli_summary(
     show_route: bool,
 ) {
     println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
-    println!(" TOP {} ARBITRAGE OPPORTUNITIES (Ranked by Profit / Jump)", top_limit.min(deals.len()));
+    println!(
+        " TOP {} ARBITRAGE OPPORTUNITIES (Ranked by Profit / Jump)",
+        top_limit.min(deals.len())
+    );
     println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
     println!(
         "{:<3} {:<24} {:<15} {:>10} {:<15} {:>10} {:>6} {:>7} {:>9} {:>10} {:>7} {:>9} {:>12}",
-        "#", "Item", "Buy System", "Buy Price", "Sell System", "Sell Price", "Qty", "Vol m³", "Cost (M)", "Profit (M)", "ROI %", "Jumps", "Profit/Jump"
+        "#",
+        "Item",
+        "Buy System",
+        "Buy Price",
+        "Sell System",
+        "Sell Price",
+        "Qty",
+        "Vol m³",
+        "Cost (M)",
+        "Profit (M)",
+        "ROI %",
+        "Jumps",
+        "Profit/Jump"
     );
     println!("──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
 
     for (idx, d) in deals.iter().take(top_limit).enumerate() {
-        let jumps_str = format!("{}+{}={}", d.jumps_from_home, d.jumps_source_dest, d.total_jumps);
+        let jumps_str = format!(
+            "{}+{}={}",
+            d.jumps_from_home, d.jumps_source_dest, d.total_jumps
+        );
         let name_display = if d.is_high_roi() {
             format!("🔥 {}", d.item_name)
         } else {
@@ -646,7 +714,10 @@ fn print_cli_summary(
         };
 
         println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
-        println!(" PLANNED MULTI-STOP TRADE ROUTE ({} Stops)", route.stops.len());
+        println!(
+            " PLANNED MULTI-STOP TRADE ROUTE ({} Stops)",
+            route.stops.len()
+        );
         println!("══════════════════════════════════════════════════════════════════════════════════════════════════════════════");
         println!(
             " Total Jumps: {} │ Total Net Profit: {:.2} M ISK (+{:.1}% ROI) │ Average Profit/Jump: {:.2} M ISK/jump",
@@ -734,4 +805,30 @@ fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn resolve_sde_path() -> PathBuf {
+    let local = PathBuf::from("data").join("eve_sde.sqlite");
+    if local.exists() {
+        return local;
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_dir = data_dir.join("eve-traveling-merchant");
+        let _ = std::fs::create_dir_all(&app_dir);
+        return app_dir.join("eve_sde.sqlite");
+    }
+    local
+}
+
+fn resolve_cache_dir(cfg_dir: &str) -> PathBuf {
+    let local = PathBuf::from(cfg_dir);
+    if local.exists() {
+        return local;
+    }
+    if let Some(cache_dir) = dirs::cache_dir() {
+        let app_dir = cache_dir.join("eve-traveling-merchant");
+        let _ = std::fs::create_dir_all(&app_dir);
+        return app_dir;
+    }
+    local
 }

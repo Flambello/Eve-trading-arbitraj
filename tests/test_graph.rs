@@ -121,7 +121,10 @@ fn test_shortest_path_safe_highsec_only() {
 
     // Attempting safe path to lowsec destination must return empty
     let invalid_path = graph.shortest_path(jita, niarja_lowsec, true);
-    assert!(invalid_path.is_empty(), "Path to lowsec must be empty in safe mode");
+    assert!(
+        invalid_path.is_empty(),
+        "Path to lowsec must be empty in safe mode"
+    );
 }
 
 #[test]

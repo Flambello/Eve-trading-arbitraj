@@ -42,15 +42,15 @@ fn create_test_stargate_network() -> SystemGraph {
     ];
 
     // Stargate jumps:
-    // Jita <-> Perimeter <-> Urlen <-> Niarja (lowsec shortcut) <-> Madirmilire <-> Amarr
-    // Also a safe highsec bypass: Urlen <-> Madirmilire directly (simulating longer highsec detour)
+    // Unsafe route: Jita <-> Perimeter <-> Niarja (lowsec) <-> Amarr (3 jumps total)
+    // Safe route:   Jita <-> Perimeter <-> Urlen <-> Madirmilire <-> Amarr (4 jumps total)
     let jumps = vec![
         (30000142, 30000144), // Jita <-> Perimeter
-        (30000144, 30000145), // Perimeter <-> Urlen
-        (30000145, 30003491), // Urlen <-> Niarja (lowsec)
-        (30003491, 30003492), // Niarja <-> Madirmilire
-        (30000145, 30003492), // Urlen <-> Madirmilire (safe highsec link)
-        (30003492, 30002187), // Madirmilire <-> Amarr
+        (30000144, 30003491), // Perimeter <-> Niarja (lowsec shortcut)
+        (30003491, 30002187), // Niarja <-> Amarr
+        (30000144, 30000145), // Perimeter <-> Urlen (safe detour link 1)
+        (30000145, 30003492), // Urlen <-> Madirmilire (safe detour link 2)
+        (30003492, 30002187), // Madirmilire <-> Amarr (safe detour link 3)
     ];
 
     SystemGraph::from_nodes_and_jumps(systems, jumps)
@@ -90,14 +90,17 @@ fn test_jump_counts_normal_and_safe_mode() {
     assert_eq!(graph.jump_count(jita, perimeter, false), 1);
     assert_eq!(graph.jump_count(jita, perimeter, true), 1);
 
-    // Jita to Amarr via safe highsec link (Jita -> Perimeter -> Urlen -> Madirmilire -> Amarr) = 4 jumps
+    // In normal mode (safe_only = false): Jita -> Perimeter -> Niarja (lowsec) -> Amarr = 3 jumps
+    assert_eq!(graph.jump_count(jita, amarr, false), 3);
+
+    // In safe mode (safe_only = true): routes around lowsec via Urlen & Madirmilire = 4 jumps
     assert_eq!(graph.jump_count(jita, amarr, true), 4);
 
     // Jita to Lowsec (Niarja):
-    // In normal mode (safe_only = false): Jita -> Perimeter -> Urlen -> Niarja = 3 jumps
-    assert_eq!(graph.jump_count(jita, niarja_lowsec, false), 3);
+    // In normal mode: Jita -> Perimeter -> Niarja = 2 jumps
+    assert_eq!(graph.jump_count(jita, niarja_lowsec, false), 2);
 
-    // In safe mode (safe_only = true): lowsec endpoint is strictly rejected (returns 9999)
+    // In safe mode: lowsec endpoint is strictly rejected (returns 9999)
     assert_eq!(graph.jump_count(jita, niarja_lowsec, true), 9999);
     assert_eq!(graph.jump_count(niarja_lowsec, jita, true), 9999);
 }
@@ -107,17 +110,20 @@ fn test_shortest_path_safe_highsec_only() {
     let graph = create_test_stargate_network();
 
     let jita = 30000142;
+    let perimeter = 30000144;
+    let urlen = 30000145;
+    let madirmilire = 30003492;
     let amarr = 30002187;
     let niarja_lowsec = 30003491;
 
-    // Shortest path Jita to Amarr in safe mode
-    let path = graph.shortest_path(jita, amarr, true);
-    assert_eq!(path.len(), 5);
-    assert_eq!(path.first(), Some(&jita));
-    assert_eq!(path.last(), Some(&amarr));
+    // Normal mode: shortest path uses lowsec shortcut (Jita -> Perimeter -> Niarja -> Amarr)
+    let unsafe_path = graph.shortest_path(jita, amarr, false);
+    assert_eq!(unsafe_path, vec![jita, perimeter, niarja_lowsec, amarr]);
 
-    // Niarja (lowsec) cannot be part of safe highsec path
-    assert!(!path.contains(&niarja_lowsec));
+    // Safe mode: shortest path diverts around lowsec (Jita -> Perimeter -> Urlen -> Madirmilire -> Amarr)
+    let safe_path = graph.shortest_path(jita, amarr, true);
+    assert_eq!(safe_path, vec![jita, perimeter, urlen, madirmilire, amarr]);
+    assert!(!safe_path.contains(&niarja_lowsec));
 
     // Attempting safe path to lowsec destination must return empty
     let invalid_path = graph.shortest_path(jita, niarja_lowsec, true);

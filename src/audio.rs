@@ -1,3 +1,4 @@
+#[cfg(not(test))]
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -35,71 +36,94 @@ pub fn send_desktop_notification(summary: &str, body: &str) {
     });
 }
 
-/// Check if any supported system audio player binary is installed.
-pub fn has_audio_support() -> bool {
+/// Check if any supported system audio player binary is installed in the given PATH variable.
+pub fn check_audio_support_in_paths(path_var: &std::ffi::OsStr) -> bool {
     let players = ["canberra-gtk-play", "pw-play", "paplay", "aplay"];
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            for player in &players {
-                let full_path = dir.join(player);
-                if full_path.is_file() {
-                    return true;
-                }
+    for dir in std::env::split_paths(path_var) {
+        for player in &players {
+            let full_path = dir.join(player);
+            if full_path.is_file() {
+                return true;
             }
         }
     }
     false
 }
 
+/// Check if any supported system audio player binary is installed on the system.
+pub fn has_audio_support() -> bool {
+    if let Some(path_var) = std::env::var_os("PATH") {
+        check_audio_support_in_paths(&path_var)
+    } else {
+        false
+    }
+}
+
 fn play_sound_internal(sound_theme_id: &str) {
-    // 1. Canberra GTK play (Freedesktop system sound event)
-    if let Ok(status) = Command::new("canberra-gtk-play")
-        .args(["-i", sound_theme_id, "-d", "EVE Traveling Merchant"])
-        .status()
+    #[cfg(test)]
     {
-        if status.success() {
-            return;
-        }
+        // Guard against spawning external processes and emitting terminal bells in unit tests
+        assert!(!sound_theme_id.is_empty(), "Sound theme ID must not be empty");
     }
 
-    // 2. PipeWire native player (pw-play) with freedesktop stereo oga
-    let oga_path = format!(
-        "/usr/share/sounds/freedesktop/stereo/{}.oga",
-        sound_theme_id
-    );
-    if Path::new(&oga_path).exists() {
-        if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
+    #[cfg(not(test))]
+    {
+        // 1. Canberra GTK play (Freedesktop system sound event)
+        if let Ok(status) = Command::new("canberra-gtk-play")
+            .args(["-i", sound_theme_id, "-d", "EVE Traveling Merchant"])
+            .status()
+        {
             if status.success() {
                 return;
             }
         }
 
-        // 3. PulseAudio player (paplay)
-        if let Ok(status) = Command::new("paplay").arg(&oga_path).status() {
-            if status.success() {
-                return;
+        // 2. PipeWire native player (pw-play) with freedesktop stereo oga
+        let oga_path = format!(
+            "/usr/share/sounds/freedesktop/stereo/{}.oga",
+            sound_theme_id
+        );
+        if Path::new(&oga_path).exists() {
+            if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
+                if status.success() {
+                    return;
+                }
+            }
+
+            // 3. PulseAudio player (paplay)
+            if let Ok(status) = Command::new("paplay").arg(&oga_path).status() {
+                if status.success() {
+                    return;
+                }
             }
         }
-    }
 
-    // 4. Terminal ASCII Bell fallback
-    eprint!("\x07");
+        // 4. Terminal ASCII Bell fallback
+        eprint!("\x07");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn test_audio_support_detection() {
-        // Verification that audio support detection runs cleanly without panicking.
-        // In headless CI or minimal containers, this may be false; on desktop systems, it may be true.
-        let _supported = has_audio_support();
+        // 1. Empty or nonexistent path must return false
+        assert!(!check_audio_support_in_paths(OsStr::new("")));
+        assert!(!check_audio_support_in_paths(OsStr::new("/tmp/nonexistent_audio_path_xyz")));
+
+        // 2. has_audio_support returns a valid bool without panicking
+        let supported = has_audio_support();
+        let _ = supported; // Either true or false depending on host system
     }
 
     #[test]
     fn test_play_sound_does_not_panic() {
-        // Verification that dispatching sound does not panic
         play_sound_internal("message-new-instant");
+        play_sound_internal("bell");
+        play_high_profit_alert();
+        play_test_sound();
     }
 }

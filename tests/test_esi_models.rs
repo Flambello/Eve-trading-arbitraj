@@ -57,9 +57,12 @@ fn test_market_order_json_deserialization() {
     assert!(buy_order.is_buy_order, "Second order is a buy order");
 }
 
+use eve_trade_scout::esi::market::{best_buy, cheapest_sell};
+
 #[test]
 fn test_cheapest_sell_and_best_buy_selection() {
-    let sells = [
+    let mixed_orders = [
+        // Sells
         MarketOrder {
             order_id: 1,
             type_id: 34,
@@ -82,17 +85,29 @@ fn test_cheapest_sell_and_best_buy_selection() {
             volume_total: 100,
             volume_remain: 100,
             min_volume: 1,
-            price: 5.80, // Cheapest sell
+            price: 5.80, // Legitimate cheapest sell
             is_buy_order: false,
             duration: 90,
             issued: None,
             range: None,
         },
-    ];
-
-    let buys = [
         MarketOrder {
             order_id: 3,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            volume_total: 100,
+            volume_remain: 0, // Exhausted volume - MUST be ignored by cheapest_sell!
+            min_volume: 1,
+            price: 4.50,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        },
+        // Buys
+        MarketOrder {
+            order_id: 4,
             type_id: 34,
             location_id: 60008494,
             system_id: 30002187,
@@ -106,14 +121,28 @@ fn test_cheapest_sell_and_best_buy_selection() {
             range: None,
         },
         MarketOrder {
-            order_id: 4,
+            order_id: 5,
             type_id: 34,
             location_id: 60008494,
             system_id: 30002187,
             volume_total: 100,
             volume_remain: 100,
             min_volume: 1,
-            price: 8.10, // Best buy
+            price: 8.10, // Legitimate best buy
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        },
+        MarketOrder {
+            order_id: 6,
+            type_id: 34,
+            location_id: 60008494,
+            system_id: 30002187,
+            volume_total: 100,
+            volume_remain: 0, // Exhausted volume - MUST be ignored by best_buy!
+            price: 9.99,
+            min_volume: 1,
             is_buy_order: true,
             duration: 90,
             issued: None,
@@ -121,17 +150,28 @@ fn test_cheapest_sell_and_best_buy_selection() {
         },
     ];
 
-    let cheapest = sells
-        .iter()
-        .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
-        .unwrap();
-    let best = buys
-        .iter()
-        .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
-        .unwrap();
-
+    // Call real production functions:
+    let cheapest = cheapest_sell(&mixed_orders).expect("Must find cheapest sell");
     assert_eq!(cheapest.order_id, 2);
     assert_eq!(cheapest.price, 5.80);
-    assert_eq!(best.order_id, 4);
+    assert!(!cheapest.is_buy_order);
+    assert!(cheapest.volume_remain > 0);
+
+    let best = best_buy(&mixed_orders).expect("Must find best buy");
+    assert_eq!(best.order_id, 5);
     assert_eq!(best.price, 8.10);
+    assert!(best.is_buy_order);
+    assert!(best.volume_remain > 0);
+
+    // Empty orders return None
+    assert!(cheapest_sell(&[]).is_none());
+    assert!(best_buy(&[]).is_none());
+
+    // Buy-only orders return None for cheapest_sell
+    let buy_only: Vec<_> = mixed_orders.iter().filter(|o| o.is_buy_order).cloned().collect();
+    assert!(cheapest_sell(&buy_only).is_none());
+
+    // Sell-only orders return None for best_buy
+    let sell_only: Vec<_> = mixed_orders.iter().filter(|o| !o.is_buy_order).cloned().collect();
+    assert!(best_buy(&sell_only).is_none());
 }

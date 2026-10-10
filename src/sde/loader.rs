@@ -231,6 +231,91 @@ impl SdeLoader {
         })
     }
 
+    /// Create an in-memory SdeLoader populated with standard test fixtures.
+    /// Enables automated unit and integration tests to run in CI and offline
+    /// without requiring the 650 MB external SDE database file.
+    pub fn in_memory_with_fixtures() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "
+            CREATE TABLE mapRegions (
+                regionID INTEGER PRIMARY KEY,
+                regionName TEXT NOT NULL
+            );
+            CREATE TABLE mapSolarSystems (
+                solarSystemID INTEGER PRIMARY KEY,
+                solarSystemName TEXT NOT NULL,
+                security REAL NOT NULL,
+                regionID INTEGER NOT NULL
+            );
+            CREATE TABLE staStations (
+                stationID INTEGER PRIMARY KEY,
+                stationName TEXT NOT NULL,
+                solarSystemID INTEGER NOT NULL
+            );
+            CREATE TABLE invTypes (
+                typeID INTEGER PRIMARY KEY,
+                typeName TEXT NOT NULL,
+                volume REAL,
+                packagedVolume REAL,
+                groupID INTEGER,
+                published INTEGER
+            );
+            CREATE TABLE invGroups (
+                groupID INTEGER PRIMARY KEY,
+                categoryID INTEGER
+            );
+            CREATE TABLE mapSolarSystemJumps (
+                fromSolarSystemID INTEGER,
+                toSolarSystemID INTEGER
+            );
+
+            INSERT INTO mapRegions VALUES 
+                (10000002, 'The Forge'),
+                (10000043, 'Domain'),
+                (10000032, 'Sinq Laison'),
+                (10000030, 'Heimatar'),
+                (10000042, 'Metropolis');
+
+            INSERT INTO mapSolarSystems VALUES
+                (30000142, 'Jita', 0.9457, 10000002),
+                (30000144, 'Perimeter', 0.9000, 10000002),
+                (30000145, 'New Caldari', 0.8500, 10000002),
+                (30002187, 'Amarr', 0.9000, 10000043),
+                (30002659, 'Dodixie', 0.8500, 10000032),
+                (30002510, 'Rens', 0.8500, 10000030),
+                (30002053, 'Hek', 0.8000, 10000042),
+                (30005000, 'Old Man Star', 0.8000, 10000032);
+
+            INSERT INTO staStations VALUES
+                (60003760, 'Jita 4 - Moon 4 - Caldari Navy Assembly Plant', 30000142),
+                (60003761, 'Perimeter 1 - Moon 1 - Caldari Navy Testing Facilities', 30000144),
+                (60008494, 'Amarr VIII (Oris) - Emperor Family Academy', 30002187),
+                (60011866, 'Dodixie 9 - Moon 20 - Federation Navy Assembly Plant', 30002659);
+
+            INSERT INTO invGroups VALUES
+                (4, 4),    -- Material
+                (18, 4),   -- Minerals (Category 4: Material)
+                (280, 17); -- Spirits / General Commodities (Category 17: Commodity)
+
+            INSERT INTO invTypes VALUES
+                (34, 'Tritanium', 0.01, 0.01, 18, 1),
+                (35, 'Pyerite', 0.01, 0.01, 18, 1),
+                (9850, 'Spirits', 0.50, 0.50, 280, 1);
+
+            INSERT INTO mapSolarSystemJumps VALUES
+                (30000142, 30000144),
+                (30000144, 30000142);
+            ",
+        )?;
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+            has_inv_volumes: false,
+            has_packaged_col: true,
+        })
+    }
+
     pub async fn download(dest_path: &Path) -> Result<()> {
         if let Some(parent) = dest_path.parent() {
             std::fs::create_dir_all(parent)?;

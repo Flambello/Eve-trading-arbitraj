@@ -102,43 +102,49 @@ fn test_route_planner_greedy_chaining_and_max_stops() {
     let graph = create_route_test_graph();
     let home = 30000142; // Jita
 
-    // Deal 1: Jita -> Perimeter (1 jump)
+    // Deal 1: Jita -> Perimeter (1 jump, 20M profit)
     let d1 = make_test_deal(
         34,
         "Tritanium",
         (30000142, "Jita"),
         (30000144, "Perimeter"),
-        10_000_000.0,
+        20_000_000.0,
         1,
     );
-    // Deal 2: Perimeter -> Amarr (1 jump)
+    // Deal 2: Perimeter -> Amarr (1 jump, 30M profit)
     let d2 = make_test_deal(
         35,
         "Pyerite",
         (30000144, "Perimeter"),
         (30002187, "Amarr"),
-        20_000_000.0,
+        30_000_000.0,
         1,
     );
-    // Deal 3: Amarr -> Dodixie (1 jump)
+    // Deal 3: Amarr -> Dodixie (1 jump, 10M profit)
     let d3 = make_test_deal(
         36,
         "Mexallon",
         (30002187, "Amarr"),
         (30000032, "Dodixie"),
-        15_000_000.0,
+        10_000_000.0,
         1,
     );
 
     let deals = vec![d1, d2, d3];
 
-    // Max stops = 2
+    // Max stops = 2: Greedy planner should select Deal 1 from Jita, then Deal 2 from Perimeter
     let route = plan_route(&deals, BIG_HAULER, home, &graph, true, 2);
 
     assert_eq!(route.stops.len(), 2, "Route must respect max_stops limit");
-    assert!(route.total_profit > 0.0);
-    assert!(route.total_jumps > 0);
-    assert!(route.avg_profit_per_jump > 0.0);
+    assert_eq!(route.stops[0].deal.item_name, "Tritanium");
+    assert_eq!(route.stops[0].step, 1);
+    assert_eq!(route.stops[1].deal.item_name, "Pyerite");
+    assert_eq!(route.stops[1].step, 2);
+
+    assert_eq!(route.total_profit, 50_000_000.0);
+    assert_eq!(route.total_jumps, 2);
+    assert_eq!(route.avg_profit_per_jump, 25_000_000.0);
+    assert_eq!(route.waypoints, vec![30000142, 30000144, 30002187]);
 }
 
 #[test]

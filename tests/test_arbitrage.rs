@@ -2,242 +2,444 @@
 
 #[cfg(test)]
 mod tests {
-    // Testing ship constraints
+    use eve_trade_scout::arbitrage::{calculate_deal, is_npc_station, ArbitrageConfig, ArbitrageDeal};
+    use eve_trade_scout::config::{BIG_HAULER, SMALL_HAULER};
+    use eve_trade_scout::esi::models::MarketOrder;
+    use eve_trade_scout::graph::SystemGraph;
+    use eve_trade_scout::sde::{ItemInfo, SdeLoader, SystemNode};
+
+    fn create_test_env() -> (SdeLoader, SystemGraph, ArbitrageConfig, ItemInfo) {
+        let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to initialize test SDE");
+        let systems = vec![
+            SystemNode {
+                system_id: 30000142,
+                name: "Jita".to_string(),
+                security_status: 0.95,
+                region_id: 10000002,
+            },
+            SystemNode {
+                system_id: 30000144,
+                name: "Perimeter".to_string(),
+                security_status: 0.90,
+                region_id: 10000002,
+            },
+            SystemNode {
+                system_id: 30002187,
+                name: "Amarr".to_string(),
+                security_status: 0.90,
+                region_id: 10000043,
+            },
+            SystemNode {
+                system_id: 30003491,
+                name: "Niarja".to_string(),
+                security_status: 0.38, // Lowsec
+                region_id: 10000043,
+            },
+        ];
+        let jumps = vec![
+            (30000142, 30000144), // Jita <-> Perimeter
+            (30000144, 30002187), // Perimeter <-> Amarr
+            (30000144, 30003491), // Perimeter <-> Niarja
+        ];
+        let graph = SystemGraph::from_nodes_and_jumps(systems, jumps);
+        let cfg = ArbitrageConfig {
+            home_system: 30000142, // Jita
+            ship: BIG_HAULER,
+            min_profit: 0.0,
+            min_spread: 3.0,
+            min_net_profit_pct: 10.0,
+            broker_fee: 3.0,
+            sales_tax: 8.0,
+            safe_only: true,
+            npc_stations_only: true,
+        };
+        let item = ItemInfo {
+            type_id: 34,
+            name: "Tritanium".to_string(),
+            packaged_volume: 0.01,
+            group_id: 18,
+            category_id: 4,
+            published: true,
+        };
+        (sde, graph, cfg, item)
+    }
+
     #[test]
     fn test_ship_profile_values() {
-        let big_vol = 60_000.0;
-        let big_budget = 500_000_000.0;
+        // Must verify real domain constants from eve_trade_scout::config
+        assert_eq!(BIG_HAULER.name, "Big Hauler");
+        assert_eq!(BIG_HAULER.max_volume, 60_000.0);
+        assert_eq!(BIG_HAULER.max_budget, 500_000_000.0);
 
-        let small_vol = 30_000.0;
-        let small_budget = 50_000_000.0;
-
-        assert_eq!(big_vol, 60_000.0);
-        assert_eq!(big_budget, 500_000_000.0);
-
-        assert_eq!(small_vol, 30_000.0);
-        assert_eq!(small_budget, 50_000_000.0);
+        assert_eq!(SMALL_HAULER.name, "Small Hauler");
+        assert_eq!(SMALL_HAULER.max_volume, 30_000.0);
+        assert_eq!(SMALL_HAULER.max_budget, 50_000_000.0);
     }
 
     #[test]
     fn test_profit_per_jump_formula() {
-        let buy_price = 100.0;
-        let sell_price = 150.0;
-        let quantity = 1000;
+        let (sde, graph, cfg, item) = create_test_env();
 
-        let gross_rev = sell_price * (quantity as f64);
-        let capital = buy_price * (quantity as f64);
-        let gross_profit = gross_rev - capital;
+        // Source in Perimeter (1 jump from home Jita)
+        let src_order = MarketOrder {
+            order_id: 1001,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144, // Perimeter
+            price: 100.0,
+            volume_total: 1000,
+            volume_remain: 1000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        // Dest in Amarr (1 jump from Perimeter)
+        let dst_order = MarketOrder {
+            order_id: 2001,
+            type_id: 34,
+            location_id: 60008494,
+            system_id: 30002187, // Amarr
+            price: 150.0,
+            volume_total: 1000,
+            volume_remain: 1000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
 
-        let broker_fee_pct = 3.0;
-        let sales_tax_pct = 8.0;
+        let deal = calculate_deal(34, &item, &src_order, &dst_order, &cfg, &sde, &graph)
+            .expect("Deal must be calculated");
 
-        let broker_cost = capital * (broker_fee_pct / 100.0);
-        let sales_tax_cost = gross_rev * (sales_tax_pct / 100.0);
-        let net_profit = gross_profit - broker_cost - sales_tax_cost;
+        // jumps_from_home (Jita -> Perimeter) = 1
+        // jumps_source_dest (Perimeter -> Amarr) = 1
+        // total_jumps = 2
+        assert_eq!(deal.jumps_from_home, 1);
+        assert_eq!(deal.jumps_source_dest, 1);
+        assert_eq!(deal.total_jumps, 2);
 
-        let jumps_from_home = 2;
-        let jumps_source_to_dest = 3;
-        let total_jumps = jumps_from_home + jumps_source_to_dest;
-
-        let ppj = net_profit / (total_jumps as f64);
-
-        assert!(net_profit > 0.0);
-        assert_eq!(total_jumps, 5);
-        assert!(ppj > 0.0);
+        // Profit per jump must equal net_profit / total_jumps
+        assert!(deal.net_profit > 0.0);
+        let expected_ppj = deal.net_profit / 2.0;
+        assert!((deal.profit_per_jump - expected_ppj).abs() < 1e-4);
+        assert!((deal.profit_per_m3 - (deal.net_profit / deal.volume_used)).abs() < 1e-4);
     }
 
     #[test]
     fn test_minimum_10_percent_net_profitability_enforced() {
-        let broker_fee_pct = 3.0;
-        let sales_tax_pct = 8.0;
-        let min_net_profit_pct = 10.0;
+        let (sde, graph, cfg, item) = create_test_env();
 
-        // Deal A: 100 buy, 120 sell (Gross spread is 20%, but after fees:)
-        // Broker fee: 100 * 0.03 = 3.0
-        // Sales tax: 120 * 0.08 = 9.6
-        // Net profit per unit: 20 - 3.0 - 9.6 = 7.4
-        // Net ROI%: 7.4 / 100 = 7.4% (Below 10%, should be rejected)
-        let buy_a = 100.0;
-        let sell_a = 120.0;
-        let net_a =
-            (sell_a - buy_a) - (buy_a * broker_fee_pct / 100.0) - (sell_a * sales_tax_pct / 100.0);
-        let roi_a = (net_a / buy_a) * 100.0;
-        assert!(
-            roi_a < min_net_profit_pct,
-            "Deal A should fail the 10% net threshold"
-        );
+        // Source order: 100 ISK
+        let src = MarketOrder {
+            order_id: 101,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 100.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
 
-        // Deal B: 100 buy, 125 sell (Gross spread is 25%)
-        // Broker fee: 100 * 0.03 = 3.0
-        // Sales tax: 125 * 0.08 = 10.0
-        // Net profit per unit: 25 - 3.0 - 10.0 = 12.0
-        // Net ROI%: 12.0 / 100 = 12.0% (Above 10%, should be accepted)
-        let buy_b = 100.0;
-        let sell_b = 125.0;
-        let net_b =
-            (sell_b - buy_b) - (buy_b * broker_fee_pct / 100.0) - (sell_b * sales_tax_pct / 100.0);
-        let roi_b = (net_b / buy_b) * 100.0;
-        assert!(
-            roi_b >= min_net_profit_pct,
-            "Deal B should pass the 10% net threshold"
-        );
+        // Deal A: 120 ISK sell price
+        // Broker fee: 100 * 3% = 3.0
+        // Sales tax: 120 * 8% = 9.6
+        // Net profit per unit: 20 - 3.0 - 9.6 = 7.4 (ROI 7.4% < 10.0%) -> REJECTED
+        let dst_sub10 = MarketOrder {
+            order_id: 201,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 120.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+
+        let res_a = calculate_deal(34, &item, &src, &dst_sub10, &cfg, &sde, &graph);
+        assert!(res_a.is_none(), "Deal with 7.4% net ROI must be rejected by calculate_deal");
+
+        // Deal B: 125 ISK sell price
+        // Broker fee: 100 * 3% = 3.0
+        // Sales tax: 125 * 8% = 10.0
+        // Net profit per unit: 25 - 3.0 - 10.0 = 12.0 (ROI 12.0% >= 10.0%) -> ACCEPTED
+        let dst_above10 = MarketOrder {
+            order_id: 202,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 125.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+
+        let res_b = calculate_deal(34, &item, &src, &dst_above10, &cfg, &sde, &graph);
+        assert!(res_b.is_some(), "Deal with 12.0% net ROI must be accepted by calculate_deal");
+        let deal = res_b.unwrap();
+        assert_eq!(deal.net_profit_pct, 12.0);
     }
 
     #[test]
     fn test_is_npc_station_id_threshold() {
-        // NPC Stations have IDs < 1_000_000_000_000
-        let jita_iv_4: u64 = 60_003_760;
-        let amarr_viii_4: u64 = 60_008_494;
-        let dodixie_ix_20: u64 = 60_011_866;
-
-        assert!(jita_iv_4 < 1_000_000_000_000);
-        assert!(amarr_viii_4 < 1_000_000_000_000);
-        assert!(dodixie_ix_20 < 1_000_000_000_000);
+        // Direct verification of eve_trade_scout::arbitrage::is_npc_station
+        assert!(is_npc_station(60_003_760), "Jita IV-4 is an NPC station");
+        assert!(is_npc_station(60_008_494), "Amarr VIII-4 is an NPC station");
+        assert!(is_npc_station(60_011_866), "Dodixie IX-20 is an NPC station");
 
         // Player-owned Citadels / Upwell Structures have IDs >= 1_000_000_000_000
-        let perimeter_citadel: u64 = 1_028_858_195_912;
-        let player_fortizar: u64 = 1_030_000_000_001;
-
-        assert!(perimeter_citadel >= 1_000_000_000_000);
-        assert!(player_fortizar >= 1_000_000_000_000);
+        assert!(!is_npc_station(1_028_858_195_912), "Perimeter Citadel is NOT an NPC station");
+        assert!(!is_npc_station(1_030_000_000_001), "Fortizar is NOT an NPC station");
     }
 
     #[test]
     fn test_npc_stations_only_toggle_filter() {
-        let npc_station_id: u64 = 60_003_760;
-        let citadel_id: u64 = 1_028_858_195_912;
+        let (sde, graph, mut cfg, item) = create_test_env();
 
-        let is_npc = |id: u64| id < 1_000_000_000_000;
+        let src = MarketOrder {
+            order_id: 101,
+            type_id: 34,
+            location_id: 60003760, // NPC station
+            system_id: 30000142,
+            price: 5.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
 
-        // Mode 1: npc_stations_only = true (Strict NPC only)
-        let npc_only = true;
-        let npc_accepted = !npc_only || is_npc(npc_station_id);
-        let citadel_accepted = !npc_only || is_npc(citadel_id);
+        let dst_citadel = MarketOrder {
+            order_id: 201,
+            type_id: 34,
+            location_id: 1_028_858_195_912, // Player Citadel structure!
+            system_id: 30000144,
+            price: 10.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
 
-        assert!(
-            npc_accepted,
-            "NPC station must be accepted in NPC-only mode"
-        );
-        assert!(
-            !citadel_accepted,
-            "Player citadel must be rejected in NPC-only mode"
-        );
+        // When npc_stations_only = true:
+        cfg.npc_stations_only = true;
+        let res_rejected = calculate_deal(34, &item, &src, &dst_citadel, &cfg, &sde, &graph);
+        assert!(res_rejected.is_none(), "Citadel trade must be rejected when npc_stations_only is true");
 
-        // Mode 2: npc_stations_only = false (Include player citadels in pool)
-        let allow_citadels = false;
-        let npc_accepted_in_all = !allow_citadels || is_npc(npc_station_id);
-        let citadel_accepted_in_all = !allow_citadels || is_npc(citadel_id);
-
-        assert!(
-            npc_accepted_in_all,
-            "NPC station must be accepted when citadels allowed"
-        );
-        assert!(
-            citadel_accepted_in_all,
-            "Player citadel must be accepted when citadels allowed"
-        );
+        // When npc_stations_only = false:
+        cfg.npc_stations_only = false;
+        let res_accepted = calculate_deal(34, &item, &src, &dst_citadel, &cfg, &sde, &graph);
+        assert!(res_accepted.is_some(), "Citadel trade must be accepted when npc_stations_only is false");
     }
 
     #[test]
     fn test_highsec_only_filtering_excludes_lowsec_and_nullsec() {
-        let is_highsec = |security: f64| security >= 0.45;
+        let (sde, graph, cfg, item) = create_test_env();
 
-        // Highsec systems
-        assert!(is_highsec(0.95), "Jita (0.95) must be highsec");
-        assert!(is_highsec(0.90), "Amarr (0.90) must be highsec");
-        assert!(is_highsec(0.50), "Border system (0.50) must be highsec");
-        assert!(is_highsec(0.45), "Border system (0.45) must be highsec");
+        // Direct SystemGraph security checks:
+        assert!(graph.is_highsec(30000142)); // Jita (0.95)
+        assert!(graph.is_highsec(30000144)); // Perimeter (0.90)
+        assert!(!graph.is_highsec(30003491)); // Niarja (0.38 - lowsec)
 
-        // Lowsec systems (0.1 to 0.44) - must be strictly excluded
-        assert!(!is_highsec(0.44), "Lowsec (0.44) must be excluded");
-        assert!(!is_highsec(0.40), "Tama (0.40) must be excluded");
-        assert!(!is_highsec(0.10), "Amamake (0.10) must be excluded");
+        // Deal from Jita to Lowsec Niarja:
+        let src = MarketOrder {
+            order_id: 101,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 5.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        let dst_lowsec = MarketOrder {
+            order_id: 201,
+            type_id: 34,
+            location_id: 60003762,
+            system_id: 30003491, // Niarja (Lowsec)
+            price: 10.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
 
-        // Nullsec systems (<= 0.0) - must be strictly excluded
-        assert!(!is_highsec(0.0), "Border nullsec (0.0) must be excluded");
-        assert!(!is_highsec(-0.2), "Catch nullsec (-0.2) must be excluded");
-        assert!(!is_highsec(-1.0), "Deep nullsec (-1.0) must be excluded");
+        let res = calculate_deal(34, &item, &src, &dst_lowsec, &cfg, &sde, &graph);
+        assert!(res.is_none(), "calculate_deal must reject deals with lowsec destination");
     }
 
     #[test]
     fn test_quantity_solver_constraints() {
-        let max_volume: f64 = 60_000.0; // Big Hauler
-        let max_budget: f64 = 500_000_000.0;
+        let (sde, graph, mut cfg, mut item) = create_test_env();
+        cfg.ship = BIG_HAULER; // 60,000 m³ hold, 500M budget
 
         // Case 1: Constrained by volume
-        let unit_volume_1: f64 = 100.0; // m³
-        let buy_price_1: f64 = 10_000.0;
-        let supply_1: u32 = 5_000;
-        let demand_1: u32 = 5_000;
-
-        let qty_vol = (max_volume / unit_volume_1).floor() as u32; // 600
-        let qty_budget = (max_budget / buy_price_1).floor() as u32; // 50,000
-        let final_qty_1 = qty_vol.min(qty_budget).min(supply_1).min(demand_1);
-        assert_eq!(final_qty_1, 600, "Should be constrained by cargo volume");
+        // Item is 100 m³, hold is 60,000 m³ -> max by volume is 600 units
+        item.packaged_volume = 100.0;
+        let src_1 = MarketOrder {
+            order_id: 101,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 10_000.0,
+            volume_total: 5_000,
+            volume_remain: 5_000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        let dst_1 = MarketOrder {
+            order_id: 201,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 20_000.0,
+            volume_total: 5_000,
+            volume_remain: 5_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        let deal_1 = calculate_deal(34, &item, &src_1, &dst_1, &cfg, &sde, &graph)
+            .expect("Deal 1 should calculate");
+        assert_eq!(deal_1.quantity, 600, "Should be constrained by cargo volume");
 
         // Case 2: Constrained by budget
-        let unit_volume_2: f64 = 0.1;
-        let buy_price_2: f64 = 25_000_000.0; // 25M each
-        let supply_2: u32 = 100;
-        let demand_2: u32 = 100;
-
-        let qty_vol_2 = (max_volume / unit_volume_2).floor() as u32;
-        let qty_budget_2 = (max_budget / buy_price_2).floor() as u32; // 20
-        let final_qty_2 = qty_vol_2.min(qty_budget_2).min(supply_2).min(demand_2);
-        assert_eq!(
-            final_qty_2, 20,
-            "Should be constrained by ISK capital budget"
-        );
+        // Item price 25M each, budget 500M -> max by budget is 20 units
+        item.packaged_volume = 0.1;
+        let src_2 = MarketOrder {
+            order_id: 102,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 25_000_000.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        let dst_2 = MarketOrder {
+            order_id: 202,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 35_000_000.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        let deal_2 = calculate_deal(34, &item, &src_2, &dst_2, &cfg, &sde, &graph)
+            .expect("Deal 2 should calculate");
+        assert_eq!(deal_2.quantity, 20, "Should be constrained by ISK capital budget");
 
         // Case 3: Constrained by supply
-        let supply_3 = 8;
-        let demand_3 = 50;
-        let final_qty_3 = qty_vol_2.min(qty_budget_2).min(supply_3).min(demand_3);
-        assert_eq!(final_qty_3, 8, "Should be constrained by supply");
+        let mut src_3 = src_2.clone();
+        src_3.volume_remain = 8;
+        let deal_3 = calculate_deal(34, &item, &src_3, &dst_2, &cfg, &sde, &graph)
+            .expect("Deal 3 should calculate");
+        assert_eq!(deal_3.quantity, 8, "Should be constrained by supply");
 
         // Case 4: Constrained by demand
-        let supply_4 = 100;
-        let demand_4 = 5;
-        let final_qty_4 = qty_vol_2.min(qty_budget_2).min(supply_4).min(demand_4);
-        assert_eq!(final_qty_4, 5, "Should be constrained by demand");
+        let mut dst_4 = dst_2.clone();
+        dst_4.volume_remain = 5;
+        let deal_4 = calculate_deal(34, &item, &src_2, &dst_4, &cfg, &sde, &graph)
+            .expect("Deal 4 should calculate");
+        assert_eq!(deal_4.quantity, 5, "Should be constrained by demand");
     }
 
     #[test]
     fn test_deal_sorting_ppj_descending() {
-        struct MockDeal {
-            id: u32,
-            ppj: f64,
-            net: f64,
-        }
+        let make_dummy_deal = |id: u32, ppj: f64, net: f64| ArbitrageDeal {
+            type_id: id,
+            item_name: format!("Item {}", id),
+            source_order_id: 100 + id as u64,
+            dest_order_id: 200 + id as u64,
+            source_order_volume_remain: 100,
+            dest_order_volume_remain: 100,
+            dest_order_min_volume: 1,
+            is_npc_trade: false,
+            buy_price: 100.0,
+            sell_price: 150.0,
+            spread_pct: 50.0,
+            source_station_id: 60003760,
+            source_system_id: 30000142,
+            source_system_name: "Jita".to_string(),
+            source_station_name: "Jita IV-4".to_string(),
+            source_security: 0.95,
+            dest_station_id: 60003761,
+            dest_system_id: 30000144,
+            dest_system_name: "Perimeter".to_string(),
+            dest_station_name: "Perimeter I".to_string(),
+            dest_security: 0.90,
+            quantity: 100,
+            volume_used: 10.0,
+            capital_required: 10_000.0,
+            gross_profit: net * 1.2,
+            taxes_and_fees: net * 0.2,
+            net_profit: net,
+            net_profit_pct: 25.0,
+            jumps_from_home: 0,
+            jumps_source_dest: 1,
+            total_jumps: 1,
+            profit_per_jump: ppj,
+            profit_per_m3: net / 10.0,
+        };
 
         let mut deals = [
-            MockDeal {
-                id: 1,
-                ppj: 1.5,
-                net: 10_000_000.0,
-            },
-            MockDeal {
-                id: 2,
-                ppj: 4.2,
-                net: 8_000_000.0,
-            },
-            MockDeal {
-                id: 3,
-                ppj: 2.1,
-                net: 15_000_000.0,
-            },
-            MockDeal {
-                id: 4,
-                ppj: 4.2,
-                net: 12_000_000.0,
-            }, // Same PPJ as #2, but higher net
+            make_dummy_deal(1, 1.5, 10_000_000.0),
+            make_dummy_deal(2, 4.2, 8_000_000.0),
+            make_dummy_deal(3, 2.1, 15_000_000.0),
+            make_dummy_deal(4, 4.2, 12_000_000.0), // Same PPJ as #2, but higher net
         ];
 
+        // Production sort comparator (from src/arbitrage.rs:204-213)
         deals.sort_by(|a, b| {
-            b.ppj
-                .partial_cmp(&a.ppj)
-                .unwrap()
-                .then_with(|| b.net.partial_cmp(&a.net).unwrap())
+            b.profit_per_jump
+                .partial_cmp(&a.profit_per_jump)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    b.net_profit
+                        .partial_cmp(&a.net_profit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
 
         // Expected order:
@@ -245,10 +447,10 @@ mod tests {
         // 2nd: ID 2 (PPJ 4.2, net 8M)
         // 3rd: ID 3 (PPJ 2.1, net 15M)
         // 4th: ID 1 (PPJ 1.5, net 10M)
-        assert_eq!(deals[0].id, 4);
-        assert_eq!(deals[1].id, 2);
-        assert_eq!(deals[2].id, 3);
-        assert_eq!(deals[3].id, 1);
+        assert_eq!(deals[0].type_id, 4);
+        assert_eq!(deals[1].type_id, 2);
+        assert_eq!(deals[2].type_id, 3);
+        assert_eq!(deals[3].type_id, 1);
     }
 
     #[test]
@@ -371,23 +573,15 @@ mod tests {
         assert_eq!(m.total_net_profit, 65_000_000.0);
     }
 
-    #[tokio::test]
-    async fn test_calculate_deal_same_station_and_min_volume() {
+    #[test]
+    fn test_calculate_deal_same_station_and_min_volume() {
         use eve_trade_scout::arbitrage::{calculate_deal, ArbitrageConfig};
         use eve_trade_scout::config::BIG_HAULER;
         use eve_trade_scout::esi::models::MarketOrder;
         use eve_trade_scout::graph::SystemGraph;
         use eve_trade_scout::sde::{ItemInfo, SdeLoader, SystemNode};
-        use std::path::PathBuf;
 
-        let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
-        if !sde_path.exists() {
-            return;
-        }
-
-        let sde = SdeLoader::open(&sde_path, 30)
-            .await
-            .expect("Failed to open SDE");
+        let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to initialize test SDE");
 
         let systems = vec![
             SystemNode {
@@ -533,23 +727,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_npc_trade_deal_detection_and_filtering() {
+    #[test]
+    fn test_npc_trade_deal_detection_and_filtering() {
         use eve_trade_scout::arbitrage::{calculate_deal, ArbitrageConfig, ArbitrageDeal};
         use eve_trade_scout::config::BIG_HAULER;
         use eve_trade_scout::esi::models::MarketOrder;
         use eve_trade_scout::graph::SystemGraph;
         use eve_trade_scout::sde::{ItemInfo, SdeLoader, SystemNode};
-        use std::path::PathBuf;
 
-        let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
-        if !sde_path.exists() {
-            return;
-        }
-
-        let sde = SdeLoader::open(&sde_path, 30)
-            .await
-            .expect("Failed to open SDE");
+        let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to initialize test SDE");
 
         let systems = vec![
             SystemNode {

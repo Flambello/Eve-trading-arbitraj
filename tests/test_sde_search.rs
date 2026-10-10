@@ -98,16 +98,34 @@ fn test_station_name_formatting_and_canonicalization() {
     );
 }
 
+async fn get_test_sde() -> SdeLoader {
+    let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
+    if sde_path.exists() {
+        SdeLoader::open(&sde_path, 30)
+            .await
+            .expect("Failed to open SDE database from disk")
+    } else {
+        SdeLoader::in_memory_with_fixtures()
+            .expect("Failed to initialize in-memory SDE test fixtures")
+    }
+}
+
+#[test]
+fn test_sde_in_memory_fixtures_complete() {
+    let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to initialize in-memory fixtures");
+    assert_eq!(sde.get_system_id("Jita"), Some(30000142));
+    assert_eq!(sde.get_system_name(30000142), Some("Jita".to_string()));
+    assert_eq!(
+        sde.get_station_name(60003760),
+        Some("Jita IV - Moon 4 - Caldari Navy Assembly Plant".to_string())
+    );
+    assert_eq!(sde.get_item_info(34).map(|i| i.name), Some("Tritanium".to_string()));
+    assert_eq!(sde.get_item_info(9850).map(|i| i.name), Some("Spirits".to_string()));
+}
+
 #[tokio::test]
 async fn test_sde_search_systems_autocomplete() {
-    let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
-    if !sde_path.exists() {
-        return;
-    }
-
-    let sde = SdeLoader::open(&sde_path, 30)
-        .await
-        .expect("Failed to open SDE");
+    let sde = get_test_sde().await;
 
     // Exact search / prefix search for "Jit"
     let results = sde.search_systems("Jit", 5);
@@ -139,14 +157,7 @@ async fn test_sde_search_systems_autocomplete() {
 
 #[tokio::test]
 async fn test_sde_station_canonical_name_and_system_resolution() {
-    let sde_path = PathBuf::from("data").join("eve_sde.sqlite");
-    if !sde_path.exists() {
-        return;
-    }
-
-    let sde = SdeLoader::open(&sde_path, 30)
-        .await
-        .expect("Failed to open SDE");
+    let sde = get_test_sde().await;
 
     // 1. Station name canonicalization on read (station 60003760 is Jita 4-4)
     let sta_name = sde

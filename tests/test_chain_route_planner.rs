@@ -1071,3 +1071,103 @@ fn test_chain_different_items_same_destination_allowed() {
     assert_eq!(best.legs[0].pickups[0].cargo_loaded.len(), 2, "Both distinct items delivered to same destination station");
 }
 
+#[test]
+fn test_chain_include_npc_toggle_disabled() {
+    let graph = create_chain_test_graph();
+
+    // Deal 1: NPC trade (e.g. Spirits)
+    let mut d_npc = make_chain_deal(
+        9850,
+        "Spirits (NPC Commodity)",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        50.0,
+        10_000.0,
+        8_000.0, // Very lucrative
+    );
+    d_npc.is_npc_trade = true;
+
+    // Deal 2: Player market deal (e.g. Tritanium)
+    let mut d_player = make_chain_deal(
+        34,
+        "Tritanium (Player Market)",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        50.0,
+        10_000.0,
+        3_000.0,
+    );
+    d_player.is_npc_trade = false;
+
+    // Config with include_npc = false
+    let cfg = ChainConfig {
+        home_system: 30000142,
+        max_legs: 1,
+        include_npc: false,
+        ship_max_budget: 50_000.0,
+        ship_max_volume: 500.0,
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[d_npc, d_player], &graph, &cfg);
+    assert!(!routes.is_empty(), "Should find route with player deal");
+    let best = &routes[0];
+    assert_eq!(best.legs[0].sell.cargo_sold.len(), 1);
+    assert_eq!(
+        best.legs[0].sell.cargo_sold[0].deal.item_name,
+        "Tritanium (Player Market)",
+        "NPC trade must be completely excluded when include_npc is false"
+    );
+}
+
+#[test]
+fn test_chain_include_npc_toggle_enabled() {
+    let graph = create_chain_test_graph();
+
+    let mut d_npc = make_chain_deal(
+        9850,
+        "Spirits (NPC Commodity)",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        50.0,
+        10_000.0,
+        8_000.0, // More lucrative than player deal
+    );
+    d_npc.is_npc_trade = true;
+
+    let mut d_player = make_chain_deal(
+        34,
+        "Tritanium (Player Market)",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        50.0,
+        10_000.0,
+        3_000.0,
+    );
+    d_player.is_npc_trade = false;
+
+    // Config with include_npc = true (default)
+    let cfg = ChainConfig {
+        home_system: 30000142,
+        max_legs: 1,
+        include_npc: true,
+        ship_max_budget: 50_000.0,
+        ship_max_volume: 50.0, // Only fits 1 deal
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[d_npc, d_player], &graph, &cfg);
+    assert!(!routes.is_empty(), "Should find route");
+    let best = &routes[0];
+    assert_eq!(
+        best.legs[0].sell.cargo_sold[0].deal.item_name,
+        "Spirits (NPC Commodity)",
+        "Higher profit NPC commodity should be chosen when include_npc is true"
+    );
+}
+
+

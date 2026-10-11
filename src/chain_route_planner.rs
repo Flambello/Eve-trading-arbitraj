@@ -72,6 +72,7 @@ pub struct ChainConfig {
     pub ship_max_volume: f64,
     pub ship_max_budget: f64,
     pub safe_only: bool,
+    pub include_npc: bool, // Controls whether NPC trade goods are considered (default: true)
 }
 
 impl Default for ChainConfig {
@@ -86,6 +87,7 @@ impl Default for ChainConfig {
             ship_max_volume: 60_000.0,
             ship_max_budget: 500_000_000.0,
             safe_only: true,
+            include_npc: true,
         }
     }
 }
@@ -427,10 +429,13 @@ pub fn find_chain_routes(
         return Vec::new();
     }
 
-    // 1. Pre-filter deals by highsec if safe_only and 15% ROI invariant
+    // 1. Pre-filter deals by highsec if safe_only, 10% ROI invariant, and NPC commodity toggle
     let valid_deals: Vec<&ArbitrageDeal> = deals
         .iter()
         .filter(|d| {
+            if !config.include_npc && d.is_npc_trade {
+                return false;
+            }
             if config.safe_only
                 && (!graph.is_highsec(d.source_system_id) || !graph.is_highsec(d.dest_system_id))
             {

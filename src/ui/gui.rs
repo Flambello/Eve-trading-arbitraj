@@ -4,6 +4,7 @@ use crate::arbitrage::{
 use crate::config::{BIG_HAULER, SMALL_HAULER};
 use crate::esi::{fetch_markets, EsiClient};
 use crate::graph::SystemGraph;
+use crate::hub_arbitrage::{self, CoreHub};
 use crate::route_planner::{plan_route, RouteStop, TradeRoute};
 use crate::sde::SdeLoader;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
@@ -45,6 +46,7 @@ enum ActiveTab {
     Manifests,
     Route,
     ChainRoute,
+    HubArbitrage,
     Settings,
 }
 
@@ -274,6 +276,7 @@ pub struct DesktopApp {
     // ── Chain Route Planner tab ──────────────────────────────────
     chain_max_legs: usize,
     chain_max_dest_loads: usize,
+    chain_include_npc: bool,
     chain_detour_enabled: bool,
     chain_max_detour: u32,
     chain_is_running: bool,
@@ -282,6 +285,18 @@ pub struct DesktopApp {
     chain_rx: Receiver<ChainSearchResult>,
     chain_tx: Sender<ChainSearchResult>,
     chain_flowchart_split: bool,
+
+    // ── Core Hub Arbitrage tab ────────────────────────────────────
+    hub_source_filter: Option<crate::hub_arbitrage::CoreHub>,
+    hub_dest_filter: Option<crate::hub_arbitrage::CoreHub>,
+    hub_include_npc: bool,
+    hub_major_stations_only: bool,
+    hub_min_profit_m: f64,
+    hub_search_query: String,
+    hub_sort_by: DealSortBy,
+    hub_sort_descending: bool,
+    hub_packed_manifest: Option<crate::chain_route_planner::ConstrainedPackResult>,
+    hub_show_manifest_card: bool,
 
     // ── Responsive Layout & UI Scaling ───────────────────────────
     pub ui_scale: f32,
@@ -404,6 +419,7 @@ impl DesktopApp {
 
             chain_max_legs: 4,
             chain_max_dest_loads: 2,
+            chain_include_npc: true,
             chain_detour_enabled: true,
             chain_max_detour: 2,
             chain_is_running: false,
@@ -412,6 +428,17 @@ impl DesktopApp {
             chain_rx,
             chain_tx,
             chain_flowchart_split: true,
+
+            hub_source_filter: Some(crate::hub_arbitrage::CoreHub::Jita),
+            hub_dest_filter: Some(crate::hub_arbitrage::CoreHub::Amarr),
+            hub_include_npc: true,
+            hub_major_stations_only: false,
+            hub_min_profit_m: 0.5,
+            hub_search_query: String::new(),
+            hub_sort_by: DealSortBy::ProfitPerJump,
+            hub_sort_descending: true,
+            hub_packed_manifest: None,
+            hub_show_manifest_card: false,
 
             custom_cargo_vol: 60_000.0,
             custom_budget_isk: 500_000_000.0,
@@ -510,6 +537,7 @@ impl DesktopApp {
 
             chain_max_legs: 4,
             chain_max_dest_loads: 2,
+            chain_include_npc: true,
             chain_detour_enabled: true,
             chain_max_detour: 2,
             chain_is_running: false,
@@ -518,6 +546,17 @@ impl DesktopApp {
             chain_rx,
             chain_tx,
             chain_flowchart_split: true,
+
+            hub_source_filter: Some(crate::hub_arbitrage::CoreHub::Jita),
+            hub_dest_filter: Some(crate::hub_arbitrage::CoreHub::Amarr),
+            hub_include_npc: true,
+            hub_major_stations_only: false,
+            hub_min_profit_m: 0.5,
+            hub_search_query: String::new(),
+            hub_sort_by: DealSortBy::ProfitPerJump,
+            hub_sort_descending: true,
+            hub_packed_manifest: None,
+            hub_show_manifest_card: false,
 
             custom_cargo_vol: 60_000.0,
             custom_budget_isk: 500_000_000.0,
@@ -1045,6 +1084,7 @@ impl eframe::App for DesktopApp {
                 ActiveTab::Manifests => self.render_manifests_tab(ui),
                 ActiveTab::Route => self.render_route_tab(ui),
                 ActiveTab::ChainRoute => self.render_chain_route_tab(ui),
+                ActiveTab::HubArbitrage => self.render_hub_arbitrage_tab(ui),
                 ActiveTab::Settings => self.render_settings_tab(ui),
             });
     }
@@ -1997,6 +2037,19 @@ impl DesktopApp {
     }
 
     fn render_tab_bar(&mut self, ui: &mut egui::Ui) {
+        let hub_count = crate::hub_arbitrage::filter_hub_deals(
+            &self.deals,
+            &crate::hub_arbitrage::HubFilterOptions {
+                source_hub: self.hub_source_filter,
+                dest_hub: self.hub_dest_filter,
+                include_npc: self.hub_include_npc,
+                major_stations_only: self.hub_major_stations_only,
+                min_profit: self.hub_min_profit_m * 1_000_000.0,
+                search_query: self.hub_search_query.clone(),
+            },
+        )
+        .len();
+
         ui.horizontal(|ui| {
             let tabs: &[(ActiveTab, String)] = &[
                 (ActiveTab::Deals, format!("📊 Deals ({})", self.deals.len())),
@@ -2014,6 +2067,10 @@ impl DesktopApp {
                 (
                     ActiveTab::ChainRoute,
                     format!("🔗 Chain Route ({})", self.chain_results.len()),
+                ),
+                (
+                    ActiveTab::HubArbitrage,
+                    format!("🏛️ Hub Arbitrage ({})", hub_count),
                 ),
                 (ActiveTab::Settings, "⚙️ Settings & Fees".to_string()),
             ];
@@ -3792,6 +3849,7 @@ impl DesktopApp {
                 ship.max_budget
             },
             safe_only: self.safe_only,
+            include_npc: self.chain_include_npc,
         };
 
         thread::spawn(move || {
@@ -3856,6 +3914,12 @@ impl DesktopApp {
                                 .clamp_to_range(true),
                         )
                         .on_hover_text("Max deliveries of the same commodity to a single destination station (EVE NPC dynamic pricing drops after 2 loads)");
+
+                        ui.separator();
+
+                        // NPC commodities toggle
+                        ui.checkbox(&mut self.chain_include_npc, RichText::new("NPC Commodities").strong())
+                            .on_hover_text("Include seeded NPC trade commodities (e.g. Spirits, Wheat, Toxic Waste). When unchecked, only player market orders are considered.");
 
                         ui.separator();
 
@@ -4982,6 +5046,790 @@ impl DesktopApp {
                 .size(13.0)
                 .color(Color32::from_rgb(180, 215, 255)),
         );
+    }
+
+    fn render_hub_arbitrage_tab(&mut self, ui: &mut egui::Ui) {
+        if self.deals.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.heading(
+                    RichText::new("No Market Deals Loaded")
+                        .size(22.0)
+                        .color(Color32::from_rgb(150, 170, 200)),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Scan the 5 empire trade hubs to discover inter-hub arbitrage opportunities.")
+                        .size(14.0)
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(16.0);
+                let btn = egui::Button::new(
+                    RichText::new("⚡ Scan All 5 Core Hubs")
+                        .size(16.0)
+                        .color(Color32::BLACK)
+                        .strong(),
+                )
+                .fill(Color32::from_rgb(0, 220, 170))
+                .min_size(Vec2::new(260.0, 42.0));
+
+                if ui.add(btn).clicked() {
+                    self.region_the_forge = true;
+                    self.region_domain = true;
+                    self.region_sinq_laison = true;
+                    self.region_heimatar = true;
+                    self.region_metropolis = true;
+                    self.start_scan();
+                }
+            });
+            return;
+        }
+
+        let mut do_scan_all = false;
+        let mut do_pack_cargo = false;
+        let mut do_export_csv = false;
+        let mut action_toast: Option<String> = None;
+        let mut toggle_select: Option<usize> = None;
+        let mut change_sort: Option<(DealSortBy, bool)> = None;
+
+        // 1. Controls Header Card
+        egui::Frame::none()
+            .fill(Color32::from_rgb(20, 28, 46))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 200, 255)))
+            .rounding(6.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        RichText::new("🏛️ Core Hub Arbitrage — Inter-Hub Direct Trade Scout")
+                            .color(Color32::from_rgb(0, 220, 255))
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new("Trade directly between EVE's 5 major empire trade hubs")
+                            .color(Color32::from_rgb(140, 175, 215))
+                            .size(12.0),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                // Row 1: Hub Corridor Selectors & Scan/Pack/Export buttons
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Origin Hub:").strong());
+                    let src_name = self.hub_source_filter.map(|h| h.name()).unwrap_or("Any Hub (Wildcard)");
+                    egui::ComboBox::from_id_source("hub_source_combo")
+                        .selected_text(src_name)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.hub_source_filter, None, "Any Hub (Wildcard)");
+                            for &hub in &CoreHub::ALL {
+                                ui.selectable_value(
+                                    &mut self.hub_source_filter,
+                                    Some(hub),
+                                    format!("{} ({})", hub.name(), hub.region_name()),
+                                );
+                            }
+                        });
+
+                    if ui.button(RichText::new("⇄ Swap").strong()).on_hover_text("Swap origin and destination hubs").clicked() {
+                        std::mem::swap(&mut self.hub_source_filter, &mut self.hub_dest_filter);
+                    }
+
+                    ui.label(RichText::new("Destination Hub:").strong());
+                    let dst_name = self.hub_dest_filter.map(|h| h.name()).unwrap_or("Any Hub (Wildcard)");
+                    egui::ComboBox::from_id_source("hub_dest_combo")
+                        .selected_text(dst_name)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.hub_dest_filter, None, "Any Hub (Wildcard)");
+                            for &hub in &CoreHub::ALL {
+                                ui.selectable_value(
+                                    &mut self.hub_dest_filter,
+                                    Some(hub),
+                                    format!("{} ({})", hub.name(), hub.region_name()),
+                                );
+                            }
+                        });
+
+                    ui.separator();
+
+                    if ui.button(RichText::new("⚡ Scan All 5 Hubs").strong().color(Color32::from_rgb(0, 240, 180)))
+                        .on_hover_text("Select all 5 trade hub regions (Forge, Domain, Sinq Laison, Heimatar, Metropolis) and fetch fresh market orders")
+                        .clicked()
+                    {
+                        do_scan_all = true;
+                    }
+
+                    if ui.button(RichText::new("📦 Pack Ship Cargo").strong().color(Color32::from_rgb(255, 215, 0)))
+                        .on_hover_text("Use knapsack optimization to pack your active ship cargo with the most profitable items in this corridor")
+                        .clicked()
+                    {
+                        do_pack_cargo = true;
+                    }
+
+                    if ui.button(RichText::new("📥 Export CSV").color(Color32::LIGHT_GRAY))
+                        .on_hover_text("Export current filtered hub deals to ./hub_arbitrage_export.csv and clipboard")
+                        .clicked()
+                    {
+                        do_export_csv = true;
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // Row 2: Secondary Filters & Search
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut self.hub_include_npc, RichText::new("NPC Commodities").strong())
+                        .on_hover_text("Include seeded NPC trade commodities (e.g. Spirits, Wheat). When unchecked, only player market orders are considered.");
+
+                    ui.separator();
+
+                    ui.checkbox(&mut self.hub_major_stations_only, RichText::new("Major Stations Only").strong())
+                        .on_hover_text("Restrict trades strictly to the primary trade stations (Jita 4-4, Amarr VIII, Dodixie IX, Rens VI, Hek VIII). Excludes secondary stations in these systems.");
+
+                    ui.separator();
+
+                    ui.label(RichText::new("Min Profit:").strong());
+                    ui.add(
+                        egui::Slider::new(&mut self.hub_min_profit_m, 0.1..=50.0)
+                            .suffix("M ISK")
+                            .step_by(0.5)
+                            .clamp_to_range(true),
+                    );
+
+                    ui.separator();
+
+                    ui.label(RichText::new("🔍 Search:").strong());
+                    ui.add(egui::TextEdit::singleline(&mut self.hub_search_query).desired_width(160.0))
+                        .on_hover_text("Search by item name or station name");
+                    if !self.hub_search_query.is_empty() && ui.button("✖ Clear").clicked() {
+                        self.hub_search_query.clear();
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
+        if do_scan_all {
+            self.region_the_forge = true;
+            self.region_domain = true;
+            self.region_sinq_laison = true;
+            self.region_heimatar = true;
+            self.region_metropolis = true;
+            self.start_scan();
+            return;
+        }
+
+        let opts = hub_arbitrage::HubFilterOptions {
+            source_hub: self.hub_source_filter,
+            dest_hub: self.hub_dest_filter,
+            include_npc: self.hub_include_npc,
+            major_stations_only: self.hub_major_stations_only,
+            min_profit: self.hub_min_profit_m * 1_000_000.0,
+            search_query: self.hub_search_query.clone(),
+        };
+
+        let mut filtered_deals: Vec<crate::arbitrage::ArbitrageDeal> =
+            hub_arbitrage::filter_hub_deals(&self.deals, &opts)
+                .into_iter()
+                .cloned()
+                .collect();
+
+        // Sorting
+        match self.hub_sort_by {
+            DealSortBy::ProfitPerJump => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.profit_per_jump
+                        .partial_cmp(&a.profit_per_jump)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.profit_per_jump
+                        .partial_cmp(&b.profit_per_jump)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::TotalProfit => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.net_profit
+                        .partial_cmp(&a.net_profit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.net_profit
+                        .partial_cmp(&b.net_profit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::RoiPct => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.net_profit_pct
+                        .partial_cmp(&a.net_profit_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.net_profit_pct
+                        .partial_cmp(&b.net_profit_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::ProfitPerM3 => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.profit_per_m3
+                        .partial_cmp(&a.profit_per_m3)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.profit_per_m3
+                        .partial_cmp(&b.profit_per_m3)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::Jumps => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.total_jumps.cmp(&a.total_jumps)
+                } else {
+                    a.total_jumps.cmp(&b.total_jumps)
+                }
+            }),
+            DealSortBy::Cost => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.capital_required
+                        .partial_cmp(&a.capital_required)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.capital_required
+                        .partial_cmp(&b.capital_required)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::ItemName => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.item_name.cmp(&a.item_name)
+                } else {
+                    a.item_name.cmp(&b.item_name)
+                }
+            }),
+            DealSortBy::BuySystem => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.source_system_name.cmp(&a.source_system_name)
+                } else {
+                    a.source_system_name.cmp(&b.source_system_name)
+                }
+            }),
+            DealSortBy::BuyPrice => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.buy_price
+                        .partial_cmp(&a.buy_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.buy_price
+                        .partial_cmp(&b.buy_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::SellSystem => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.dest_system_name.cmp(&a.dest_system_name)
+                } else {
+                    a.dest_system_name.cmp(&b.dest_system_name)
+                }
+            }),
+            DealSortBy::SellPrice => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.sell_price
+                        .partial_cmp(&a.sell_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.sell_price
+                        .partial_cmp(&b.sell_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::Quantity => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.quantity.cmp(&a.quantity)
+                } else {
+                    a.quantity.cmp(&b.quantity)
+                }
+            }),
+            DealSortBy::Volume => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.volume_used
+                        .partial_cmp(&a.volume_used)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.volume_used
+                        .partial_cmp(&b.volume_used)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+        }
+
+        if do_pack_cargo {
+            let ship = self.current_ship();
+            let deal_refs: Vec<&ArbitrageDeal> = filtered_deals.iter().collect();
+            let packed = hub_arbitrage::pack_hub_corridor_manifest(
+                &deal_refs,
+                ship.max_volume,
+                ship.max_budget,
+            );
+            let count = packed.packed.len();
+            self.hub_packed_manifest = Some(packed);
+            self.hub_show_manifest_card = true;
+            action_toast = Some(format!("Packed {} items into ship cargo manifest!", count));
+        }
+
+        if do_export_csv {
+            let deals_for_csv: Vec<(usize, &ArbitrageDeal)> = filtered_deals
+                .iter()
+                .enumerate()
+                .collect();
+            let csv_str = export_deals_to_csv(&deals_for_csv);
+            let _ = std::fs::write("hub_arbitrage_export.csv", &csv_str);
+            copy_to_clipboard(ui, csv_str);
+            action_toast = Some(format!(
+                "Exported {} hub deals to ./hub_arbitrage_export.csv & copied to clipboard!",
+                filtered_deals.len()
+            ));
+        }
+
+        // 2. Corridor Telemetry & KPI Banner
+        let total_pot_profit: f64 = filtered_deals.iter().map(|d| d.net_profit).sum();
+        let total_pot_capital: f64 = filtered_deals.iter().map(|d| d.capital_required).sum();
+        let total_pot_vol: f64 = filtered_deals.iter().map(|d| d.volume_used).sum();
+        let jumps_str = if let (Some(s), Some(d), Some(g)) = (self.hub_source_filter, self.hub_dest_filter, &self.graph) {
+            let j = g.jump_count(s.system_id(), d.system_id(), self.safe_only);
+            format!("{} jumps (highsec safe)", j)
+        } else {
+            "Variable jumps".to_string()
+        };
+
+        egui::Frame::none()
+            .fill(Color32::from_rgb(16, 24, 38))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(28, 42, 65)))
+            .rounding(4.0)
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let corridor_badge = format!(
+                        "Corridor: {} ➔ {}",
+                        self.hub_source_filter.map(|h| h.name()).unwrap_or("Any Hub"),
+                        self.hub_dest_filter.map(|h| h.name()).unwrap_or("Any Hub"),
+                    );
+                    ui.label(RichText::new(corridor_badge).color(Color32::from_rgb(0, 220, 255)).strong());
+                    ui.separator();
+                    ui.label(RichText::new(format!("Distance: {}", jumps_str)).color(Color32::LIGHT_GRAY));
+                    ui.separator();
+                    ui.label(RichText::new(format!("Deals: {}", filtered_deals.len())).color(Color32::WHITE).strong());
+                    ui.separator();
+                    ui.label(RichText::new(format!("Total Potential Profit: +{:.2}M ISK", total_pot_profit / 1_000_000.0)).color(Color32::from_rgb(0, 240, 160)).strong());
+                    ui.separator();
+                    ui.label(RichText::new(format!("Capital: {:.2}M ISK", total_pot_capital / 1_000_000.0)).color(Color32::GRAY));
+                    ui.separator();
+                    ui.label(RichText::new(format!("Volume: {:.1} m³", total_pot_vol)).color(Color32::GRAY));
+                });
+            });
+
+        ui.add_space(6.0);
+
+        // 3. Packed Cargo Manifest Card (if active)
+        let mut close_manifest = false;
+        if self.hub_show_manifest_card {
+            if let Some(manifest) = &self.hub_packed_manifest {
+                let ship = self.current_ship();
+                let ship_is_big = self.ship_is_big;
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(18, 30, 48))
+                    .stroke(Stroke::new(1.5_f32, Color32::from_rgb(0, 230, 180)))
+                    .rounding(6.0)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let vol_pct = (manifest.total_volume / ship.max_volume * 100.0).min(100.0);
+                        let cap_pct = (manifest.total_capital / ship.max_budget * 100.0).min(100.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("📦 Optimized Ship Cargo Manifest")
+                                    .size(15.0)
+                                    .color(Color32::from_rgb(0, 230, 180))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "({}: {:.0} m³ / {:.0}M ISK)",
+                                    if ship_is_big { "Big Hauler" } else { "Small Hauler" },
+                                    ship.max_volume,
+                                    ship.max_budget / 1_000_000.0
+                                ))
+                                .color(Color32::LIGHT_GRAY)
+                                .size(12.0),
+                            );
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(RichText::new("✖ Close Manifest").color(Color32::GRAY)).clicked() {
+                                    close_manifest = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(6.0);
+
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(format!("Items: {}", manifest.packed.len())).strong());
+                            ui.separator();
+                            ui.label(RichText::new(format!("Volume Used: {:.1} / {:.0} m³ ({:.1}%)", manifest.total_volume, ship.max_volume, vol_pct)).strong());
+                            ui.separator();
+                            ui.label(RichText::new(format!("Capital Spent: {:.2} / {:.0}M ISK ({:.1}%)", manifest.total_capital / 1_000_000.0, ship.max_budget / 1_000_000.0, cap_pct)).strong());
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("Realized Net Profit: +{:.2}M ISK", manifest.total_profit / 1_000_000.0))
+                                    .color(Color32::from_rgb(0, 255, 170))
+                                    .size(13.5)
+                                    .strong(),
+                            );
+                        });
+
+                        ui.add_space(8.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(140.0)
+                            .id_source("hub_manifest_scroll")
+                            .show(ui, |ui| {
+                                for (slot_idx, slot) in manifest.packed.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{}.", slot_idx + 1)).color(Color32::GRAY));
+                                        ui.label(RichText::new(&slot.deal.item_name).color(Color32::WHITE).strong());
+                                        ui.label(format!("Qty: {} ({:.1} m³)", slot.deal.quantity, slot.volume));
+                                        ui.label(format!("Buy: {:.2}M", slot.capital / 1_000_000.0));
+                                        ui.label(
+                                            RichText::new(format!("+{:.2}M ISK ({:.1}%)", slot.net_profit / 1_000_000.0, slot.deal.net_profit_pct))
+                                                .color(Color32::from_rgb(0, 240, 150))
+                                                .strong(),
+                                        );
+                                        ui.label(RichText::new(format!("➔ {}", slot.sell_name)).color(Color32::LIGHT_GRAY));
+
+                                        if ui.small_button("📋 Item").clicked() {
+                                            copy_to_clipboard(ui, slot.deal.item_name.clone());
+                                            action_toast = Some(format!("Copied '{}' to clipboard", slot.deal.item_name));
+                                        }
+                                        if ui.small_button("📋 Buy").clicked() {
+                                            copy_to_clipboard(ui, slot.deal.source_station_name.clone());
+                                            action_toast = Some(format!("Copied '{}' to clipboard", slot.deal.source_station_name));
+                                        }
+                                        if ui.small_button("📋 Sell").clicked() {
+                                            copy_to_clipboard(ui, slot.deal.dest_station_name.clone());
+                                            action_toast = Some(format!("Copied '{}' to clipboard", slot.deal.dest_station_name));
+                                        }
+                                    });
+                                }
+                            });
+                    });
+                ui.add_space(6.0);
+            }
+        }
+        if close_manifest {
+            self.hub_show_manifest_card = false;
+        }
+
+        // 4. Deals Table Grid
+        if filtered_deals.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.label(
+                    RichText::new("No hub deals match the selected criteria.")
+                        .size(16.0)
+                        .color(Color32::from_rgb(160, 180, 205)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Try selecting 'Any Hub (Wildcard)', enabling NPC Commodities, lowering Min Profit, or clearing the search query.")
+                        .color(Color32::GRAY),
+                );
+            });
+        } else {
+            let current_sort = self.hub_sort_by;
+            let is_desc = self.hub_sort_descending;
+            let current_selected_idx = self.selected_deal_idx;
+
+            let mut render_header_btn = |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
+                let is_active = current_sort == sort_target;
+                let arrow = if is_active {
+                    if is_desc { " ▼" } else { " ▲" }
+                } else {
+                    ""
+                };
+                let label_text = format!("{}{}", title, arrow);
+                let text_color = if is_active {
+                    Color32::from_rgb(255, 215, 0)
+                } else {
+                    Color32::from_rgb(255, 205, 0)
+                };
+                let resp = ui.add(
+                    egui::Button::new(RichText::new(label_text).color(text_color).strong())
+                        .frame(false),
+                );
+                if resp.clicked() {
+                    ui.ctx().request_repaint();
+                    if is_active {
+                        change_sort = Some((sort_target, !is_desc));
+                    } else {
+                        let default_desc = !matches!(
+                            sort_target,
+                            DealSortBy::ItemName
+                                | DealSortBy::BuySystem
+                                | DealSortBy::SellSystem
+                                | DealSortBy::Jumps
+                                | DealSortBy::Cost
+                        );
+                        change_sort = Some((sort_target, default_desc));
+                    }
+                }
+            };
+
+            let actions_w = 120.0;
+            let rank_w = 38.0;
+
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .min_scrolled_height(0.0)
+                .column(Column::exact(rank_w)) // #
+                .column(Column::remainder().at_least(140.0).resizable(true)) // ITEM
+                .column(Column::initial(150.0).at_least(110.0).resizable(true)) // BUY HUB & STATION
+                .column(Column::initial(80.0).at_least(65.0).resizable(true)) // BUY / ITEM
+                .column(Column::initial(150.0).at_least(110.0).resizable(true)) // SELL HUB & STATION
+                .column(Column::initial(80.0).at_least(65.0).resizable(true)) // SELL / ITEM
+                .column(Column::initial(50.0).at_least(40.0).resizable(true)) // QTY
+                .column(Column::initial(60.0).at_least(45.0).resizable(true)) // VOL
+                .column(Column::initial(70.0).at_least(55.0).resizable(true)) // COST
+                .column(Column::initial(85.0).at_least(75.0).resizable(true)) // NET PROFIT
+                .column(Column::initial(55.0).at_least(45.0).resizable(true)) // NET ROI
+                .column(Column::initial(45.0).at_least(35.0).resizable(true)) // JUMPS
+                .column(Column::initial(80.0).at_least(70.0).resizable(true)) // PROFIT/JUMP
+                .column(Column::exact(actions_w)) // ACTIONS
+                .header(24.0, |mut header| {
+                    header.col(|ui| { ui.label(RichText::new("#").color(Color32::from_rgb(255, 205, 0)).strong()); });
+                    header.col(|ui| { render_header_btn(ui, "ITEM", DealSortBy::ItemName); });
+                    header.col(|ui| { render_header_btn(ui, "BUY HUB / STATION", DealSortBy::BuySystem); });
+                    header.col(|ui| { render_header_btn(ui, "BUY / ITEM", DealSortBy::BuyPrice); });
+                    header.col(|ui| { render_header_btn(ui, "SELL HUB / STATION", DealSortBy::SellSystem); });
+                    header.col(|ui| { render_header_btn(ui, "SELL / ITEM", DealSortBy::SellPrice); });
+                    header.col(|ui| { render_header_btn(ui, "QTY", DealSortBy::Quantity); });
+                    header.col(|ui| { render_header_btn(ui, "VOL (m³)", DealSortBy::Volume); });
+                    header.col(|ui| { render_header_btn(ui, "COST (M)", DealSortBy::Cost); });
+                    header.col(|ui| { render_header_btn(ui, "NET PROFIT", DealSortBy::TotalProfit); });
+                    header.col(|ui| { render_header_btn(ui, "NET ROI", DealSortBy::RoiPct); });
+                    header.col(|ui| { render_header_btn(ui, "JUMPS", DealSortBy::Jumps); });
+                    header.col(|ui| { render_header_btn(ui, "PROFIT/JUMP", DealSortBy::ProfitPerJump); });
+                    header.col(|ui| { ui.label(RichText::new("ACTIONS").color(Color32::from_rgb(255, 205, 0)).strong()); });
+                })
+                .body(|mut body| {
+                    for (display_rank, deal) in filtered_deals.iter().enumerate() {
+                        let orig_idx = self.deals.iter().position(|d| {
+                            d.type_id == deal.type_id
+                                && d.source_order_id == deal.source_order_id
+                                && d.dest_order_id == deal.dest_order_id
+                        });
+                        let is_selected = orig_idx.is_some() && orig_idx == current_selected_idx;
+
+                        body.row(28.0, |mut row| {
+                            row.set_selected(is_selected);
+
+                            // 1: Rank badge
+                            row.col(|ui| {
+                                let rank_color = match display_rank {
+                                    0 => Color32::from_rgb(255, 215, 0),
+                                    1 => Color32::from_rgb(200, 215, 230),
+                                    2 => Color32::from_rgb(205, 127, 50),
+                                    _ => Color32::GRAY,
+                                };
+                                let rank_resp = egui::Frame::none()
+                                    .fill(Color32::from_rgba_unmultiplied(
+                                        rank_color.r(), rank_color.g(), rank_color.b(), 28,
+                                    ))
+                                    .stroke(Stroke::new(1.0_f32, rank_color))
+                                    .rounding(3.0)
+                                    .inner_margin(4.0)
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(format!("#{}", display_rank + 1))
+                                                .color(rank_color)
+                                                .strong()
+                                                .size(12.0),
+                                        );
+                                    });
+                                if rank_resp.response.interact(egui::Sense::click()).clicked() {
+                                    if let Some(idx) = orig_idx {
+                                        toggle_select = Some(idx);
+                                    }
+                                }
+                            });
+
+                            // 2: Item Name
+                            row.col(|ui| {
+                                let item_color = if is_selected {
+                                    Color32::from_rgb(0, 230, 255)
+                                } else {
+                                    Color32::WHITE
+                                };
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(is_selected, RichText::new(&deal.item_name).color(item_color).strong()).clicked() {
+                                        if let Some(idx) = orig_idx {
+                                            toggle_select = Some(idx);
+                                        }
+                                    }
+                                    if deal.is_npc_trade {
+                                        ui.label(RichText::new("NPC").color(Color32::from_rgb(255, 180, 0)).size(10.0));
+                                    }
+                                });
+                            });
+
+                            // Helper closure for hub badge color
+                            let hub_badge_color = |hub: Option<CoreHub>| match hub {
+                                Some(CoreHub::Jita) => Color32::from_rgb(0, 190, 255),
+                                Some(CoreHub::Amarr) => Color32::from_rgb(255, 205, 50),
+                                Some(CoreHub::Dodixie) => Color32::from_rgb(50, 220, 120),
+                                Some(CoreHub::Rens) => Color32::from_rgb(240, 80, 60),
+                                Some(CoreHub::Hek) => Color32::from_rgb(240, 130, 60),
+                                None => Color32::GRAY,
+                            };
+
+                            // 3: Buy Hub & Station
+                            row.col(|ui| {
+                                let src_hub = CoreHub::from_system_id(deal.source_system_id);
+                                let col = hub_badge_color(src_hub);
+                                ui.horizontal(|ui| {
+                                    if let Some(h) = src_hub {
+                                        ui.label(RichText::new(format!("[{}]", h.name())).color(col).strong());
+                                    }
+                                    let st_label = if deal.source_station_name.len() > 22 {
+                                        format!("{}…", &deal.source_station_name[..20])
+                                    } else {
+                                        deal.source_station_name.clone()
+                                    };
+                                    ui.label(RichText::new(st_label).color(Color32::LIGHT_GRAY))
+                                        .on_hover_text(&deal.source_station_name);
+                                });
+                            });
+
+                            // 4: Buy / Item
+                            row.col(|ui| {
+                                ui.label(RichText::new(format!("{:.2}", deal.buy_price)).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 5: Sell Hub & Station
+                            row.col(|ui| {
+                                let dst_hub = CoreHub::from_system_id(deal.dest_system_id);
+                                let col = hub_badge_color(dst_hub);
+                                ui.horizontal(|ui| {
+                                    if let Some(h) = dst_hub {
+                                        ui.label(RichText::new(format!("[{}]", h.name())).color(col).strong());
+                                    }
+                                    let st_label = if deal.dest_station_name.len() > 22 {
+                                        format!("{}…", &deal.dest_station_name[..20])
+                                    } else {
+                                        deal.dest_station_name.clone()
+                                    };
+                                    ui.label(RichText::new(st_label).color(Color32::LIGHT_GRAY))
+                                        .on_hover_text(&deal.dest_station_name);
+                                });
+                            });
+
+                            // 6: Sell / Item
+                            row.col(|ui| {
+                                ui.label(RichText::new(format!("{:.2}", deal.sell_price)).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 7: QTY
+                            row.col(|ui| {
+                                ui.label(RichText::new(deal.quantity.to_string()).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 8: VOL
+                            row.col(|ui| {
+                                ui.label(RichText::new(format!("{:.1}", deal.volume_used)).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 9: COST (M)
+                            row.col(|ui| {
+                                ui.label(RichText::new(format!("{:.2}M", deal.capital_required / 1_000_000.0)).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 10: NET PROFIT
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!("+{:.2}M ISK", deal.net_profit / 1_000_000.0))
+                                        .color(Color32::from_rgb(0, 240, 150))
+                                        .strong(),
+                                );
+                            });
+
+                            // 11: NET ROI
+                            row.col(|ui| {
+                                let roi_col = if deal.is_high_roi() {
+                                    Color32::from_rgb(255, 140, 0)
+                                } else {
+                                    Color32::from_rgb(0, 255, 180)
+                                };
+                                ui.label(
+                                    RichText::new(format!("+{:.1}%", deal.net_profit_pct))
+                                        .color(roi_col)
+                                        .strong(),
+                                );
+                            });
+
+                            // 12: JUMPS
+                            row.col(|ui| {
+                                let jumps_tag = format!("{}+{}={}", deal.jumps_from_home, deal.jumps_source_dest, deal.total_jumps);
+                                ui.label(RichText::new(jumps_tag).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 13: PROFIT/JUMP
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{:.2}M", deal.profit_per_jump / 1_000_000.0))
+                                        .color(Color32::from_rgb(255, 215, 0))
+                                        .strong(),
+                                );
+                            });
+
+                            // 14: ACTIONS
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("📋 Item").on_hover_text("Copy item name to clipboard").clicked() {
+                                        copy_to_clipboard(ui, deal.item_name.clone());
+                                        action_toast = Some(format!("Copied item '{}' to clipboard!", deal.item_name));
+                                    }
+                                    if ui.small_button("📋 Buy").on_hover_text(format!("Copy buy station '{}' to clipboard", deal.source_station_name)).clicked() {
+                                        copy_to_clipboard(ui, deal.source_station_name.clone());
+                                        action_toast = Some(format!("Copied buy station '{}' to clipboard!", deal.source_station_name));
+                                    }
+                                    if ui.small_button("📋 Sell").on_hover_text(format!("Copy sell station '{}' to clipboard", deal.dest_station_name)).clicked() {
+                                        copy_to_clipboard(ui, deal.dest_station_name.clone());
+                                        action_toast = Some(format!("Copied sell station '{}' to clipboard!", deal.dest_station_name));
+                                    }
+                                });
+                            });
+                        });
+                    }
+                });
+        }
+
+        // Apply any deferred UI updates
+        if let Some((new_sort, new_desc)) = change_sort {
+            self.hub_sort_by = new_sort;
+            self.hub_sort_descending = new_desc;
+        }
+
+        if let Some(toggled) = toggle_select {
+            if self.selected_deal_idx == Some(toggled) {
+                self.selected_deal_idx = None;
+            } else {
+                self.selected_deal_idx = Some(toggled);
+                self.dossier_side_panel = true; // Open dossier panel automatically on selection
+            }
+        }
+
+        if let Some(msg) = action_toast {
+            self.set_toast(msg);
+        }
     }
 
     fn render_settings_tab(&mut self, ui: &mut egui::Ui) {

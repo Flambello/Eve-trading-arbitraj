@@ -363,6 +363,10 @@ pub fn calculate_deal(
     let src_security = graph.security(src_system_id).unwrap_or(1.0);
     let dst_security = graph.security(dst_system_id).unwrap_or(1.0);
 
+    // NPC trade detection:
+    // 1. Either order is an NPC seeded order (duration == 365 days in ESI, while player orders max out at 90 days).
+    // 2. The item is an NPC trade commodity (groups 280-284: Wheat, Spirits, Dairy Products, etc.).
+    // Player-to-player trades for insignias, tags, datacores, components, and PI have duration <= 90 and evaluate to false.
     let is_npc_trade =
         src_order.duration == 365 || dst_order.duration == 365 || item.is_npc_trade_commodity();
 

@@ -68,6 +68,7 @@ pub struct ChainConfig {
     pub beam_width: usize,
     pub detour_enabled: bool,
     pub max_detour_jumps: u32,
+    pub max_dest_loads: usize, // Max loads of an item delivered to any destination station (default: 2)
     pub ship_max_volume: f64,
     pub ship_max_budget: f64,
     pub safe_only: bool,
@@ -81,6 +82,7 @@ impl Default for ChainConfig {
             beam_width: 15,
             detour_enabled: true,
             max_detour_jumps: 2,
+            max_dest_loads: 2, // Default: max 2 loads per destination station to prevent supply & demand price collapse
             ship_max_volume: 60_000.0,
             ship_max_budget: 500_000_000.0,
             safe_only: true,
@@ -105,6 +107,8 @@ struct BeamCandidate {
     consumed_source_orders: HashMap<u64, u32>, // source_order_id -> quantity bought across route
     consumed_dest_orders: HashMap<u64, u32>,  // dest_order_id -> quantity sold across route
     exhausted_source_stations: HashSet<(u32, u64)>, // (type_id, source_station_id)
+    delivered_dest_loads: HashMap<(u32, u64), usize>, // (type_id, dest_station_id) -> count of loads delivered across route
+    exhausted_dest_stations: HashSet<(u32, u64)>, // (type_id, dest_station_id) that hit max_dest_loads
 }
 
 /// Calculates extra jumps if routing `from` → `waypoint` → `to` vs `from` → `to` direct.
@@ -137,6 +141,7 @@ pub struct ConstrainedPackResult {
     pub consumed_sources: HashMap<u64, u32>,
     pub consumed_dests: HashMap<u64, u32>,
     pub exhausted_sources: HashSet<(u32, u64)>,
+    pub exhausted_dests: HashSet<(u32, u64)>,
 }
 
 /// Knapsack packing at a single station / system.
@@ -152,6 +157,7 @@ pub fn knapsack_pack(
     let empty_sources = HashMap::new();
     let empty_dests = HashMap::new();
     let empty_exhausted = HashSet::new();
+    let empty_exhausted_dests = HashSet::new();
     let res = knapsack_pack_constrained(
         deals,
         remaining_vol,
@@ -160,6 +166,7 @@ pub fn knapsack_pack(
         &empty_sources,
         &empty_dests,
         &empty_exhausted,
+        &empty_exhausted_dests,
     );
     (
         res.packed,
@@ -170,7 +177,9 @@ pub fn knapsack_pack(
 }
 
 /// Extended knapsack packing that tracks and updates order volume consumption
-/// across all stops and legs of the route, ensuring no source order is over-allocated.
+/// across all stops and legs of the route, ensuring no source order is over-allocated
+/// and no destination station exceeds its market supply and demand load limit.
+#[allow(clippy::too_many_arguments)]
 pub fn knapsack_pack_constrained(
     deals: &[&ArbitrageDeal],
     mut remaining_vol: f64,
@@ -179,10 +188,12 @@ pub fn knapsack_pack_constrained(
     prior_consumed_sources: &HashMap<u64, u32>,
     prior_consumed_dests: &HashMap<u64, u32>,
     prior_exhausted_sources: &HashSet<(u32, u64)>,
+    prior_exhausted_dests: &HashSet<(u32, u64)>,
 ) -> ConstrainedPackResult {
     let mut consumed_sources = prior_consumed_sources.clone();
     let mut consumed_dests = prior_consumed_dests.clone();
     let mut exhausted_sources = prior_exhausted_sources.clone();
+    let exhausted_dests = prior_exhausted_dests.clone();
 
     let mut available: Vec<&&ArbitrageDeal> = deals
         .iter()
@@ -190,6 +201,7 @@ pub fn knapsack_pack_constrained(
             if used_keys.contains(&(d.type_id, d.source_station_id, d.dest_station_id))
                 || d.net_profit_pct < 10.0
                 || exhausted_sources.contains(&(d.type_id, d.source_station_id))
+                || exhausted_dests.contains(&(d.type_id, d.dest_station_id))
             {
                 return false;
             }
@@ -242,8 +254,10 @@ pub fn knapsack_pack_constrained(
             break;
         }
 
-        // Check if this station/type was marked exhausted during packing of prior deals in this stop
-        if exhausted_sources.contains(&(deal.type_id, deal.source_station_id)) {
+        // Check if this source or dest station/type was marked exhausted
+        if exhausted_sources.contains(&(deal.type_id, deal.source_station_id))
+            || exhausted_dests.contains(&(deal.type_id, deal.dest_station_id))
+        {
             continue;
         }
 
@@ -365,6 +379,7 @@ pub fn knapsack_pack_constrained(
         consumed_sources,
         consumed_dests,
         exhausted_sources,
+        exhausted_dests,
     }
 }
 
@@ -467,6 +482,8 @@ pub fn find_chain_routes(
         consumed_source_orders: HashMap::new(),
         consumed_dest_orders: HashMap::new(),
         exhausted_source_stations: HashSet::new(),
+        delivered_dest_loads: HashMap::new(),
+        exhausted_dest_stations: HashSet::new(),
     };
 
     let mut beam = vec![initial_candidate];
@@ -494,6 +511,8 @@ pub fn find_chain_routes(
                 let mut candidate_consumed_sources = candidate.consumed_source_orders.clone();
                 let mut candidate_consumed_dests = candidate.consumed_dest_orders.clone();
                 let mut candidate_exhausted_sources = candidate.exhausted_source_stations.clone();
+                let mut candidate_delivered_dests = candidate.delivered_dest_loads.clone();
+                let mut candidate_exhausted_dests = candidate.exhausted_dest_stations.clone();
                 let mut leg_capital_spent = 0.0;
 
                 // A. Check if we can pack more deals at current system going to target_dest
@@ -507,10 +526,12 @@ pub fn find_chain_routes(
                             &candidate_consumed_sources,
                             &candidate_consumed_dests,
                             &candidate_exhausted_sources,
+                            &candidate_exhausted_dests,
                         );
                         candidate_consumed_sources = pack_res.consumed_sources;
                         candidate_consumed_dests = pack_res.consumed_dests;
                         candidate_exhausted_sources = pack_res.exhausted_sources;
+                        candidate_exhausted_dests = pack_res.exhausted_dests;
 
                         if !pack_res.packed.is_empty() {
                             for slot in &pack_res.packed {
@@ -577,10 +598,14 @@ pub fn find_chain_routes(
                                 break;
                             }
 
-                            // Filter deals at this system destined for target_dest
+                            // Filter deals at this system destined for target_dest, excluding exhausted destinations
                             let matching_deals: Vec<&ArbitrageDeal> = enroute_deals
                                 .iter()
-                                .filter(|d| d.dest_system_id == target_dest)
+                                .filter(|d| {
+                                    d.dest_system_id == target_dest
+                                        && !candidate_exhausted_dests
+                                            .contains(&(d.type_id, d.dest_station_id))
+                                })
                                 .copied()
                                 .collect();
 
@@ -596,12 +621,14 @@ pub fn find_chain_routes(
                                 &candidate_consumed_sources,
                                 &candidate_consumed_dests,
                                 &candidate_exhausted_sources,
+                                &candidate_exhausted_dests,
                             );
 
                             if !bonus_res.packed.is_empty() {
                                 candidate_consumed_sources = bonus_res.consumed_sources;
                                 candidate_consumed_dests = bonus_res.consumed_dests;
                                 candidate_exhausted_sources = bonus_res.exhausted_sources;
+                                candidate_exhausted_dests = bonus_res.exhausted_dests;
 
                                 let jumps_from_prev =
                                     graph.jump_count(current_pos, enroute_sys, config.safe_only);
@@ -661,6 +688,21 @@ pub fn find_chain_routes(
                     }
 
                     if !cargo_sold.is_empty() {
+                        // Track delivery counts for each destination station
+                        let mut unique_delivered = HashSet::new();
+                        for slot in &cargo_sold {
+                            unique_delivered.insert((slot.deal.type_id, slot.deal.dest_station_id));
+                        }
+                        for (type_id, dest_station_id) in unique_delivered {
+                            let count = candidate_delivered_dests
+                                .entry((type_id, dest_station_id))
+                                .or_insert(0);
+                            *count += 1;
+                            if *count >= config.max_dest_loads {
+                                candidate_exhausted_dests.insert((type_id, dest_station_id));
+                            }
+                        }
+
                         let sell_stop = SellStop {
                             system_id: target_dest,
                             system_name: target_name,
@@ -703,6 +745,8 @@ pub fn find_chain_routes(
                             consumed_source_orders: candidate_consumed_sources,
                             consumed_dest_orders: candidate_consumed_dests,
                             exhausted_source_stations: candidate_exhausted_sources,
+                            delivered_dest_loads: candidate_delivered_dests,
+                            exhausted_dest_stations: candidate_exhausted_dests,
                         };
 
                         next_beam.push(new_cand);
@@ -725,6 +769,9 @@ pub fn find_chain_routes(
                     )) && !candidate
                         .exhausted_source_stations
                         .contains(&(d.type_id, d.source_station_id))
+                        && !candidate
+                            .exhausted_dest_stations
+                            .contains(&(d.type_id, d.dest_station_id))
                         && (d.source_order_id == 0
                             || *candidate
                                 .consumed_source_orders
@@ -757,6 +804,9 @@ pub fn find_chain_routes(
                         )) && !candidate
                             .exhausted_source_stations
                             .contains(&(d.type_id, d.source_station_id))
+                            && !candidate
+                                .exhausted_dest_stations
+                                .contains(&(d.type_id, d.dest_station_id))
                             && (d.source_order_id == 0
                                 || *candidate
                                     .consumed_source_orders
@@ -786,6 +836,8 @@ pub fn find_chain_routes(
                 let mut candidate_consumed_sources = candidate.consumed_source_orders.clone();
                 let mut candidate_consumed_dests = candidate.consumed_dest_orders.clone();
                 let mut candidate_exhausted_sources = candidate.exhausted_source_stations.clone();
+                let mut candidate_delivered_dests = candidate.delivered_dest_loads.clone();
+                let mut candidate_exhausted_dests = candidate.exhausted_dest_stations.clone();
 
                 let primary_res = knapsack_pack_constrained(
                     src_deals,
@@ -795,6 +847,7 @@ pub fn find_chain_routes(
                     &candidate_consumed_sources,
                     &candidate_consumed_dests,
                     &candidate_exhausted_sources,
+                    &candidate_exhausted_dests,
                 );
 
                 if primary_res.packed.is_empty() {
@@ -880,6 +933,7 @@ pub fn find_chain_routes(
                             &candidate_consumed_sources,
                             &candidate_consumed_dests,
                             &candidate_exhausted_sources,
+                            &candidate_exhausted_dests,
                         );
 
                         if !b_res.packed.is_empty() {
@@ -951,6 +1005,23 @@ pub fn find_chain_routes(
                     continue;
                 }
 
+                if !cargo_sold.is_empty() {
+                    // Track delivery counts for each destination station
+                    let mut unique_delivered = HashSet::new();
+                    for slot in &cargo_sold {
+                        unique_delivered.insert((slot.deal.type_id, slot.deal.dest_station_id));
+                    }
+                    for (type_id, dest_station_id) in unique_delivered {
+                        let count = candidate_delivered_dests
+                            .entry((type_id, dest_station_id))
+                            .or_insert(0);
+                        *count += 1;
+                        if *count >= config.max_dest_loads {
+                            candidate_exhausted_dests.insert((type_id, dest_station_id));
+                        }
+                    }
+                }
+
                 let sell_stop = SellStop {
                     system_id: dst_sys,
                     system_name: graph
@@ -995,6 +1066,8 @@ pub fn find_chain_routes(
                     consumed_source_orders: candidate_consumed_sources,
                     consumed_dest_orders: candidate_consumed_dests,
                     exhausted_source_stations: candidate_exhausted_sources,
+                    delivered_dest_loads: candidate_delivered_dests,
+                    exhausted_dest_stations: candidate_exhausted_dests,
                 };
 
                 next_beam.push(new_cand);

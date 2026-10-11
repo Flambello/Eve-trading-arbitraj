@@ -198,3 +198,106 @@ fn test_route_planner_exhausted_order_pruned() {
     assert_eq!(route.stops[0].deal.item_name, "Spirits");
     assert_eq!(route.stops[1].deal.item_name, "Pyerite");
 }
+
+#[test]
+fn test_route_planner_dest_station_load_cap() {
+    let graph = create_route_test_graph();
+    let home = 30000142; // Jita
+
+    // Deal 1: Jita -> Perimeter (Spirits load 1 to Perimeter station 60008494)
+    let mut d1 = make_test_deal(
+        9850,
+        "Spirits 1",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        10_000_000.0,
+        1,
+    );
+    d1.source_order_id = 1;
+    d1.source_station_id = 60001001;
+    d1.dest_station_id = 60008494;
+
+    // Deal 2: Perimeter -> Jita (Pyerite)
+    let mut d2 = make_test_deal(
+        35,
+        "Pyerite",
+        (30000144, "Perimeter"),
+        (30000142, "Jita"),
+        9_000_000.0,
+        1,
+    );
+    d2.source_order_id = 2;
+    d2.source_station_id = 60008494;
+    d2.dest_station_id = 60001001;
+
+    // Deal 3: Jita -> Perimeter (Spirits load 2 to Perimeter station 60008494)
+    let mut d3 = make_test_deal(
+        9850,
+        "Spirits 2",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        8_000_000.0,
+        1,
+    );
+    d3.source_order_id = 3;
+    d3.source_station_id = 60001002;
+    d3.dest_station_id = 60008494;
+
+    // Deal 4: Perimeter -> Jita (Mexallon)
+    let mut d4 = make_test_deal(
+        36,
+        "Mexallon",
+        (30000144, "Perimeter"),
+        (30000142, "Jita"),
+        7_000_000.0,
+        1,
+    );
+    d4.source_order_id = 4;
+    d4.source_station_id = 60008494;
+    d4.dest_station_id = 60001001;
+
+    // Deal 5: Jita -> Perimeter (Spirits load 3 to Perimeter station 60008494 - MUST BE PRUNED)
+    let mut d5 = make_test_deal(
+        9850,
+        "Spirits 3 (Excess Load)",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        6_000_000.0,
+        1,
+    );
+    d5.source_order_id = 5;
+    d5.source_station_id = 60001003;
+    d5.dest_station_id = 60008494;
+
+    // Deal 6: Jita -> Perimeter (Wheat - different item to 60008494 - ALLOWED)
+    let mut d6 = make_test_deal(
+        9851,
+        "Wheat",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        5_000_000.0,
+        1,
+    );
+    d6.source_order_id = 6;
+    d6.source_station_id = 60001004;
+    d6.dest_station_id = 60008494;
+
+    let deals = vec![d1, d2, d3, d4, d5, d6];
+    let route = plan_route(&deals, BIG_HAULER, home, &graph, true, 6);
+
+    assert_eq!(route.stops.len(), 5);
+    assert_eq!(route.stops[0].deal.item_name, "Spirits 1");
+    assert_eq!(route.stops[1].deal.item_name, "Pyerite");
+    assert_eq!(route.stops[2].deal.item_name, "Spirits 2");
+    assert_eq!(route.stops[3].deal.item_name, "Mexallon");
+    assert_eq!(route.stops[4].deal.item_name, "Wheat");
+
+    // Ensure Spirits 3 (Excess Load) was never selected
+    for stop in &route.stops {
+        assert_ne!(
+            stop.deal.item_name, "Spirits 3 (Excess Load)",
+            "Third load of Spirits to same destination station must be blocked by supply cap"
+        );
+    }
+}
+

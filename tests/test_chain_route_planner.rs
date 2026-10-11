@@ -837,3 +837,237 @@ fn test_chain_knapsack_respects_dest_order_min_volume() {
         "Should accept deal when ship capacity can meet min_volume"
     );
 }
+
+#[test]
+fn test_chain_cannot_exceed_max_dest_loads_on_subsequent_legs() {
+    let graph = create_chain_test_graph();
+
+    // Deal A1: Jita (Station 1) -> Perimeter (Station 60000144) (Spirits, type_id 1001)
+    let mut a1 = make_chain_deal(
+        1001,
+        "Spirits 1",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        100.0,
+        10_000.0,
+        5_000.0,
+    );
+    a1.source_order_id = 101;
+    a1.dest_order_id = 1101;
+    a1.source_station_id = 60000142;
+    a1.dest_station_id = 60000144;
+
+    // Deal B1: Perimeter -> Jita (Pyerite)
+    let mut b1 = make_chain_deal(
+        2001,
+        "Pyerite 1",
+        (30000144, "Perimeter"),
+        (30000142, "Jita"),
+        100,
+        100.0,
+        10_000.0,
+        5_000.0,
+    );
+    b1.source_order_id = 201;
+    b1.dest_order_id = 1201;
+    b1.source_station_id = 60000144;
+    b1.dest_station_id = 60000142;
+
+    // Deal A2: Jita (Station 2) -> Perimeter (Station 60000144) (Spirits load 2, type_id 1001)
+    let mut a2 = make_chain_deal(
+        1001,
+        "Spirits 2",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        100.0,
+        10_000.0,
+        5_000.0,
+    );
+    a2.source_order_id = 102;
+    a2.dest_order_id = 1102;
+    a2.source_station_id = 60000143; // different source station to avoid source station exhaustion
+    a2.dest_station_id = 60000144;
+
+    // Deal B2: Perimeter -> Jita (Mexallon)
+    let mut b2 = make_chain_deal(
+        2002,
+        "Mexallon 2",
+        (30000144, "Perimeter"),
+        (30000142, "Jita"),
+        100,
+        100.0,
+        10_000.0,
+        5_000.0,
+    );
+    b2.source_order_id = 202;
+    b2.dest_order_id = 1202;
+    b2.source_station_id = 60000148; // different source station at Perimeter
+    b2.dest_station_id = 60000142;
+
+    // Deal A3: Jita (Station 3) -> Perimeter (Station 60000144) (Spirits load 3, type_id 1001 - MUST BE BLOCKED)
+    let mut a3 = make_chain_deal(
+        1001,
+        "Spirits 3 (Excess Load)",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        100.0,
+        10_000.0,
+        5_000.0,
+    );
+    a3.source_order_id = 103;
+    a3.dest_order_id = 1103;
+    a3.source_station_id = 60000145; // different source station
+    a3.dest_station_id = 60000144;
+
+    let cfg = ChainConfig {
+        home_system: 30000142,
+        max_legs: 5,
+        max_dest_loads: 2,
+        ship_max_budget: 50_000.0,
+        ship_max_volume: 100.0, // Each leg fits exactly one deal
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[a1.clone(), b1.clone(), a2.clone(), b2.clone(), a3.clone()], &graph, &cfg);
+    assert!(!routes.is_empty(), "Should find chain routes");
+
+    // Check all routes: none should have 5 legs because A3 is blocked after 2 loads of Spirits to Perimeter!
+    for r in &routes {
+        assert!(r.legs.len() <= 4, "Route cannot have 5 legs because 3rd load of Spirits is blocked");
+        let spirits_to_perimeter_count = r.legs.iter().filter(|leg| {
+            leg.sell.cargo_sold.iter().any(|slot| slot.deal.type_id == 1001 && slot.deal.dest_station_id == 60000144)
+        }).count();
+        assert!(spirits_to_perimeter_count <= 2, "Cannot deliver more than 2 loads of Spirits to Perimeter station");
+    }
+
+    // Now add Deal C: Jita -> Perimeter (Wheat, type_id 3001) which has 0 loads delivered to Perimeter
+    let mut c = make_chain_deal(
+        3001,
+        "Wheat",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        100.0,
+        10_000.0,
+        5_000.0,
+    );
+    c.source_order_id = 301;
+    c.dest_order_id = 1301;
+    c.source_station_id = 60000146;
+    c.dest_station_id = 60000144;
+
+    let routes_with_c = find_chain_routes(&[a1, b1, a2, b2, a3, c], &graph, &cfg);
+    // Filter for routes that achieved 5 legs
+    let five_leg_routes: Vec<_> = routes_with_c.iter().filter(|r| r.legs.len() == 5).collect();
+    assert!(!five_leg_routes.is_empty(), "Should successfully find a 5-leg route when distinct commodity (Wheat) is available");
+    let five_leg = five_leg_routes[0];
+    assert_eq!(five_leg.legs[4].sell.cargo_sold[0].deal.item_name, "Wheat");
+}
+
+#[test]
+fn test_chain_max_dest_loads_one_strictly_enforced() {
+    let graph = create_chain_test_graph();
+
+    let mut a1 = make_chain_deal(
+        1001,
+        "Spirits 1",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        50.0,
+        10_000.0,
+        5_000.0,
+    );
+    a1.source_order_id = 101;
+    a1.source_station_id = 60000142;
+    a1.dest_station_id = 60000144;
+
+    let mut b1 = make_chain_deal(
+        2001,
+        "Pyerite",
+        (30000144, "Perimeter"),
+        (30000142, "Jita"),
+        100,
+        50.0,
+        10_000.0,
+        4_000.0,
+    );
+    b1.source_order_id = 201;
+    b1.source_station_id = 60000144;
+    b1.dest_station_id = 60000142;
+
+    let mut a2 = make_chain_deal(
+        1001,
+        "Spirits 2",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        100,
+        50.0,
+        10_000.0,
+        3_000.0,
+    );
+    a2.source_order_id = 102;
+    a2.source_station_id = 60000143;
+    a2.dest_station_id = 60000144;
+
+    let cfg = ChainConfig {
+        home_system: 30000142,
+        max_legs: 3,
+        max_dest_loads: 1, // Strictly capped at 1 load
+        ship_max_budget: 100_000.0,
+        ship_max_volume: 5_000.0,
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[a1, b1, a2], &graph, &cfg);
+    assert!(!routes.is_empty(), "Should find 2-leg route");
+    let best = &routes[0];
+    assert_eq!(best.legs.len(), 2, "Cannot form 3rd leg because max_dest_loads=1 blocks second load of Spirits to Perimeter");
+}
+
+#[test]
+fn test_chain_different_items_same_destination_allowed() {
+    let graph = create_chain_test_graph();
+
+    let mut a = make_chain_deal(
+        1001,
+        "Spirits",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        50,
+        25.0,
+        5_000.0,
+        2_500.0,
+    );
+    a.dest_station_id = 60000144;
+
+    let mut b = make_chain_deal(
+        1002,
+        "Wheat",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        50,
+        25.0,
+        5_000.0,
+        2_000.0,
+    );
+    b.dest_station_id = 60000144;
+
+    let cfg = ChainConfig {
+        home_system: 30000142,
+        max_legs: 1,
+        max_dest_loads: 1,
+        ship_max_budget: 50_000.0,
+        ship_max_volume: 500.0,
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[a, b], &graph, &cfg);
+    assert!(!routes.is_empty(), "Should find route packing both deals to Perimeter");
+    let best = &routes[0];
+    assert_eq!(best.legs[0].pickups[0].cargo_loaded.len(), 2, "Both distinct items delivered to same destination station");
+}
+

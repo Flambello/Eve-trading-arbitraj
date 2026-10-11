@@ -273,6 +273,7 @@ pub struct DesktopApp {
 
     // ── Chain Route Planner tab ──────────────────────────────────
     chain_max_legs: usize,
+    chain_max_dest_loads: usize,
     chain_detour_enabled: bool,
     chain_max_detour: u32,
     chain_is_running: bool,
@@ -402,6 +403,7 @@ impl DesktopApp {
             tx,
 
             chain_max_legs: 4,
+            chain_max_dest_loads: 2,
             chain_detour_enabled: true,
             chain_max_detour: 2,
             chain_is_running: false,
@@ -507,6 +509,7 @@ impl DesktopApp {
             tx,
 
             chain_max_legs: 4,
+            chain_max_dest_loads: 2,
             chain_detour_enabled: true,
             chain_max_detour: 2,
             chain_is_running: false,
@@ -3029,11 +3032,12 @@ impl DesktopApp {
                                         );
                                         if deal.is_npc_trade {
                                             ui.label(
-                                                RichText::new("📦 NPC Commodity")
+                                                RichText::new("🏛️ NPC Trade")
                                                     .size(11.0)
                                                     .color(Color32::from_rgb(0, 220, 255))
                                                     .strong(),
-                                            );
+                                            )
+                                            .on_hover_text("NPC trade: Seeded commodity trade good or 365-day NPC order");
                                         }
                                     });
                                     let src_sec_col = security_color(deal.source_security);
@@ -3096,11 +3100,12 @@ impl DesktopApp {
                                         );
                                         if deal.is_npc_trade {
                                             ui.label(
-                                                RichText::new("📦 NPC Commodity")
+                                                RichText::new("🏛️ NPC Trade")
                                                     .size(11.0)
                                                     .color(Color32::from_rgb(0, 220, 255))
                                                     .strong(),
-                                            );
+                                            )
+                                            .on_hover_text("NPC trade: Seeded commodity trade good or 365-day NPC order");
                                         }
                                     });
                                     let dst_sec_col = security_color(deal.dest_security);
@@ -3777,6 +3782,7 @@ impl DesktopApp {
             beam_width: 15,
             detour_enabled: self.chain_detour_enabled,
             max_detour_jumps: self.chain_max_detour,
+            max_dest_loads: self.chain_max_dest_loads,
             ship_max_volume: {
                 let ship = self.current_ship();
                 ship.max_volume
@@ -3842,6 +3848,17 @@ impl DesktopApp {
 
                         ui.separator();
 
+                        // Max Destination Loads slider (NPC supply & demand cap)
+                        ui.label(RichText::new("Max Dest Loads:").strong());
+                        ui.add(
+                            egui::Slider::new(&mut self.chain_max_dest_loads, 1..=3)
+                                .text("loads/station")
+                                .clamp_to_range(true),
+                        )
+                        .on_hover_text("Max deliveries of the same commodity to a single destination station (EVE NPC dynamic pricing drops after 2 loads)");
+
+                        ui.separator();
+
                         // En-route detour toggle
                         ui.checkbox(&mut self.chain_detour_enabled, RichText::new("En-Route Pickups").strong());
 
@@ -3860,10 +3877,13 @@ impl DesktopApp {
 
                     ui.separator();
                     ui.label(
-                        RichText::new("✓ Finite Station Stock Enforced")
-                            .color(Color32::from_rgb(0, 255, 140))
-                            .size(11.5)
-                            .strong(),
+                        RichText::new(format!(
+                            "✓ Finite Stock & Supply Caps (≤{} loads/dest)",
+                            self.chain_max_dest_loads
+                        ))
+                        .color(Color32::from_rgb(0, 255, 140))
+                        .size(11.5)
+                        .strong(),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

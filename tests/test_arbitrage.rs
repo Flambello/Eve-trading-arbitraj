@@ -798,7 +798,7 @@ mod tests {
             npc_stations_only: false,
         };
 
-        // 1. Spirits (Type ID 9850, Group 280, Category 17: Commodity) -> NPC trade good
+        // 1. Spirits (Type ID 9850, Group 280, Category 17: Commodity) -> Genuine NPC trade good commodity
         let spirits_info = sde
             .get_item_info(9850)
             .expect("Spirits should exist in SDE");
@@ -806,6 +806,37 @@ mod tests {
             spirits_info.is_npc_trade_commodity(),
             "Spirits must be detected as an NPC trade commodity"
         );
+
+        // Verify that items in Category 17 that are NOT trade goods (insignias, tags, datacores)
+        // and Category 43 (PI) are NOT flagged as NPC trade commodities
+        if let Some(insignia_info) = sde.get_item_info(15587) {
+            // Federation Navy Midshipman Insignia I (Group 409, Category 17)
+            assert_eq!(insignia_info.group_id, 409);
+            assert_eq!(insignia_info.category_id, 17);
+            assert!(
+                !insignia_info.is_npc_trade_commodity(),
+                "Insignias must NOT be flagged as NPC trade commodities"
+            );
+        }
+
+        if let Some(tag_info) = sde.get_item_info(12304) {
+            // Angel Copper Tag (Group 370, Category 17)
+            assert_eq!(tag_info.group_id, 370);
+            assert_eq!(tag_info.category_id, 17);
+            assert!(
+                !tag_info.is_npc_trade_commodity(),
+                "Pirate criminal tags must NOT be flagged as NPC trade commodities"
+            );
+        }
+
+        if let Some(pi_info) = sde.get_item_info(9832) {
+            // Coolant (Group 1034, Category 43)
+            assert_eq!(pi_info.category_id, 43);
+            assert!(
+                !pi_info.is_npc_trade_commodity(),
+                "Planetary interaction commodities must NOT be flagged as NPC trade commodities"
+            );
+        }
 
         let src_spirits = MarketOrder {
             order_id: 501,
@@ -850,10 +881,98 @@ mod tests {
         let deal_spirits = deal_spirits.unwrap();
         assert!(
             deal_spirits.is_npc_trade,
-            "Spirits deal must be flagged as an NPC trade"
+            "Spirits deal must be flagged as an NPC trade (trade good commodity)"
         );
 
-        // 2. Regular item with a 365-day NPC seeded buy order (duration = 365)
+        // 2. Insignia player-to-player trade (both orders placed by players with duration = 90)
+        let insignia_info = ItemInfo {
+            type_id: 15587,
+            name: "Federation Navy Midshipman Insignia I".to_string(),
+            packaged_volume: 0.1,
+            group_id: 409,
+            category_id: 17,
+            published: true,
+        };
+
+        let src_insignia_player = MarketOrder {
+            order_id: 510,
+            type_id: 15587,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 1000.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let dst_insignia_player = MarketOrder {
+            order_id: 511,
+            type_id: 15587,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 5000.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let deal_insignia_player = calculate_deal(
+            15587,
+            &insignia_info,
+            &src_insignia_player,
+            &dst_insignia_player,
+            &cfg,
+            &sde,
+            &graph,
+        );
+        assert!(deal_insignia_player.is_some());
+        let deal_insignia_player = deal_insignia_player.unwrap();
+        assert!(
+            !deal_insignia_player.is_npc_trade,
+            "Player-to-player insignia deal must NOT be flagged as an NPC trade"
+        );
+
+        // 3. Insignia deal selling into an NPC seeded buy order (duration = 365)
+        let dst_insignia_npc_order = MarketOrder {
+            order_id: 512,
+            type_id: 15587,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 8000.0,
+            volume_total: 100,
+            volume_remain: 100,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 365, // NPC military station order
+            issued: Some("2026-10-09T00:00:00Z".to_string()),
+            range: Some("region".to_string()),
+        };
+
+        let deal_insignia_npc = calculate_deal(
+            15587,
+            &insignia_info,
+            &src_insignia_player,
+            &dst_insignia_npc_order,
+            &cfg,
+            &sde,
+            &graph,
+        );
+        assert!(deal_insignia_npc.is_some());
+        let deal_insignia_npc = deal_insignia_npc.unwrap();
+        assert!(
+            deal_insignia_npc.is_npc_trade,
+            "Deal selling into 365-day NPC order must be flagged as NPC trade"
+        );
+
+        // 4. Regular mineral item with a 365-day NPC seeded buy order (duration = 365)
         let tritanium_info = ItemInfo {
             type_id: 34,
             name: "Tritanium".to_string(),
@@ -909,7 +1028,7 @@ mod tests {
             "Deal with 365-day NPC order must be flagged as an NPC trade"
         );
 
-        // 3. Regular player-to-player deal (duration = 90, non-commodity item)
+        // 5. Regular player-to-player mineral deal (duration = 90)
         let dst_player_order = MarketOrder {
             order_id: 603,
             type_id: 34,
@@ -941,8 +1060,15 @@ mod tests {
             "Player-to-player deal must not be flagged as NPC trade"
         );
 
-        // 4. Test filtering: with hide_npc_trades = true, NPC deals are excluded while player deals remain
-        let all_deals = [deal_spirits, deal_npc_seeded, deal_player];
+        // 6. Test filtering: with hide_npc_trades = true, NPC deals (spirits, 365-day orders)
+        // are excluded, while genuine player deals (insignias, minerals) pass through!
+        let all_deals = [
+            deal_spirits,
+            deal_insignia_npc,
+            deal_insignia_player,
+            deal_npc_seeded,
+            deal_player,
+        ];
         let hide_npc_trades = true;
         let filtered: Vec<&ArbitrageDeal> = all_deals
             .iter()
@@ -951,10 +1077,13 @@ mod tests {
 
         assert_eq!(
             filtered.len(),
-            1,
-            "Only the 1 player deal should pass when hide_npc_trades is active"
+            2,
+            "Both the player insignia deal and the player mineral deal must pass when hide_npc_trades is active"
         );
-        assert_eq!(filtered[0].item_name, "Tritanium");
+        assert_eq!(filtered[0].item_name, "Federation Navy Midshipman Insignia I");
         assert!(!filtered[0].is_npc_trade);
+        assert_eq!(filtered[1].item_name, "Tritanium");
+        assert!(!filtered[1].is_npc_trade);
     }
 }
+

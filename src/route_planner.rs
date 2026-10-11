@@ -3,6 +3,8 @@ use crate::config::ShipProfile;
 use crate::graph::SystemGraph;
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteStop {
     pub step: usize,
@@ -40,6 +42,7 @@ pub fn plan_route(
     let mut total_capital_required = 0.0;
     let mut max_volume_used = 0.0;
     let mut waypoints = vec![home_system];
+    let mut dest_loads: HashMap<(u32, u64), usize> = HashMap::new();
 
     for step in 1..=max_stops {
         if unused_deals.is_empty() {
@@ -80,14 +83,22 @@ pub fn plan_route(
         let chosen_deal = unused_deals.remove(chosen_idx);
         let chosen_src_order = chosen_deal.source_order_id;
         let chosen_src_station = chosen_deal.source_station_id;
+        let chosen_dest_station = chosen_deal.dest_station_id;
         let chosen_type = chosen_deal.type_id;
 
-        // Prune alternative deals sharing the same exhausted source order or station stock
+        let dcount = dest_loads.entry((chosen_type, chosen_dest_station)).or_insert(0);
+        *dcount += 1;
+        let dest_exhausted = *dcount >= 2;
+
+        // Prune alternative deals sharing the same exhausted source order, station stock, or destination supply cap
         unused_deals.retain(|d| {
             if chosen_src_order > 0 && d.source_order_id == chosen_src_order {
                 return false;
             }
             if d.type_id == chosen_type && d.source_station_id == chosen_src_station {
+                return false;
+            }
+            if dest_exhausted && d.type_id == chosen_type && d.dest_station_id == chosen_dest_station {
                 return false;
             }
             true

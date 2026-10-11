@@ -27,27 +27,17 @@ pub struct ItemInfo {
 }
 
 impl ItemInfo {
-    /// Detect if the item is an NPC trade commodity or NPC seeded trade good.
+    /// Detect if the item is an NPC trade commodity (traditional trade goods seeded by NPC corporations).
+    ///
+    /// Excludes player-traded goods in Category 17 such as Insignias (group 409),
+    /// Criminal/Security Tags (groups 370, 1206), Datacores (group 333),
+    /// Components, Filaments, Mutaplasmids, and Planetary Commodities (Category 43).
     pub fn is_npc_trade_commodity(&self) -> bool {
-        self.category_id == 17 // Commodity
-            || self.category_id == 43 // Planetary Commodities
-            || matches!(
-                self.group_id,
-                280 // General (Wheat, Spirits, Antibiotics, Tobacco, etc.)
-                | 281 // Frozen (Dairy Products, etc.)
-                | 282 // Radioactive (Enriched Uranium, etc.)
-                | 283 // Livestock
-                | 284 // Biohazard
-                | 493 // Overseer Personal Effects
-                | 526 // Commodities
-                | 1034 // Refined Commodities - Tier 2
-                | 1040 // Specialized Commodities - Tier 3
-                | 1041 // Advanced Commodities - Tier 4
-                | 1042 // Basic Commodities - Tier 1
-                | 4575 // Homefront Operations Commodity
-            )
+        // Groups 280..=284: General, Frozen, Radioactive, Livestock, Biohazard
+        matches!(self.group_id, 280..=284)
     }
 }
+
 
 #[derive(Debug, Clone)]
 pub struct SystemNode {

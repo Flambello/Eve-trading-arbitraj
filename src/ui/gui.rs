@@ -1,5 +1,6 @@
 use crate::arbitrage::{
-    bundle_route_cargo, find_deals, ArbitrageConfig, ArbitrageDeal, TradeCorridorManifest,
+    bundle_route_cargo, filter_deals_by_order_limit, find_deals, ArbitrageConfig, ArbitrageDeal,
+    TradeCorridorManifest,
 };
 use crate::config::{BIG_HAULER, SMALL_HAULER};
 use crate::esi::{fetch_markets, EsiClient};
@@ -258,6 +259,7 @@ pub struct DesktopApp {
     min_profit_filter_m: f64,
     max_jumps_filter: u32,
     pub hide_npc_trades: bool,
+    pub max_deals_per_order: usize,
 
     // Active state
     tab: ActiveTab,
@@ -405,6 +407,7 @@ impl DesktopApp {
             min_profit_filter_m: 0.0,
             max_jumps_filter: 0,
             hide_npc_trades: false,
+            max_deals_per_order: 2,
 
             tab: ActiveTab::Deals,
             is_scanning: false,
@@ -523,6 +526,7 @@ impl DesktopApp {
             min_profit_filter_m: 0.0,
             max_jumps_filter: 0,
             hide_npc_trades: false,
+            max_deals_per_order: 2,
 
             tab: ActiveTab::Deals,
             is_scanning: false,
@@ -2262,6 +2266,61 @@ impl DesktopApp {
                     }
 
                     ui.separator();
+
+                    // Max Deals Per Order Toggle (Order Diversity / Filler Pruning)
+                    let (cap_icon, cap_label, cap_fill, cap_stroke, cap_text_col) =
+                        if self.max_deals_per_order > 0 {
+                            (
+                                "🎯",
+                                format!("Top {}/Order: ON", self.max_deals_per_order),
+                                Color32::from_rgba_unmultiplied(16, 44, 60, 220),
+                                Color32::from_rgb(0, 200, 255),
+                                Color32::from_rgb(0, 220, 255),
+                            )
+                        } else {
+                            (
+                                "🌐",
+                                "Max/Order: ALL".to_string(),
+                                Color32::from_rgba_unmultiplied(25, 30, 45, 180),
+                                Color32::from_rgb(50, 70, 95),
+                                Color32::from_rgb(140, 160, 190),
+                            )
+                        };
+
+                    let cap_btn = egui::Button::new(
+                        RichText::new(format!("{} {}", cap_icon, cap_label))
+                            .size(12.0)
+                            .color(cap_text_col)
+                            .strong(),
+                    )
+                    .fill(cap_fill)
+                    .stroke(Stroke::new(1.0_f32, cap_stroke));
+
+                    if ui
+                        .add(cap_btn)
+                        .on_hover_text(
+                            "Toggle order diversity filter to prune redundant filler deals:\n• ON: Limits each sell order to top N destinations & each buy order to top N sources\n• Prioritizes fastest, closest, and highest profit-per-jump routes from starting location\n• ALL: Displays all raw order permutations",
+                        )
+                        .clicked()
+                    {
+                        if self.max_deals_per_order > 0 {
+                            self.max_deals_per_order = 0;
+                            self.set_toast("Order Diversity: Showing all order pairs (unlimited)");
+                        } else {
+                            self.max_deals_per_order = 2;
+                            self.set_toast("Order Diversity: Limiting to top 2 routes per order");
+                        }
+                    }
+
+                    ui.add(
+                        egui::DragValue::new(&mut self.max_deals_per_order)
+                            .speed(0.1)
+                            .range(0..=10)
+                            .suffix("/ord"),
+                    )
+                    .on_hover_text("Max destinations per sell order and sources per buy order (0 = unlimited / all pairs)");
+
+                    ui.separator();
                     let export_btn = egui::Button::new(
                         RichText::new("📥 Export Deals to CSV")
                             .color(Color32::from_rgb(0, 220, 255))
@@ -2294,6 +2353,17 @@ impl DesktopApp {
                                     && (max_j == 0 || d.total_jumps <= max_j)
                             })
                             .collect();
+
+                        let export_filtered = if self.max_deals_per_order > 0 {
+                            filter_deals_by_order_limit(
+                                export_filtered,
+                                self.max_deals_per_order,
+                                self.max_deals_per_order,
+                                |(_, d)| d,
+                            )
+                        } else {
+                            export_filtered
+                        };
 
                         let csv_str = export_deals_to_csv(&export_filtered);
                         copy_to_clipboard(ui, csv_str.clone());
@@ -2332,6 +2402,31 @@ impl DesktopApp {
                     && (max_jumps == 0 || d.total_jumps <= max_jumps)
             })
             .collect();
+
+        if self.max_deals_per_order > 0 {
+            filtered = filter_deals_by_order_limit(
+                filtered,
+                self.max_deals_per_order,
+                self.max_deals_per_order,
+                |(_, d)| d,
+            );
+        }
+
+        if self.max_deals_per_order > 0 && filtered.len() < self.deals.len() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "🎯 Showing {} high-priority deals (pruned from {} total; max {} routes/order)",
+                        filtered.len(),
+                        self.deals.len(),
+                        self.max_deals_per_order,
+                    ))
+                    .size(11.5)
+                    .color(Color32::from_rgb(0, 200, 255)),
+                );
+            });
+            ui.add_space(4.0);
+        }
 
         match self.sort_by {
             DealSortBy::ProfitPerJump => {

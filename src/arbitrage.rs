@@ -526,3 +526,81 @@ pub fn sanitize_csv_cell(val: &str) -> String {
     };
     escaped.replace('"', "\"\"")
 }
+
+/// Prunes redundant order pairings by limiting the number of deals per unique sell order and buy order.
+///
+/// Input `deals` are evaluated in priority order (typically `profit_per_jump DESC`,
+/// with ties broken by fewest `total_jumps` and highest `net_profit`).
+///
+/// - For each unique sell order (`source_order_id`), retains at most `max_per_sell_order` destinations.
+/// - For each unique buy order (`dest_order_id`), retains at most `max_per_buy_order` sources.
+///
+/// If a limit is `0`, that side is unrestricted (unlimited).
+/// When both limits are `0`, the input deals are returned unmodified.
+pub fn filter_deals_by_order_limit<T, F>(
+    deals: impl IntoIterator<Item = T>,
+    max_per_sell_order: usize,
+    max_per_buy_order: usize,
+    get_deal: F,
+) -> Vec<T>
+where
+    F: Fn(&T) -> &ArbitrageDeal,
+{
+    if max_per_sell_order == 0 && max_per_buy_order == 0 {
+        return deals.into_iter().collect();
+    }
+
+    let mut sell_order_counts: HashMap<u64, usize> = HashMap::new();
+    let mut buy_order_counts: HashMap<u64, usize> = HashMap::new();
+    let mut retained = Vec::new();
+
+    for item in deals {
+        let deal = get_deal(&item);
+
+        // Unique identifier for sell order:
+        // Use source_order_id if present; fallback to composite (type_id, source_station_id) if order_id is 0
+        let sell_id = if deal.source_order_id > 0 {
+            deal.source_order_id
+        } else {
+            ((deal.type_id as u64) << 32) | (deal.source_station_id & 0xFFFF_FFFF)
+        };
+
+        // Unique identifier for buy order:
+        // Use dest_order_id if present; fallback to composite (type_id, dest_station_id) if order_id is 0
+        let buy_id = if deal.dest_order_id > 0 {
+            deal.dest_order_id
+        } else {
+            ((deal.type_id as u64) << 32) | (deal.dest_station_id & 0xFFFF_FFFF)
+        };
+
+        if max_per_sell_order > 0 {
+            let count = sell_order_counts.get(&sell_id).copied().unwrap_or(0);
+            if count >= max_per_sell_order {
+                continue;
+            }
+        }
+
+        if max_per_buy_order > 0 {
+            let count = buy_order_counts.get(&buy_id).copied().unwrap_or(0);
+            if count >= max_per_buy_order {
+                continue;
+            }
+        }
+
+        *sell_order_counts.entry(sell_id).or_default() += 1;
+        *buy_order_counts.entry(buy_id).or_default() += 1;
+        retained.push(item);
+    }
+
+    retained
+}
+
+/// Convenience function for slicing and filtering ArbitrageDeal vectors directly.
+pub fn prune_redundant_order_deals(
+    deals: &[ArbitrageDeal],
+    max_per_sell: usize,
+    max_per_buy: usize,
+) -> Vec<ArbitrageDeal> {
+    filter_deals_by_order_limit(deals.iter().cloned(), max_per_sell, max_per_buy, |d| d)
+}
+

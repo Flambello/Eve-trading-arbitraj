@@ -227,6 +227,11 @@ pub fn calculate_deal(
     let buy_price = src_order.price;
     let sell_price = dst_order.price;
 
+    // Validate prices are positive and finite (reject NaN, Infinity, zero, negative)
+    if !buy_price.is_finite() || !sell_price.is_finite() || buy_price <= 0.0 || sell_price <= 0.0 {
+        return None;
+    }
+
     let src_system_id = src_order.system_id;
     let dst_system_id = dst_order.system_id;
     let src_station = src_order.location_id;
@@ -626,7 +631,10 @@ impl ArbitrageDeal {
             self.total_jumps
         ));
         s.push_str("═══════════════════════════════════════════════════════════\n\n");
-        s.push_str(&format!("▶ 1. BUY AT: {} ({})\n", self.source_station_name, self.source_system_name));
+        s.push_str(&format!(
+            "▶ 1. BUY AT: {} ({})\n",
+            self.source_station_name, self.source_system_name
+        ));
         s.push_str(&format!(
             "     Quantity: {} units | Buy Price: {:.2} ISK | Capital: {:.2}M ISK | Vol: {:.1} m³\n\n",
             self.quantity,
@@ -634,7 +642,10 @@ impl ArbitrageDeal {
             self.capital_required / 1_000_000.0,
             self.volume_used
         ));
-        s.push_str(&format!("▶ 2. SELL AT: {} ({})\n", self.dest_station_name, self.dest_system_name));
+        s.push_str(&format!(
+            "▶ 2. SELL AT: {} ({})\n",
+            self.dest_station_name, self.dest_system_name
+        ));
         s.push_str(&format!(
             "     Sell Price: {:.2} ISK | Revenue: {:.2}M ISK | Net Return: +{:.2}M ISK\n",
             self.sell_price,
@@ -683,7 +694,10 @@ impl TradeCorridorManifest {
             self.deals.len()
         ));
         s.push_str("═══════════════════════════════════════════════════════════\n\n");
-        s.push_str(&format!("▶ 1. BUY AT: {} ({})\n", self.source_station_name, self.source_system_name));
+        s.push_str(&format!(
+            "▶ 1. BUY AT: {} ({})\n",
+            self.source_station_name, self.source_system_name
+        ));
         for (i, d) in self.deals.iter().enumerate() {
             s.push_str(&format!(
                 "  [{}] {}x {} @ {:.2} ISK (Cost: {:.2}M ISK, {:.1} m³)\n",
@@ -696,7 +710,10 @@ impl TradeCorridorManifest {
             ));
         }
         s.push('\n');
-        s.push_str(&format!("▶ 2. SELL AT: {} ({})\n", self.dest_station_name, self.dest_system_name));
+        s.push_str(&format!(
+            "▶ 2. SELL AT: {} ({})\n",
+            self.dest_station_name, self.dest_system_name
+        ));
         for (i, d) in self.deals.iter().enumerate() {
             s.push_str(&format!(
                 "  [{}] SELL {}x {} @ {:.2} ISK (Profit: +{:.2}M ISK, {:.1}%)\n",
@@ -712,4 +729,3 @@ impl TradeCorridorManifest {
         s
     }
 }
-

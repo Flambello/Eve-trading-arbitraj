@@ -59,11 +59,11 @@ impl CoreHub {
     /// Primary 4-4 / main market station ID.
     pub fn primary_station_id(&self) -> u64 {
         match self {
-            CoreHub::Jita => 60003760,    // Jita IV - Moon 4 - Caldari Navy Assembly Plant
-            CoreHub::Amarr => 60008494,   // Amarr VIII (Oris) - Emperor Family Academy
+            CoreHub::Jita => 60003760, // Jita IV - Moon 4 - Caldari Navy Assembly Plant
+            CoreHub::Amarr => 60008494, // Amarr VIII (Oris) - Emperor Family Academy
             CoreHub::Dodixie => 60011866, // Dodixie IX - Moon 20 - Federation Navy Assembly Plant
-            CoreHub::Rens => 60004588,    // Rens VI - Moon 8 - Brutor Tribe Treasury
-            CoreHub::Hek => 60005686,     // Hek VIII - Moon 12 - Boundless Creation Factory
+            CoreHub::Rens => 60004588, // Rens VI - Moon 8 - Brutor Tribe Treasury
+            CoreHub::Hek => 60005686,  // Hek VIII - Moon 12 - Boundless Creation Factory
         }
     }
 
@@ -265,8 +265,7 @@ pub fn compute_corridor_summary(
     let mut top_item_name = None;
 
     for &d in deals {
-        if d.source_system_id == source_hub.system_id()
-            && d.dest_system_id == dest_hub.system_id()
+        if d.source_system_id == source_hub.system_id() && d.dest_system_id == dest_hub.system_id()
         {
             deal_count += 1;
             total_potential_profit += d.net_profit;
@@ -305,7 +304,10 @@ pub fn hub_corridor_destination_ids(
             }
         }
     }
-    vec![source_hub.primary_station_id(), dest_hub.primary_station_id()]
+    vec![
+        source_hub.primary_station_id(),
+        dest_hub.primary_station_id(),
+    ]
 }
 
 /// Formats a complete in-game flight sheet for EVE Notepad (Alt+N) for a hub trade run.

@@ -158,22 +158,49 @@ fn test_core_hub_metadata_and_resolution() {
 #[test]
 fn test_filter_hub_deals_specific_corridor() {
     let d1 = make_hub_deal(
-        1, "Jita to Amarr Deal",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        100, 100.0, 1_000_000.0, 500_000.0, false,
+        1,
+        "Jita to Amarr Deal",
+        30000142,
+        "Jita",
+        60003760,
+        30002187,
+        "Amarr",
+        60008494,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        false,
     );
     let d2 = make_hub_deal(
-        2, "Jita to Dodixie Deal",
-        30000142, "Jita", 60003760,
-        30002659, "Dodixie", 60011866,
-        100, 100.0, 1_000_000.0, 400_000.0, false,
+        2,
+        "Jita to Dodixie Deal",
+        30000142,
+        "Jita",
+        60003760,
+        30002659,
+        "Dodixie",
+        60011866,
+        100,
+        100.0,
+        1_000_000.0,
+        400_000.0,
+        false,
     );
     let d3 = make_hub_deal(
-        3, "Amarr to Jita Deal",
-        30002187, "Amarr", 60008494,
-        30000142, "Jita", 60003760,
-        100, 100.0, 1_000_000.0, 600_000.0, false,
+        3,
+        "Amarr to Jita Deal",
+        30002187,
+        "Amarr",
+        60008494,
+        30000142,
+        "Jita",
+        60003760,
+        100,
+        100.0,
+        1_000_000.0,
+        600_000.0,
+        false,
     );
 
     let deals = vec![d1, d2, d3];
@@ -193,22 +220,49 @@ fn test_filter_hub_deals_specific_corridor() {
 #[test]
 fn test_filter_hub_deals_wildcards() {
     let d1 = make_hub_deal(
-        1, "Jita to Amarr",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        100, 100.0, 1_000_000.0, 500_000.0, false,
+        1,
+        "Jita to Amarr",
+        30000142,
+        "Jita",
+        60003760,
+        30002187,
+        "Amarr",
+        60008494,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        false,
     );
     let d2 = make_hub_deal(
-        2, "Dodixie to Amarr",
-        30002659, "Dodixie", 60011866,
-        30002187, "Amarr", 60008494,
-        100, 100.0, 1_000_000.0, 400_000.0, false,
+        2,
+        "Dodixie to Amarr",
+        30002659,
+        "Dodixie",
+        60011866,
+        30002187,
+        "Amarr",
+        60008494,
+        100,
+        100.0,
+        1_000_000.0,
+        400_000.0,
+        false,
     );
     let d3 = make_hub_deal(
-        3, "Jita to Rens",
-        30000142, "Jita", 60003760,
-        30002510, "Rens", 60004588,
-        100, 100.0, 1_000_000.0, 600_000.0, false,
+        3,
+        "Jita to Rens",
+        30000142,
+        "Jita",
+        60003760,
+        30002510,
+        "Rens",
+        60004588,
+        100,
+        100.0,
+        1_000_000.0,
+        600_000.0,
+        false,
     );
 
     let deals = vec![d1, d2, d3];
@@ -248,24 +302,51 @@ fn test_filter_hub_deals_wildcards() {
 fn test_filter_hub_deals_excludes_non_hub_and_intra_hub() {
     // Non-hub source (Perimeter -> Amarr)
     let d_non_hub_src = make_hub_deal(
-        1, "Perimeter to Amarr",
-        30000144, "Perimeter", 60003761,
-        30002187, "Amarr", 60008494,
-        100, 100.0, 1_000_000.0, 500_000.0, false,
+        1,
+        "Perimeter to Amarr",
+        30000144,
+        "Perimeter",
+        60003761,
+        30002187,
+        "Amarr",
+        60008494,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        false,
     );
     // Non-hub dest (Jita -> Perimeter)
     let d_non_hub_dst = make_hub_deal(
-        2, "Jita to Perimeter",
-        30000142, "Jita", 60003760,
-        30000144, "Perimeter", 60003761,
-        100, 100.0, 1_000_000.0, 500_000.0, false,
+        2,
+        "Jita to Perimeter",
+        30000142,
+        "Jita",
+        60003760,
+        30000144,
+        "Perimeter",
+        60003761,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        false,
     );
     // Intra-hub trade (Jita 4-4 to another station in Jita)
     let d_intra_hub = make_hub_deal(
-        3, "Jita Internal",
-        30000142, "Jita", 60003760,
-        30000142, "Jita", 60003769,
-        100, 100.0, 1_000_000.0, 500_000.0, false,
+        3,
+        "Jita Internal",
+        30000142,
+        "Jita",
+        60003760,
+        30000142,
+        "Jita",
+        60003769,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        false,
     );
 
     let deals = vec![d_non_hub_src, d_non_hub_dst, d_intra_hub];
@@ -277,22 +358,43 @@ fn test_filter_hub_deals_excludes_non_hub_and_intra_hub() {
     };
 
     let filtered = filter_hub_deals(&deals, &opts);
-    assert!(filtered.is_empty(), "All non-hub and intra-hub trades must be excluded");
+    assert!(
+        filtered.is_empty(),
+        "All non-hub and intra-hub trades must be excluded"
+    );
 }
 
 #[test]
 fn test_filter_hub_deals_npc_toggle_and_major_stations() {
     let d_npc = make_hub_deal(
-        1, "Spirits",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        100, 100.0, 1_000_000.0, 500_000.0, true, // NPC trade
+        1,
+        "Spirits",
+        30000142,
+        "Jita",
+        60003760,
+        30002187,
+        "Amarr",
+        60008494,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        true, // NPC trade
     );
     let d_player_secondary_station = make_hub_deal(
-        2, "Tritanium",
-        30000142, "Jita", 60003769, // Non-primary Jita station
-        30002187, "Amarr", 60008494,
-        100, 100.0, 1_000_000.0, 500_000.0, false,
+        2,
+        "Tritanium",
+        30000142,
+        "Jita",
+        60003769, // Non-primary Jita station
+        30002187,
+        "Amarr",
+        60008494,
+        100,
+        100.0,
+        1_000_000.0,
+        500_000.0,
+        false,
     );
 
     let deals = vec![d_npc, d_player_secondary_station];
@@ -327,16 +429,34 @@ fn test_filter_hub_deals_npc_toggle_and_major_stations() {
 #[test]
 fn test_pack_hub_corridor_manifest() {
     let d1 = make_hub_deal(
-        1, "High Value Density Item",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        10, 10.0, 10_000.0, 5_000.0, false, // 500 ISK/m³
+        1,
+        "High Value Density Item",
+        30000142,
+        "Jita",
+        60003760,
+        30002187,
+        "Amarr",
+        60008494,
+        10,
+        10.0,
+        10_000.0,
+        5_000.0,
+        false, // 500 ISK/m³
     );
     let mut d2 = make_hub_deal(
-        2, "Low Value Density Item",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        10, 50.0, 10_000.0, 2_000.0, false, // 40 ISK/m³
+        2,
+        "Low Value Density Item",
+        30000142,
+        "Jita",
+        60003760,
+        30002187,
+        "Amarr",
+        60008494,
+        10,
+        50.0,
+        10_000.0,
+        2_000.0,
+        false, // 40 ISK/m³
     );
     // Requires minimum 10 units so it cannot partially pack in 5 m³
     d2.dest_order_min_volume = 10;
@@ -354,16 +474,12 @@ fn test_pack_hub_corridor_manifest() {
 fn test_compute_corridor_summary() {
     let graph = create_hub_test_graph();
     let d1 = make_hub_deal(
-        1, "Deal 1",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        10, 10.0, 10_000.0, 5_000.0, false,
+        1, "Deal 1", 30000142, "Jita", 60003760, 30002187, "Amarr", 60008494, 10, 10.0, 10_000.0,
+        5_000.0, false,
     );
     let d2 = make_hub_deal(
-        2, "Deal 2",
-        30000142, "Jita", 60003760,
-        30002187, "Amarr", 60008494,
-        10, 10.0, 10_000.0, 7_000.0, false,
+        2, "Deal 2", 30000142, "Jita", 60003760, 30002187, "Amarr", 60008494, 10, 10.0, 10_000.0,
+        7_000.0, false,
     );
 
     let deals = vec![&d1, &d2];

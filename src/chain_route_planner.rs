@@ -136,10 +136,7 @@ impl ChainRoute {
                 leg.sell.system_name, leg.sell.jumps_from_prev
             ));
             for slot in &leg.sell.cargo_sold {
-                s.push_str(&format!(
-                    "    • Station: {}\n",
-                    slot.deal.dest_station_name
-                ));
+                s.push_str(&format!("    • Station: {}\n", slot.deal.dest_station_name));
                 s.push_str(&format!(
                     "    • SELL: {}x {} @ {:.2} ISK (Gross: {:.2}M ISK, Profit: +{:.2}M ISK)\n",
                     slot.deal.quantity,
@@ -153,7 +150,10 @@ impl ChainRoute {
         }
 
         s.push_str("═══════════════════════════════════════════════════════════\n");
-        s.push_str(&format!("Autopilot trail: {}\n", self.waypoint_names.join(" ➔ ")));
+        s.push_str(&format!(
+            "Autopilot trail: {}\n",
+            self.waypoint_names.join(" ➔ ")
+        ));
         s.push_str("═══════════════════════════════════════════════════════════\n");
         s
     }
@@ -868,9 +868,16 @@ pub fn find_chain_routes(
             let mut min_dist = 9999;
             for (&src_sys, deals) in &deals_by_source {
                 let has_available = deals.iter().any(|d| {
-                    !candidate.used_deal_keys.contains(&(d.type_id, d.source_station_id, d.dest_station_id))
-                        && !candidate.exhausted_source_stations.contains(&(d.type_id, d.source_station_id))
-                        && !candidate.exhausted_dest_stations.contains(&(d.type_id, d.dest_station_id))
+                    !candidate.used_deal_keys.contains(&(
+                        d.type_id,
+                        d.source_station_id,
+                        d.dest_station_id,
+                    )) && !candidate
+                        .exhausted_source_stations
+                        .contains(&(d.type_id, d.source_station_id))
+                        && !candidate
+                            .exhausted_dest_stations
+                            .contains(&(d.type_id, d.dest_station_id))
                 });
                 if !has_available {
                     continue;
@@ -954,8 +961,11 @@ pub fn find_chain_routes(
             }
 
             // Sort corridors by score (true profit per jump for this leg) DESC and evaluate top candidates
-            corridor_candidates
-                .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            corridor_candidates.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             corridor_candidates.truncate(config.beam_width.max(20));
 
             for cand_corr in corridor_candidates {

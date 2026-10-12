@@ -4,6 +4,8 @@ use base64::Engine;
 use ring::digest::{digest, SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,7 +15,8 @@ pub const DEFAULT_CALLBACK_PORT: u16 = 37373;
 const SSO_AUTH_URL: &str = "https://login.eveonline.com/v2/oauth/authorize";
 const SSO_TOKEN_URL: &str = "https://login.eveonline.com/v2/oauth/token";
 const ESI_WAYPOINT_URL: &str = "https://esi.evetech.net/v2/ui/autopilot/waypoint";
-const ESI_SCOPES: &str = "esi-ui.write_waypoint.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1";
+const ESI_SCOPES: &str =
+    "esi-ui.write_waypoint.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1";
 const USER_AGENT_VAL: &str = "eve-trade-scout/0.1.0 (EVE Online Arbitrage Scout)";
 
 /// Persisted ESI SSO Character Token & Metadata.
@@ -38,13 +41,29 @@ impl SsoToken {
     }
 }
 
-/// Returns the path to the stored SSO token file (~/.config/eve-trade-scout/sso_token.json).
+/// Returns the path to the stored SSO token file (~/.config/eve-traveling-merchant/sso_token.json).
+/// Falls back to legacy ~/.config/eve-trade-scout/sso_token.json if present.
 pub fn token_storage_path() -> PathBuf {
-    let base = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("eve-trade-scout");
-    let _ = std::fs::create_dir_all(&base);
-    base.join("sso_token.json")
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    let new_path = base.join("eve-traveling-merchant").join("sso_token.json");
+    if new_path.exists() {
+        return new_path;
+    }
+    let legacy_path = base.join("eve-trade-scout").join("sso_token.json");
+    if legacy_path.exists() {
+        return legacy_path;
+    }
+    let target_dir = base.join("eve-traveling-merchant");
+    let _ = std::fs::create_dir_all(&target_dir);
+    #[cfg(unix)]
+    {
+        if let Ok(meta) = std::fs::metadata(&target_dir) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o700);
+            let _ = std::fs::set_permissions(&target_dir, perms);
+        }
+    }
+    new_path
 }
 
 /// Loads the persisted SSO token if available.
@@ -57,11 +76,39 @@ pub fn load_saved_token() -> Option<SsoToken> {
     serde_json::from_str(&data).ok()
 }
 
-/// Persists the SSO token to disk.
+/// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
 pub fn save_token(token: &SsoToken) -> Result<()> {
     let path = token_storage_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            if let Ok(meta) = std::fs::metadata(parent) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o700);
+                let _ = std::fs::set_permissions(parent, perms);
+            }
+        }
+    }
     let data = serde_json::to_string_pretty(token)?;
-    std::fs::write(path, data)?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        let _ = file.set_permissions(perms);
+        file.write_all(data.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, data)?;
+    }
     Ok(())
 }
 
@@ -105,12 +152,19 @@ pub fn get_developer_client_id() -> Option<String> {
             return Some(trimmed);
         }
     }
-    // 3. Private local config file (~/.config/eve-trade-scout/developer_client_id)
-    let private_path = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("eve-trade-scout")
+    // 3. Private local config file (~/.config/eve-traveling-merchant/developer_client_id or legacy ~/.config/eve-trade-scout/developer_client_id)
+    let base = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let new_path = base
+        .join("eve-traveling-merchant")
         .join("developer_client_id");
-    if let Ok(content) = std::fs::read_to_string(private_path) {
+    if let Ok(content) = std::fs::read_to_string(&new_path) {
+        let trimmed = content.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+    let legacy_path = base.join("eve-trade-scout").join("developer_client_id");
+    if let Ok(content) = std::fs::read_to_string(&legacy_path) {
         let trimmed = content.trim().to_string();
         if !trimmed.is_empty() {
             return Some(trimmed);
@@ -462,19 +516,16 @@ pub async fn authenticate_character_via_pkce(
         .map_err(|_| anyhow::anyhow!("Failed to generate random state for SSO"))?;
     let state = URL_SAFE_NO_PAD.encode(state_bytes);
 
-    let auth_url = build_authorize_url(&effective_client_id, callback_port, &state, &code_challenge);
+    let auth_url =
+        build_authorize_url(&effective_client_id, callback_port, &state, &code_challenge);
 
     // Attempt to open the default system browser via xdg-open (Linux/desktop)
     let _ = std::process::Command::new("xdg-open")
         .arg(&auth_url)
         .spawn();
 
-    let code = listen_for_auth_code(
-        callback_port,
-        &state,
-        std::time::Duration::from_secs(180),
-    )
-    .await?;
+    let code =
+        listen_for_auth_code(callback_port, &state, std::time::Duration::from_secs(180)).await?;
 
     let token = exchange_code_for_token(
         client,
@@ -536,7 +587,11 @@ pub async fn fetch_character_location(
         if status.as_u16() == 403 {
             bail!("Missing required scope 'esi-location.read_location.v1'. Please re-connect character in Settings.");
         }
-        bail!("ESI character location request failed ({}): {}", status, body);
+        bail!(
+            "ESI character location request failed ({}): {}",
+            status,
+            body
+        );
     }
 
     let loc: CharacterLocation = resp
@@ -559,4 +614,3 @@ pub async fn get_character_location_with_token(
     ensure_fresh_token(client, &effective_client_id, &mut token).await?;
     fetch_character_location(client, &token).await
 }
-

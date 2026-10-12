@@ -1081,7 +1081,10 @@ mod tests {
             2,
             "Both the player insignia deal and the player mineral deal must pass when hide_npc_trades is active"
         );
-        assert_eq!(filtered[0].item_name, "Federation Navy Midshipman Insignia I");
+        assert_eq!(
+            filtered[0].item_name,
+            "Federation Navy Midshipman Insignia I"
+        );
         assert!(!filtered[0].is_npc_trade);
         assert_eq!(filtered[1].item_name, "Tritanium");
         assert!(!filtered[1].is_npc_trade);
@@ -1343,44 +1346,46 @@ mod tests {
 
     #[test]
     fn test_filter_top_deals_preserves_fastest_highest_profit_routes() {
-        let make_indexed_deal = |idx: usize, src_id: u64, dst_id: u64, ppj: f64| (
-            idx,
-            ArbitrageDeal {
-                type_id: 34,
-                item_name: "Tritanium".to_string(),
-                source_order_id: src_id,
-                dest_order_id: dst_id,
-                source_order_volume_remain: 100,
-                dest_order_volume_remain: 100,
-                dest_order_min_volume: 1,
-                is_npc_trade: false,
-                buy_price: 5.0,
-                sell_price: 10.0,
-                spread_pct: 100.0,
-                source_station_id: src_id,
-                source_system_id: 30000142,
-                source_system_name: "Jita".to_string(),
-                source_station_name: "Station".to_string(),
-                source_security: 0.95,
-                dest_station_id: dst_id,
-                dest_system_id: 30000144,
-                dest_system_name: "Perimeter".to_string(),
-                dest_station_name: "Station".to_string(),
-                dest_security: 0.90,
-                quantity: 100,
-                volume_used: 1.0,
-                capital_required: 500.0,
-                gross_profit: 500.0,
-                taxes_and_fees: 50.0,
-                net_profit: 450.0,
-                net_profit_pct: 90.0,
-                jumps_from_home: 0,
-                jumps_source_dest: 1,
-                total_jumps: 1,
-                profit_per_jump: ppj,
-                profit_per_m3: 450.0,
-            },
-        );
+        let make_indexed_deal = |idx: usize, src_id: u64, dst_id: u64, ppj: f64| {
+            (
+                idx,
+                ArbitrageDeal {
+                    type_id: 34,
+                    item_name: "Tritanium".to_string(),
+                    source_order_id: src_id,
+                    dest_order_id: dst_id,
+                    source_order_volume_remain: 100,
+                    dest_order_volume_remain: 100,
+                    dest_order_min_volume: 1,
+                    is_npc_trade: false,
+                    buy_price: 5.0,
+                    sell_price: 10.0,
+                    spread_pct: 100.0,
+                    source_station_id: src_id,
+                    source_system_id: 30000142,
+                    source_system_name: "Jita".to_string(),
+                    source_station_name: "Station".to_string(),
+                    source_security: 0.95,
+                    dest_station_id: dst_id,
+                    dest_system_id: 30000144,
+                    dest_system_name: "Perimeter".to_string(),
+                    dest_station_name: "Station".to_string(),
+                    dest_security: 0.90,
+                    quantity: 100,
+                    volume_used: 1.0,
+                    capital_required: 500.0,
+                    gross_profit: 500.0,
+                    taxes_and_fees: 50.0,
+                    net_profit: 450.0,
+                    net_profit_pct: 90.0,
+                    jumps_from_home: 0,
+                    jumps_source_dest: 1,
+                    total_jumps: 1,
+                    profit_per_jump: ppj,
+                    profit_per_m3: 450.0,
+                },
+            )
+        };
 
         let indexed_deals = vec![
             make_indexed_deal(10, 501, 601, 15.0),
@@ -1389,12 +1394,7 @@ mod tests {
             make_indexed_deal(13, 502, 601, 8.0),
         ];
 
-        let filtered = filter_deals_by_order_limit(
-            indexed_deals,
-            2,
-            2,
-            |(_, d)| d,
-        );
+        let filtered = filter_deals_by_order_limit(indexed_deals, 2, 2, |(_, d)| d);
 
         assert_eq!(filtered.len(), 3);
         assert_eq!(filtered[0].0, 10);
@@ -1402,5 +1402,3 @@ mod tests {
         assert_eq!(filtered[2].0, 13);
     }
 }
-
-

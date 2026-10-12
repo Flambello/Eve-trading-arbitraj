@@ -931,16 +931,32 @@ fn test_chain_cannot_exceed_max_dest_loads_on_subsequent_legs() {
         ..Default::default()
     };
 
-    let routes = find_chain_routes(&[a1.clone(), b1.clone(), a2.clone(), b2.clone(), a3.clone()], &graph, &cfg);
+    let routes = find_chain_routes(
+        &[a1.clone(), b1.clone(), a2.clone(), b2.clone(), a3.clone()],
+        &graph,
+        &cfg,
+    );
     assert!(!routes.is_empty(), "Should find chain routes");
 
     // Check all routes: none should have 5 legs because A3 is blocked after 2 loads of Spirits to Perimeter!
     for r in &routes {
-        assert!(r.legs.len() <= 4, "Route cannot have 5 legs because 3rd load of Spirits is blocked");
-        let spirits_to_perimeter_count = r.legs.iter().filter(|leg| {
-            leg.sell.cargo_sold.iter().any(|slot| slot.deal.type_id == 1001 && slot.deal.dest_station_id == 60000144)
-        }).count();
-        assert!(spirits_to_perimeter_count <= 2, "Cannot deliver more than 2 loads of Spirits to Perimeter station");
+        assert!(
+            r.legs.len() <= 4,
+            "Route cannot have 5 legs because 3rd load of Spirits is blocked"
+        );
+        let spirits_to_perimeter_count =
+            r.legs
+                .iter()
+                .filter(|leg| {
+                    leg.sell.cargo_sold.iter().any(|slot| {
+                        slot.deal.type_id == 1001 && slot.deal.dest_station_id == 60000144
+                    })
+                })
+                .count();
+        assert!(
+            spirits_to_perimeter_count <= 2,
+            "Cannot deliver more than 2 loads of Spirits to Perimeter station"
+        );
     }
 
     // Now add Deal C: Jita -> Perimeter (Wheat, type_id 3001) which has 0 loads delivered to Perimeter
@@ -962,7 +978,10 @@ fn test_chain_cannot_exceed_max_dest_loads_on_subsequent_legs() {
     let routes_with_c = find_chain_routes(&[a1, b1, a2, b2, a3, c], &graph, &cfg);
     // Filter for routes that achieved 5 legs
     let five_leg_routes: Vec<_> = routes_with_c.iter().filter(|r| r.legs.len() == 5).collect();
-    assert!(!five_leg_routes.is_empty(), "Should successfully find a 5-leg route when distinct commodity (Wheat) is available");
+    assert!(
+        !five_leg_routes.is_empty(),
+        "Should successfully find a 5-leg route when distinct commodity (Wheat) is available"
+    );
     let five_leg = five_leg_routes[0];
     assert_eq!(five_leg.legs[4].sell.cargo_sold[0].deal.item_name, "Wheat");
 }
@@ -1027,7 +1046,10 @@ fn test_chain_max_dest_loads_one_strictly_enforced() {
     let has_two_leg = routes.iter().any(|r| r.legs.len() == 2);
     assert!(has_two_leg, "Should find 2-leg route");
     let max_legs = routes.iter().map(|r| r.legs.len()).max().unwrap_or(0);
-    assert_eq!(max_legs, 2, "Cannot form 3rd leg because max_dest_loads=1 blocks second load of Spirits to Perimeter");
+    assert_eq!(
+        max_legs, 2,
+        "Cannot form 3rd leg because max_dest_loads=1 blocks second load of Spirits to Perimeter"
+    );
 }
 
 #[test]
@@ -1068,9 +1090,16 @@ fn test_chain_different_items_same_destination_allowed() {
     };
 
     let routes = find_chain_routes(&[a, b], &graph, &cfg);
-    assert!(!routes.is_empty(), "Should find route packing both deals to Perimeter");
+    assert!(
+        !routes.is_empty(),
+        "Should find route packing both deals to Perimeter"
+    );
     let best = &routes[0];
-    assert_eq!(best.legs[0].pickups[0].cargo_loaded.len(), 2, "Both distinct items delivered to same destination station");
+    assert_eq!(
+        best.legs[0].pickups[0].cargo_loaded.len(),
+        2,
+        "Both distinct items delivered to same destination station"
+    );
 }
 
 #[test]
@@ -1118,8 +1147,7 @@ fn test_chain_include_npc_toggle_disabled() {
     let best = &routes[0];
     assert_eq!(best.legs[0].sell.cargo_sold.len(), 1);
     assert_eq!(
-        best.legs[0].sell.cargo_sold[0].deal.item_name,
-        "Tritanium (Player Market)",
+        best.legs[0].sell.cargo_sold[0].deal.item_name, "Tritanium (Player Market)",
         "NPC trade must be completely excluded when include_npc is false"
     );
 }
@@ -1166,8 +1194,7 @@ fn test_chain_include_npc_toggle_enabled() {
     assert!(!routes.is_empty(), "Should find route");
     let best = &routes[0];
     assert_eq!(
-        best.legs[0].sell.cargo_sold[0].deal.item_name,
-        "Spirits (NPC Commodity)",
+        best.legs[0].sell.cargo_sold[0].deal.item_name, "Spirits (NPC Commodity)",
         "Higher profit NPC commodity should be chosen when include_npc is true"
     );
 }
@@ -1278,7 +1305,10 @@ fn test_continuous_onward_chaining_no_distant_leaps() {
     assert!(!routes.is_empty(), "Should discover chained routes");
 
     // The 2-leg route must chain continuously from 100 -> 101 -> 102!
-    let two_leg = routes.iter().find(|r| r.legs.len() == 2).expect("Must find 2-leg route");
+    let two_leg = routes
+        .iter()
+        .find(|r| r.legs.len() == 2)
+        .expect("Must find 2-leg route");
     assert_eq!(two_leg.legs[0].pickups[0].system_id, 100);
     assert_eq!(two_leg.legs[0].sell.system_id, 101);
     assert_eq!(
@@ -1511,8 +1541,9 @@ fn test_chain_routes_sorted_by_profit_per_jump_descending() {
         routes[0].profit_per_jump >= routes[1].profit_per_jump,
         "Routes must be ordered by profit_per_jump DESC"
     );
-    assert_eq!(routes[0].legs.len(), 1, "1-leg route has 4,000 PPJ vs 2,500 PPJ for 2-leg route");
+    assert_eq!(
+        routes[0].legs.len(),
+        1,
+        "1-leg route has 4,000 PPJ vs 2,500 PPJ for 2-leg route"
+    );
 }
-
-
-

@@ -215,6 +215,21 @@ fn export_manifests_to_csv(manifests: &[TradeCorridorManifest]) -> String {
     out
 }
 
+/// Resolves a safe user-writable path for CSV exports (e.g. ~/Downloads/filename or ./filename).
+fn resolve_csv_export_path(filename: &str) -> std::path::PathBuf {
+    if let Some(dl) = dirs::download_dir() {
+        if dl.exists() {
+            return dl.join(filename);
+        }
+    }
+    if let Some(doc) = dirs::document_dir() {
+        if doc.exists() {
+            return doc.join(filename);
+        }
+    }
+    std::path::PathBuf::from(filename)
+}
+
 pub struct DesktopApp {
     sde: Option<Arc<SdeLoader>>,
     graph: Option<Arc<SystemGraph>>,
@@ -1118,7 +1133,10 @@ impl eframe::App for DesktopApp {
                     Ok(tok) => {
                         self.sso_character_name = Some(tok.character_name.clone());
                         self.sso_character_id = Some(tok.character_id);
-                        self.set_toast(format!("🚀 Connected to EVE character: {}", tok.character_name));
+                        self.set_toast(format!(
+                            "🚀 Connected to EVE character: {}",
+                            tok.character_name
+                        ));
                         crate::audio::play_high_profit_alert();
                     }
                     Err(err) => {
@@ -1135,7 +1153,10 @@ impl eframe::App for DesktopApp {
                 self.sso_is_pushing = false;
                 match res {
                     Ok(stops) => {
-                        self.set_toast(format!("🚀 Injected {} waypoint(s) into live EVE client HUD!", stops));
+                        self.set_toast(format!(
+                            "🚀 Injected {} waypoint(s) into live EVE client HUD!",
+                            stops
+                        ));
                         crate::audio::play_high_profit_alert();
                     }
                     Err(err) => {
@@ -1184,7 +1205,11 @@ impl eframe::App for DesktopApp {
             }
         }
 
-        if self.chain_is_running || self.sso_is_authenticating || self.sso_is_pushing || self.sso_is_fetching_location {
+        if self.chain_is_running
+            || self.sso_is_authenticating
+            || self.sso_is_pushing
+            || self.sso_is_fetching_location
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
@@ -2691,8 +2716,9 @@ impl DesktopApp {
 
                         let csv_str = export_deals_to_csv(&export_filtered);
                         copy_to_clipboard(ui, csv_str.clone());
-                        let _ = std::fs::write("deals_export.csv", &csv_str);
-                        self.set_toast(format!("Exported {} deals to ./deals_export.csv & copied to clipboard!", export_filtered.len()));
+                        let export_path = resolve_csv_export_path("deals_export.csv");
+                        let _ = std::fs::write(&export_path, &csv_str);
+                        self.set_toast(format!("Exported {} deals to {} & copied to clipboard!", export_filtered.len(), export_path.display()));
                     }
                 });
             });
@@ -4118,8 +4144,9 @@ impl DesktopApp {
                         if ui.add(export_btn).on_hover_text("Export all packed manifests to ./manifests_export.csv and clipboard").clicked() {
                             let csv_str = export_manifests_to_csv(&self.manifests);
                             copy_to_clipboard(ui, csv_str.clone());
-                            let _ = std::fs::write("manifests_export.csv", &csv_str);
-                            self.set_toast(format!("Exported {} manifests to ./manifests_export.csv & copied to clipboard!", self.manifests.len()));
+                            let export_path = resolve_csv_export_path("manifests_export.csv");
+                            let _ = std::fs::write(&export_path, &csv_str);
+                            self.set_toast(format!("Exported {} manifests to {} & copied to clipboard!", self.manifests.len(), export_path.display()));
                         }
                     });
                 });
@@ -4987,11 +5014,7 @@ impl DesktopApp {
                 } else {
                     Color32::from_rgb(0, 180, 255)
                 };
-                ui.label(
-                    RichText::new("│")
-                        .size(13.0)
-                        .color(line_color),
-                );
+                ui.label(RichText::new("│").size(13.0).color(line_color));
                 let (jump_text, stroke_color, text_color) = if is_empty_reposition {
                     if jumps == 0 {
                         (
@@ -5032,11 +5055,7 @@ impl DesktopApp {
                                 .strong(),
                         );
                     });
-                ui.label(
-                    RichText::new("▼")
-                        .size(13.0)
-                        .color(line_color),
-                );
+                ui.label(RichText::new("▼").size(13.0).color(line_color));
                 ui.add_space(3.0);
             });
         };
@@ -5664,7 +5683,8 @@ impl DesktopApp {
                 .rounding(6.0)
                 .inner_margin(12.0)
                 .show(ui, |ui| {
-                    let leg_empty_jumps = leg.pickups.first().map(|p| p.jumps_from_prev).unwrap_or(0);
+                    let leg_empty_jumps =
+                        leg.pickups.first().map(|p| p.jumps_from_prev).unwrap_or(0);
                     let leg_haul_jumps = leg.leg_total_jumps.saturating_sub(leg_empty_jumps);
                     let leg_ppj = leg.leg_total_profit / (leg.leg_total_jumps.max(1) as f64);
                     ui.horizontal(|ui| {
@@ -5683,10 +5703,7 @@ impl DesktopApp {
                         } else {
                             format!("{} jumps (direct haul)", leg.leg_total_jumps)
                         };
-                        ui.label(
-                            RichText::new(jumps_str)
-                                .color(Color32::from_rgb(255, 205, 0)),
-                        );
+                        ui.label(RichText::new(jumps_str).color(Color32::from_rgb(255, 205, 0)));
                         ui.separator();
                         ui.label(
                             RichText::new(format!(
@@ -6200,16 +6217,16 @@ impl DesktopApp {
         }
 
         if do_export_csv {
-            let deals_for_csv: Vec<(usize, &ArbitrageDeal)> = filtered_deals
-                .iter()
-                .enumerate()
-                .collect();
+            let deals_for_csv: Vec<(usize, &ArbitrageDeal)> =
+                filtered_deals.iter().enumerate().collect();
             let csv_str = export_deals_to_csv(&deals_for_csv);
-            let _ = std::fs::write("hub_arbitrage_export.csv", &csv_str);
+            let export_path = resolve_csv_export_path("hub_arbitrage_export.csv");
+            let _ = std::fs::write(&export_path, &csv_str);
             copy_to_clipboard(ui, csv_str);
             action_toast = Some(format!(
-                "Exported {} hub deals to ./hub_arbitrage_export.csv & copied to clipboard!",
-                filtered_deals.len()
+                "Exported {} hub deals to {} & copied to clipboard!",
+                filtered_deals.len(),
+                export_path.display()
             ));
         }
 
@@ -6217,7 +6234,9 @@ impl DesktopApp {
         let total_pot_profit: f64 = filtered_deals.iter().map(|d| d.net_profit).sum();
         let total_pot_capital: f64 = filtered_deals.iter().map(|d| d.capital_required).sum();
         let total_pot_vol: f64 = filtered_deals.iter().map(|d| d.volume_used).sum();
-        let jumps_str = if let (Some(s), Some(d), Some(g)) = (self.hub_source_filter, self.hub_dest_filter, &self.graph) {
+        let jumps_str = if let (Some(s), Some(d), Some(g)) =
+            (self.hub_source_filter, self.hub_dest_filter, &self.graph)
+        {
             let j = g.jump_count(s.system_id(), d.system_id(), self.safe_only);
             format!("{} jumps (highsec safe)", j)
         } else {
@@ -6456,40 +6475,45 @@ impl DesktopApp {
             let is_desc = self.hub_sort_descending;
             let current_selected_idx = self.selected_deal_idx;
 
-            let mut render_header_btn = |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
-                let is_active = current_sort == sort_target;
-                let arrow = if is_active {
-                    if is_desc { " ▼" } else { " ▲" }
-                } else {
-                    ""
-                };
-                let label_text = format!("{}{}", title, arrow);
-                let text_color = if is_active {
-                    Color32::from_rgb(255, 215, 0)
-                } else {
-                    Color32::from_rgb(255, 205, 0)
-                };
-                let resp = ui.add(
-                    egui::Button::new(RichText::new(label_text).color(text_color).strong())
-                        .frame(false),
-                );
-                if resp.clicked() {
-                    ui.ctx().request_repaint();
-                    if is_active {
-                        change_sort = Some((sort_target, !is_desc));
+            let mut render_header_btn =
+                |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
+                    let is_active = current_sort == sort_target;
+                    let arrow = if is_active {
+                        if is_desc {
+                            " ▼"
+                        } else {
+                            " ▲"
+                        }
                     } else {
-                        let default_desc = !matches!(
-                            sort_target,
-                            DealSortBy::ItemName
-                                | DealSortBy::BuySystem
-                                | DealSortBy::SellSystem
-                                | DealSortBy::Jumps
-                                | DealSortBy::Cost
-                        );
-                        change_sort = Some((sort_target, default_desc));
+                        ""
+                    };
+                    let label_text = format!("{}{}", title, arrow);
+                    let text_color = if is_active {
+                        Color32::from_rgb(255, 215, 0)
+                    } else {
+                        Color32::from_rgb(255, 205, 0)
+                    };
+                    let resp = ui.add(
+                        egui::Button::new(RichText::new(label_text).color(text_color).strong())
+                            .frame(false),
+                    );
+                    if resp.clicked() {
+                        ui.ctx().request_repaint();
+                        if is_active {
+                            change_sort = Some((sort_target, !is_desc));
+                        } else {
+                            let default_desc = !matches!(
+                                sort_target,
+                                DealSortBy::ItemName
+                                    | DealSortBy::BuySystem
+                                    | DealSortBy::SellSystem
+                                    | DealSortBy::Jumps
+                                    | DealSortBy::Cost
+                            );
+                            change_sort = Some((sort_target, default_desc));
+                        }
                     }
-                }
-            };
+                };
 
             let actions_w = 120.0;
             let rank_w = 38.0;
@@ -6514,20 +6538,56 @@ impl DesktopApp {
                 .column(Column::initial(80.0).at_least(70.0).resizable(true)) // PROFIT/JUMP
                 .column(Column::exact(actions_w)) // ACTIONS
                 .header(24.0, |mut header| {
-                    header.col(|ui| { ui.label(RichText::new("#").color(Color32::from_rgb(255, 205, 0)).strong()); });
-                    header.col(|ui| { render_header_btn(ui, "ITEM", DealSortBy::ItemName); });
-                    header.col(|ui| { render_header_btn(ui, "BUY HUB / STATION", DealSortBy::BuySystem); });
-                    header.col(|ui| { render_header_btn(ui, "BUY / ITEM", DealSortBy::BuyPrice); });
-                    header.col(|ui| { render_header_btn(ui, "SELL HUB / STATION", DealSortBy::SellSystem); });
-                    header.col(|ui| { render_header_btn(ui, "SELL / ITEM", DealSortBy::SellPrice); });
-                    header.col(|ui| { render_header_btn(ui, "QTY", DealSortBy::Quantity); });
-                    header.col(|ui| { render_header_btn(ui, "VOL (m³)", DealSortBy::Volume); });
-                    header.col(|ui| { render_header_btn(ui, "COST (M)", DealSortBy::Cost); });
-                    header.col(|ui| { render_header_btn(ui, "NET PROFIT", DealSortBy::TotalProfit); });
-                    header.col(|ui| { render_header_btn(ui, "NET ROI", DealSortBy::RoiPct); });
-                    header.col(|ui| { render_header_btn(ui, "JUMPS", DealSortBy::Jumps); });
-                    header.col(|ui| { render_header_btn(ui, "PROFIT/JUMP", DealSortBy::ProfitPerJump); });
-                    header.col(|ui| { ui.label(RichText::new("ACTIONS").color(Color32::from_rgb(255, 205, 0)).strong()); });
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("#")
+                                .color(Color32::from_rgb(255, 205, 0))
+                                .strong(),
+                        );
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "ITEM", DealSortBy::ItemName);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "BUY HUB / STATION", DealSortBy::BuySystem);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "BUY / ITEM", DealSortBy::BuyPrice);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "SELL HUB / STATION", DealSortBy::SellSystem);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "SELL / ITEM", DealSortBy::SellPrice);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "QTY", DealSortBy::Quantity);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "VOL (m³)", DealSortBy::Volume);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "COST (M)", DealSortBy::Cost);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "NET PROFIT", DealSortBy::TotalProfit);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "NET ROI", DealSortBy::RoiPct);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "JUMPS", DealSortBy::Jumps);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "PROFIT/JUMP", DealSortBy::ProfitPerJump);
+                    });
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("ACTIONS")
+                                .color(Color32::from_rgb(255, 205, 0))
+                                .strong(),
+                        );
+                    });
                 })
                 .body(|mut body| {
                     for (display_rank, deal) in filtered_deals.iter().enumerate() {
@@ -6551,7 +6611,10 @@ impl DesktopApp {
                                 };
                                 let rank_resp = egui::Frame::none()
                                     .fill(Color32::from_rgba_unmultiplied(
-                                        rank_color.r(), rank_color.g(), rank_color.b(), 28,
+                                        rank_color.r(),
+                                        rank_color.g(),
+                                        rank_color.b(),
+                                        28,
                                     ))
                                     .stroke(Stroke::new(1.0_f32, rank_color))
                                     .rounding(3.0)
@@ -6579,13 +6642,25 @@ impl DesktopApp {
                                     Color32::WHITE
                                 };
                                 ui.horizontal(|ui| {
-                                    if ui.selectable_label(is_selected, RichText::new(&deal.item_name).color(item_color).strong()).clicked() {
+                                    if ui
+                                        .selectable_label(
+                                            is_selected,
+                                            RichText::new(&deal.item_name)
+                                                .color(item_color)
+                                                .strong(),
+                                        )
+                                        .clicked()
+                                    {
                                         if let Some(idx) = orig_idx {
                                             toggle_select = Some(idx);
                                         }
                                     }
                                     if deal.is_npc_trade {
-                                        ui.label(RichText::new("NPC").color(Color32::from_rgb(255, 180, 0)).size(10.0));
+                                        ui.label(
+                                            RichText::new("NPC")
+                                                .color(Color32::from_rgb(255, 180, 0))
+                                                .size(10.0),
+                                        );
                                     }
                                 });
                             });
@@ -6606,7 +6681,11 @@ impl DesktopApp {
                                 let col = hub_badge_color(src_hub);
                                 ui.horizontal(|ui| {
                                     if let Some(h) = src_hub {
-                                        ui.label(RichText::new(format!("[{}]", h.name())).color(col).strong());
+                                        ui.label(
+                                            RichText::new(format!("[{}]", h.name()))
+                                                .color(col)
+                                                .strong(),
+                                        );
                                     }
                                     let st_label = if deal.source_station_name.len() > 22 {
                                         format!("{}…", &deal.source_station_name[..20])
@@ -6620,7 +6699,10 @@ impl DesktopApp {
 
                             // 4: Buy / Item
                             row.col(|ui| {
-                                ui.label(RichText::new(format!("{:.2}", deal.buy_price)).color(Color32::LIGHT_GRAY));
+                                ui.label(
+                                    RichText::new(format!("{:.2}", deal.buy_price))
+                                        .color(Color32::LIGHT_GRAY),
+                                );
                             });
 
                             // 5: Sell Hub & Station
@@ -6629,7 +6711,11 @@ impl DesktopApp {
                                 let col = hub_badge_color(dst_hub);
                                 ui.horizontal(|ui| {
                                     if let Some(h) = dst_hub {
-                                        ui.label(RichText::new(format!("[{}]", h.name())).color(col).strong());
+                                        ui.label(
+                                            RichText::new(format!("[{}]", h.name()))
+                                                .color(col)
+                                                .strong(),
+                                        );
                                     }
                                     let st_label = if deal.dest_station_name.len() > 22 {
                                         format!("{}…", &deal.dest_station_name[..20])
@@ -6643,30 +6729,48 @@ impl DesktopApp {
 
                             // 6: Sell / Item
                             row.col(|ui| {
-                                ui.label(RichText::new(format!("{:.2}", deal.sell_price)).color(Color32::LIGHT_GRAY));
+                                ui.label(
+                                    RichText::new(format!("{:.2}", deal.sell_price))
+                                        .color(Color32::LIGHT_GRAY),
+                                );
                             });
 
                             // 7: QTY
                             row.col(|ui| {
-                                ui.label(RichText::new(deal.quantity.to_string()).color(Color32::LIGHT_GRAY));
+                                ui.label(
+                                    RichText::new(deal.quantity.to_string())
+                                        .color(Color32::LIGHT_GRAY),
+                                );
                             });
 
                             // 8: VOL
                             row.col(|ui| {
-                                ui.label(RichText::new(format!("{:.1}", deal.volume_used)).color(Color32::LIGHT_GRAY));
+                                ui.label(
+                                    RichText::new(format!("{:.1}", deal.volume_used))
+                                        .color(Color32::LIGHT_GRAY),
+                                );
                             });
 
                             // 9: COST (M)
                             row.col(|ui| {
-                                ui.label(RichText::new(format!("{:.2}M", deal.capital_required / 1_000_000.0)).color(Color32::LIGHT_GRAY));
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{:.2}M",
+                                        deal.capital_required / 1_000_000.0
+                                    ))
+                                    .color(Color32::LIGHT_GRAY),
+                                );
                             });
 
                             // 10: NET PROFIT
                             row.col(|ui| {
                                 ui.label(
-                                    RichText::new(format!("+{:.2}M ISK", deal.net_profit / 1_000_000.0))
-                                        .color(Color32::from_rgb(0, 240, 150))
-                                        .strong(),
+                                    RichText::new(format!(
+                                        "+{:.2}M ISK",
+                                        deal.net_profit / 1_000_000.0
+                                    ))
+                                    .color(Color32::from_rgb(0, 240, 150))
+                                    .strong(),
                                 );
                             });
 
@@ -6686,33 +6790,66 @@ impl DesktopApp {
 
                             // 12: JUMPS
                             row.col(|ui| {
-                                let jumps_tag = format!("{}+{}={}", deal.jumps_from_home, deal.jumps_source_dest, deal.total_jumps);
+                                let jumps_tag = format!(
+                                    "{}+{}={}",
+                                    deal.jumps_from_home, deal.jumps_source_dest, deal.total_jumps
+                                );
                                 ui.label(RichText::new(jumps_tag).color(Color32::LIGHT_GRAY));
                             });
 
                             // 13: PROFIT/JUMP
                             row.col(|ui| {
                                 ui.label(
-                                    RichText::new(format!("{:.2}M", deal.profit_per_jump / 1_000_000.0))
-                                        .color(Color32::from_rgb(255, 215, 0))
-                                        .strong(),
+                                    RichText::new(format!(
+                                        "{:.2}M",
+                                        deal.profit_per_jump / 1_000_000.0
+                                    ))
+                                    .color(Color32::from_rgb(255, 215, 0))
+                                    .strong(),
                                 );
                             });
 
                             // 14: ACTIONS
                             row.col(|ui| {
                                 ui.horizontal(|ui| {
-                                    if ui.small_button("📋 Item").on_hover_text("Copy item name to clipboard").clicked() {
+                                    if ui
+                                        .small_button("📋 Item")
+                                        .on_hover_text("Copy item name to clipboard")
+                                        .clicked()
+                                    {
                                         copy_to_clipboard(ui, deal.item_name.clone());
-                                        action_toast = Some(format!("Copied item '{}' to clipboard!", deal.item_name));
+                                        action_toast = Some(format!(
+                                            "Copied item '{}' to clipboard!",
+                                            deal.item_name
+                                        ));
                                     }
-                                    if ui.small_button("📋 Buy").on_hover_text(format!("Copy buy station '{}' to clipboard", deal.source_station_name)).clicked() {
+                                    if ui
+                                        .small_button("📋 Buy")
+                                        .on_hover_text(format!(
+                                            "Copy buy station '{}' to clipboard",
+                                            deal.source_station_name
+                                        ))
+                                        .clicked()
+                                    {
                                         copy_to_clipboard(ui, deal.source_station_name.clone());
-                                        action_toast = Some(format!("Copied buy station '{}' to clipboard!", deal.source_station_name));
+                                        action_toast = Some(format!(
+                                            "Copied buy station '{}' to clipboard!",
+                                            deal.source_station_name
+                                        ));
                                     }
-                                    if ui.small_button("📋 Sell").on_hover_text(format!("Copy sell station '{}' to clipboard", deal.dest_station_name)).clicked() {
+                                    if ui
+                                        .small_button("📋 Sell")
+                                        .on_hover_text(format!(
+                                            "Copy sell station '{}' to clipboard",
+                                            deal.dest_station_name
+                                        ))
+                                        .clicked()
+                                    {
                                         copy_to_clipboard(ui, deal.dest_station_name.clone());
-                                        action_toast = Some(format!("Copied sell station '{}' to clipboard!", deal.dest_station_name));
+                                        action_toast = Some(format!(
+                                            "Copied sell station '{}' to clipboard!",
+                                            deal.dest_station_name
+                                        ));
                                     }
                                 });
                             });

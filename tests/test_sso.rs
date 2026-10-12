@@ -65,13 +65,20 @@ fn test_pkce_generation_and_challenge_derivation() {
     let (verifier, challenge) = generate_pkce_pair().expect("PKCE pair generation must succeed");
 
     // 48 random bytes in URL_SAFE_NO_PAD base64 produces exactly 64 characters
-    assert_eq!(verifier.len(), 64, "Verifier must be 64 base64url characters");
+    assert_eq!(
+        verifier.len(),
+        64,
+        "Verifier must be 64 base64url characters"
+    );
 
     // Compute expected SHA256 digest and encode it base64url without padding
     let hash = digest(&SHA256, verifier.as_bytes());
     let expected_challenge = URL_SAFE_NO_PAD.encode(hash.as_ref());
 
-    assert_eq!(challenge, expected_challenge, "Challenge must be SHA256 of verifier base64url encoded");
+    assert_eq!(
+        challenge, expected_challenge,
+        "Challenge must be SHA256 of verifier base64url encoded"
+    );
 }
 
 #[test]
@@ -106,12 +113,16 @@ fn test_sso_token_serde_and_expiration() {
     };
 
     let serialized = serde_json::to_string(&token).expect("Token serialization must succeed");
-    let deserialized: SsoToken = serde_json::from_str(&serialized).expect("Token deserialization must succeed");
+    let deserialized: SsoToken =
+        serde_json::from_str(&serialized).expect("Token deserialization must succeed");
 
     assert_eq!(deserialized.character_name, "Captain Trader");
     assert_eq!(deserialized.character_id, 2112345678);
     assert_eq!(deserialized.access_token, "mock_jwt_access_token");
-    assert!(!deserialized.is_expired(), "Fresh token must not be expired");
+    assert!(
+        !deserialized.is_expired(),
+        "Fresh token must not be expired"
+    );
 
     // Token with expiration in the past
     let expired_token = SsoToken {
@@ -125,7 +136,10 @@ fn test_sso_token_serde_and_expiration() {
         expires_at: now + 45,
         ..token
     };
-    assert!(buffer_token.is_expired(), "Token expiring in 45s must trigger safety buffer refresh");
+    assert!(
+        buffer_token.is_expired(),
+        "Token expiring in 45s must trigger safety buffer refresh"
+    );
 }
 
 #[test]
@@ -256,7 +270,11 @@ fn test_chain_route_ordered_destination_ids_and_flight_sheet() {
         profit_per_jump: 1_333.3,
         overall_roi_pct: 44.0,
         waypoints: vec![30000142, 30002672, 30002187],
-        waypoint_names: vec!["Jita".to_string(), "Dodixie".to_string(), "Amarr".to_string()],
+        waypoint_names: vec![
+            "Jita".to_string(),
+            "Dodixie".to_string(),
+            "Amarr".to_string(),
+        ],
     };
 
     // The sequence of stations across both legs:
@@ -297,7 +315,11 @@ fn test_trade_route_ordered_destination_ids_and_flight_sheet() {
     let trade_route = TradeRoute {
         stops: vec![stop1, stop2],
         waypoints: vec![30000142, 30002672, 30002187],
-        waypoint_names: vec!["Jita".to_string(), "Dodixie".to_string(), "Amarr".to_string()],
+        waypoint_names: vec![
+            "Jita".to_string(),
+            "Dodixie".to_string(),
+            "Amarr".to_string(),
+        ],
         total_jumps: 33,
         total_profit: 44_000.0,
         total_capital_required: 100_000.0,
@@ -306,7 +328,10 @@ fn test_trade_route_ordered_destination_ids_and_flight_sheet() {
     };
 
     // Sequential deduplication: [60003760, 60004588, 60008494]
-    assert_eq!(trade_route.ordered_destination_ids(), vec![60003760, 60004588, 60008494]);
+    assert_eq!(
+        trade_route.ordered_destination_ids(),
+        vec![60003760, 60004588, 60008494]
+    );
 
     let sheet = trade_route.format_eve_flight_sheet();
     assert!(sheet.contains("🗺️ MULTI-STOP ROUTE | 2 Stops"));
@@ -321,14 +346,18 @@ fn test_hub_corridor_destination_ids_and_flight_sheet() {
     let amarr = CoreHub::Amarr;
 
     let dests = hub_arbitrage::hub_corridor_destination_ids(jita, amarr, &None);
-    assert_eq!(dests, vec![jita.primary_station_id(), amarr.primary_station_id()]);
+    assert_eq!(
+        dests,
+        vec![jita.primary_station_id(), amarr.primary_station_id()]
+    );
     assert_eq!(dests, vec![60003760, 60008494]);
 
     // Test with manifest
     let deal = mock_deal(34, "Tritanium", 60003760, 60008494, 30000142, 30002187);
     let manifest = hub_arbitrage::pack_hub_corridor_manifest(&[&deal], 60_000.0, 500_000_000.0);
 
-    let manifest_dests = hub_arbitrage::hub_corridor_destination_ids(jita, amarr, &Some(manifest.clone()));
+    let manifest_dests =
+        hub_arbitrage::hub_corridor_destination_ids(jita, amarr, &Some(manifest.clone()));
     assert_eq!(manifest_dests, vec![60003760, 60008494]);
 
     let sheet = hub_arbitrage::format_hub_flight_sheet(jita, amarr, 9, &manifest);
@@ -403,7 +432,12 @@ fn test_developer_client_id_resolution() {
 
     // Test private config file resolution (~/.config/eve-trade-scout/developer_client_id)
     let from_file = get_developer_client_id();
-    assert!(from_file.is_some(), "Must load client ID from private local config file");
-    assert_eq!(from_file.as_deref(), Some("5793fc7aa2cb49e385d3cfb5d52061c7"));
+    assert!(
+        from_file.is_some(),
+        "Must load client ID from private local config file"
+    );
+    assert_eq!(
+        from_file.as_deref(),
+        Some("5793fc7aa2cb49e385d3cfb5d52061c7")
+    );
 }
-

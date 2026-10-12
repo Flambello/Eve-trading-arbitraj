@@ -66,10 +66,7 @@ impl TradeRoute {
                 "▶ STOP #{} (Travel {} jumps to {}):\n",
                 stop.step, stop.jumps_from_prev, stop.deal.source_system_name
             ));
-            s.push_str(&format!(
-                "  1. BUY at: {}\n",
-                stop.deal.source_station_name
-            ));
+            s.push_str(&format!("  1. BUY at: {}\n", stop.deal.source_station_name));
             s.push_str(&format!(
                 "     • BUY: {}x {} @ {:.2} ISK (Cost: {:.2}M ISK, {:.1} m³)\n",
                 stop.deal.quantity,
@@ -94,7 +91,10 @@ impl TradeRoute {
         }
 
         s.push_str("═══════════════════════════════════════════════════════════\n");
-        s.push_str(&format!("Autopilot trail: {}\n", self.waypoint_names.join(" ➔ ")));
+        s.push_str(&format!(
+            "Autopilot trail: {}\n",
+            self.waypoint_names.join(" ➔ ")
+        ));
         s.push_str("═══════════════════════════════════════════════════════════\n");
         s
     }
@@ -160,7 +160,9 @@ pub fn plan_route(
         let chosen_dest_station = chosen_deal.dest_station_id;
         let chosen_type = chosen_deal.type_id;
 
-        let dcount = dest_loads.entry((chosen_type, chosen_dest_station)).or_insert(0);
+        let dcount = dest_loads
+            .entry((chosen_type, chosen_dest_station))
+            .or_insert(0);
         *dcount += 1;
         let dest_exhausted = *dcount >= 2;
 
@@ -172,7 +174,10 @@ pub fn plan_route(
             if d.type_id == chosen_type && d.source_station_id == chosen_src_station {
                 return false;
             }
-            if dest_exhausted && d.type_id == chosen_type && d.dest_station_id == chosen_dest_station {
+            if dest_exhausted
+                && d.type_id == chosen_type
+                && d.dest_station_id == chosen_dest_station
+            {
                 return false;
             }
             true

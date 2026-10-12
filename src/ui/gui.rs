@@ -4332,36 +4332,63 @@ impl DesktopApp {
             });
 
         // ── Helper closure to draw flowchart connector ──
-        let render_connector = |ui: &mut egui::Ui, jumps: u32| {
+        let render_connector = |ui: &mut egui::Ui, jumps: u32, is_empty_reposition: bool| {
             ui.vertical_centered(|ui| {
                 ui.add_space(3.0);
+                let line_color = if is_empty_reposition && jumps > 0 {
+                    Color32::from_rgb(255, 170, 0)
+                } else {
+                    Color32::from_rgb(0, 180, 255)
+                };
                 ui.label(
                     RichText::new("│")
                         .size(13.0)
-                        .color(Color32::from_rgb(0, 180, 255)),
+                        .color(line_color),
                 );
-                let jump_text = if jumps == 0 {
-                    "⚡ Intra-System Warp (0 jumps)".to_string()
+                let (jump_text, stroke_color, text_color) = if is_empty_reposition {
+                    if jumps == 0 {
+                        (
+                            "⚡ Seamless Station Trade (0 empty jumps)".to_string(),
+                            Color32::from_rgb(0, 220, 140),
+                            Color32::from_rgb(0, 255, 140),
+                        )
+                    } else {
+                        (
+                            format!("⚡ {} Empty Reposition Jump(s) • Deadhead", jumps),
+                            Color32::from_rgb(255, 170, 0),
+                            Color32::from_rgb(255, 205, 50),
+                        )
+                    }
+                } else if jumps == 0 {
+                    (
+                        "⚡ Intra-System Delivery (0 jumps)".to_string(),
+                        Color32::from_rgb(0, 200, 255),
+                        Color32::from_rgb(0, 220, 255),
+                    )
                 } else {
-                    format!("⚡ {} Jump(s) • Safe Highsec", jumps)
+                    (
+                        format!("⚡ {} Haul Jump(s) • Cargo On Board", jumps),
+                        Color32::from_rgb(0, 200, 255),
+                        Color32::from_rgb(180, 230, 255),
+                    )
                 };
                 egui::Frame::none()
                     .fill(Color32::from_rgb(24, 32, 50))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 205, 0)))
+                    .stroke(Stroke::new(1.0_f32, stroke_color))
                     .rounding(10.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 3.0))
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(jump_text)
                                 .size(11.0)
-                                .color(Color32::from_rgb(255, 215, 0))
+                                .color(text_color)
                                 .strong(),
                         );
                     });
                 ui.label(
                     RichText::new("▼")
                         .size(13.0)
-                        .color(Color32::from_rgb(0, 180, 255)),
+                        .color(line_color),
                 );
                 ui.add_space(3.0);
             });
@@ -4374,7 +4401,7 @@ impl DesktopApp {
             .and_then(|l| l.pickups.first())
             .map(|p| p.jumps_from_prev)
             .unwrap_or(0);
-        render_connector(ui, first_jumps);
+        render_connector(ui, first_jumps, true);
 
         // ── 2. Sequential Stops Across Legs ──
         for (leg_idx, leg) in route.legs.iter().enumerate() {
@@ -4607,7 +4634,7 @@ impl DesktopApp {
                 } else {
                     leg.sell.jumps_from_prev
                 };
-                render_connector(ui, next_jumps);
+                render_connector(ui, next_jumps, false);
             }
 
             // Sell Stop
@@ -4783,7 +4810,7 @@ impl DesktopApp {
                     .first()
                     .map(|p| p.jumps_from_prev)
                     .unwrap_or(0);
-                render_connector(ui, next_leg_jumps);
+                render_connector(ui, next_leg_jumps, true);
             }
         }
 
@@ -4953,6 +4980,9 @@ impl DesktopApp {
                 .rounding(6.0)
                 .inner_margin(12.0)
                 .show(ui, |ui| {
+                    let leg_empty_jumps = leg.pickups.first().map(|p| p.jumps_from_prev).unwrap_or(0);
+                    let leg_haul_jumps = leg.leg_total_jumps.saturating_sub(leg_empty_jumps);
+                    let leg_ppj = leg.leg_total_profit / (leg.leg_total_jumps.max(1) as f64);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("LEG #{}", leg_idx + 1))
@@ -4961,8 +4991,16 @@ impl DesktopApp {
                                 .color(Color32::from_rgb(0, 220, 255)),
                         );
                         ui.separator();
+                        let jumps_str = if leg_empty_jumps > 0 {
+                            format!(
+                                "{} jumps ({} empty + {} haul)",
+                                leg.leg_total_jumps, leg_empty_jumps, leg_haul_jumps
+                            )
+                        } else {
+                            format!("{} jumps (direct haul)", leg.leg_total_jumps)
+                        };
                         ui.label(
-                            RichText::new(format!("{} jumps", leg.leg_total_jumps))
+                            RichText::new(jumps_str)
                                 .color(Color32::from_rgb(255, 205, 0)),
                         );
                         ui.separator();
@@ -4973,6 +5011,12 @@ impl DesktopApp {
                             ))
                             .strong()
                             .color(Color32::from_rgb(0, 255, 140)),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("PPJ: {:.2}M/j", leg_ppj / 1_000_000.0))
+                                .strong()
+                                .color(Color32::from_rgb(0, 220, 255)),
                         );
                     });
 

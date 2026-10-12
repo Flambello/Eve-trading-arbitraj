@@ -761,36 +761,65 @@ pub fn find_chain_routes(
             }
 
             // Case 2: Candidate has empty cargo — start a new pickup corridor
-            // Find top candidate corridors (src_sys, dst_sys)
-            let mut corridor_candidates: Vec<((u32, u32), f64, u32)> = Vec::new();
+            // Continuous onward chaining:
+            // 1. Determine eligible departure systems radiating outward from candidate.current_system.
+            let is_initial_leg = candidate.legs.is_empty();
 
-            for (&(src_sys, dst_sys), corr_deals) in &deals_by_corridor {
-                // Must have at least one usable deal (not used, not exhausted)
-                let has_unused = corr_deals.iter().any(|d| {
-                    !candidate.used_deal_keys.contains(&(
-                        d.type_id,
-                        d.source_station_id,
-                        d.dest_station_id,
-                    )) && !candidate
-                        .exhausted_source_stations
-                        .contains(&(d.type_id, d.source_station_id))
-                        && !candidate
-                            .exhausted_dest_stations
-                            .contains(&(d.type_id, d.dest_station_id))
-                        && (d.source_order_id == 0
-                            || *candidate
-                                .consumed_source_orders
-                                .get(&d.source_order_id)
-                                .unwrap_or(&0)
-                                < d.source_order_volume_remain.max(d.quantity))
+            // Find the closest distance to any source system with available (non-exhausted) deals
+            let mut min_dist = 9999;
+            for (&src_sys, deals) in &deals_by_source {
+                let has_available = deals.iter().any(|d| {
+                    !candidate.used_deal_keys.contains(&(d.type_id, d.source_station_id, d.dest_station_id))
+                        && !candidate.exhausted_source_stations.contains(&(d.type_id, d.source_station_id))
+                        && !candidate.exhausted_dest_stations.contains(&(d.type_id, d.dest_station_id))
                 });
-                if !has_unused {
+                if !has_available {
                     continue;
                 }
 
+                let j = graph.jump_count(candidate.current_system, src_sys, config.safe_only);
+                if j < min_dist {
+                    min_dist = j;
+                }
+            }
+
+            if min_dist >= 9999 {
+                continue;
+            }
+
+            // For continuous chaining:
+            // - If starting from home (is_initial_leg): reach the closest trade cluster (up to 5 jumps).
+            // - If current system has available deals (min_dist == 0):
+            //   evaluate current system (0 jumps) and immediate neighbors (1 jump) if they offer higher PPJ.
+            // - If current system has no available deals:
+            //   evaluate strictly the closest system tier within 2 jumps (min_dist <= 2).
+            // - If min_dist > 2: no continuous onward trades exist near this system;
+            //   the candidate route naturally concludes at this destination!
+            let max_allowed_departure_dist = if is_initial_leg {
+                min_dist.max(1).min(5)
+            } else if min_dist == 0 {
+                1
+            } else if min_dist <= 2 {
+                min_dist
+            } else {
+                continue;
+            };
+
+            // Find top candidate corridors (src_sys, dst_sys)
+            struct EvaluatedCorridor {
+                src_sys: u32,
+                dst_sys: u32,
+                score: f64,
+                jumps_to_src: u32,
+                pack_res: ConstrainedPackResult,
+            }
+
+            let mut corridor_candidates: Vec<EvaluatedCorridor> = Vec::new();
+
+            for (&(src_sys, dst_sys), corr_deals) in &deals_by_corridor {
                 let j_to_src =
                     graph.jump_count(candidate.current_system, src_sys, config.safe_only);
-                if j_to_src >= 9999 {
+                if j_to_src > max_allowed_departure_dist {
                     continue;
                 }
                 let j_src_dst = graph.jump_count(src_sys, dst_sys, config.safe_only);
@@ -798,70 +827,50 @@ pub fn find_chain_routes(
                     continue;
                 }
 
-                let total_j = (j_to_src + j_src_dst).max(1);
-                let est_profit: f64 = corr_deals
-                    .iter()
-                    .filter(|d| {
-                        !candidate.used_deal_keys.contains(&(
-                            d.type_id,
-                            d.source_station_id,
-                            d.dest_station_id,
-                        )) && !candidate
-                            .exhausted_source_stations
-                            .contains(&(d.type_id, d.source_station_id))
-                            && !candidate
-                                .exhausted_dest_stations
-                                .contains(&(d.type_id, d.dest_station_id))
-                            && (d.source_order_id == 0
-                                || *candidate
-                                    .consumed_source_orders
-                                    .get(&d.source_order_id)
-                                    .unwrap_or(&0)
-                                    < d.source_order_volume_remain.max(d.quantity))
-                    })
-                    .map(|d| d.net_profit)
-                    .sum();
-
-                let score = est_profit / (total_j as f64);
-                corridor_candidates.push(((src_sys, dst_sys), score, total_j));
-            }
-
-            // Sort corridors by score DESC and evaluate top 20
-            corridor_candidates
-                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            corridor_candidates.truncate(20);
-
-            for ((src_sys, dst_sys), _, _) in corridor_candidates {
-                let src_deals = match deals_by_corridor.get(&(src_sys, dst_sys)) {
-                    Some(d) => d,
-                    None => continue,
-                };
-
-                let mut candidate_used_keys = candidate.used_deal_keys.clone();
-                let mut candidate_consumed_sources = candidate.consumed_source_orders.clone();
-                let mut candidate_consumed_dests = candidate.consumed_dest_orders.clone();
-                let mut candidate_exhausted_sources = candidate.exhausted_source_stations.clone();
-                let mut candidate_delivered_dests = candidate.delivered_dest_loads.clone();
-                let mut candidate_exhausted_dests = candidate.exhausted_dest_stations.clone();
-
-                let primary_res = knapsack_pack_constrained(
-                    src_deals,
+                // Pack with actual ship capacity limits and consumed order state
+                let pack_res = knapsack_pack_constrained(
+                    corr_deals,
                     candidate.remaining_vol,
                     candidate.remaining_isk,
-                    &candidate_used_keys,
-                    &candidate_consumed_sources,
-                    &candidate_consumed_dests,
-                    &candidate_exhausted_sources,
-                    &candidate_exhausted_dests,
+                    &candidate.used_deal_keys,
+                    &candidate.consumed_source_orders,
+                    &candidate.consumed_dest_orders,
+                    &candidate.exhausted_source_stations,
+                    &candidate.exhausted_dest_stations,
                 );
 
-                if primary_res.packed.is_empty() {
+                if pack_res.packed.is_empty() || pack_res.total_profit <= 0.0 {
                     continue;
                 }
 
-                candidate_consumed_sources = primary_res.consumed_sources;
-                candidate_consumed_dests = primary_res.consumed_dests;
-                candidate_exhausted_sources = primary_res.exhausted_sources;
+                let total_j = (j_to_src + j_src_dst).max(1);
+                let score = pack_res.total_profit / (total_j as f64);
+                corridor_candidates.push(EvaluatedCorridor {
+                    src_sys,
+                    dst_sys,
+                    score,
+                    jumps_to_src: j_to_src,
+                    pack_res,
+                });
+            }
+
+            // Sort corridors by score (true profit per jump for this leg) DESC and evaluate top candidates
+            corridor_candidates
+                .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            corridor_candidates.truncate(config.beam_width.max(20));
+
+            for cand_corr in corridor_candidates {
+                let src_sys = cand_corr.src_sys;
+                let dst_sys = cand_corr.dst_sys;
+                let primary_res = cand_corr.pack_res;
+                let jumps_to_src = cand_corr.jumps_to_src;
+
+                let mut candidate_used_keys = candidate.used_deal_keys.clone();
+                let mut candidate_consumed_sources = primary_res.consumed_sources.clone();
+                let mut candidate_consumed_dests = primary_res.consumed_dests.clone();
+                let mut candidate_exhausted_sources = primary_res.exhausted_sources.clone();
+                let mut candidate_delivered_dests = candidate.delivered_dest_loads.clone();
+                let mut candidate_exhausted_dests = candidate.exhausted_dest_stations.clone();
 
                 for slot in &primary_res.packed {
                     candidate_used_keys.insert((
@@ -871,8 +880,6 @@ pub fn find_chain_routes(
                     ));
                 }
 
-                let jumps_to_src =
-                    graph.jump_count(candidate.current_system, src_sys, config.safe_only);
                 let mut leg_jumps = jumps_to_src;
                 let mut current_pos = src_sys;
                 let mut current_vol = primary_res.total_volume;
@@ -1122,14 +1129,14 @@ pub fn find_chain_routes(
         beam = next_beam;
     }
 
-    // Sort completed routes by total_profit DESC, then profit_per_jump DESC
+    // Sort completed routes by profit_per_jump DESC (with ties broken by total_profit DESC)
     completed_routes.sort_by(|a, b| {
-        b.total_profit
-            .partial_cmp(&a.total_profit)
+        b.profit_per_jump
+            .partial_cmp(&a.profit_per_jump)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
-                b.profit_per_jump
-                    .partial_cmp(&a.profit_per_jump)
+                b.total_profit
+                    .partial_cmp(&a.total_profit)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
     });

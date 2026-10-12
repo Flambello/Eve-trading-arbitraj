@@ -312,6 +312,19 @@ pub struct DesktopApp {
     pub startup_rx: Option<Receiver<StartupMsg>>,
     pub startup_tip_index: usize,
     pub startup_last_tip: Instant,
+
+    // ── EVE SSO & In-Game Autopilot Sync ──────────────────────────
+    pub sso_client_id: String,
+    pub sso_character_name: Option<String>,
+    pub sso_character_id: Option<u64>,
+    pub sso_is_authenticating: bool,
+    pub sso_is_pushing: bool,
+    pub sso_auto_sync_location: bool,
+    pub sso_is_fetching_location: bool,
+    sso_location_scan_after: bool,
+    sso_auth_rx: Option<Receiver<Result<crate::esi::sso::SsoToken, String>>>,
+    sso_push_rx: Option<Receiver<Result<usize, String>>>,
+    sso_location_rx: Option<Receiver<Result<crate::esi::sso::CharacterLocation, String>>>,
 }
 
 impl DesktopApp {
@@ -465,6 +478,22 @@ impl DesktopApp {
             startup_rx: None,
             startup_tip_index: 0,
             startup_last_tip: Instant::now(),
+
+            sso_client_id: crate::config::UserConfig::load()
+                .map(|c| c.sso.client_id)
+                .unwrap_or_default(),
+            sso_character_name: crate::esi::sso::load_saved_token().map(|t| t.character_name),
+            sso_character_id: crate::esi::sso::load_saved_token().map(|t| t.character_id),
+            sso_is_authenticating: false,
+            sso_is_pushing: false,
+            sso_auto_sync_location: crate::config::UserConfig::load()
+                .map(|c| c.sso.auto_sync_location)
+                .unwrap_or(false),
+            sso_is_fetching_location: false,
+            sso_location_scan_after: false,
+            sso_auth_rx: None,
+            sso_push_rx: None,
+            sso_location_rx: None,
         }
     }
 
@@ -576,6 +605,22 @@ impl DesktopApp {
             startup_rx: Some(startup_rx),
             startup_tip_index: 0,
             startup_last_tip: Instant::now(),
+
+            sso_client_id: crate::config::UserConfig::load()
+                .map(|c| c.sso.client_id)
+                .unwrap_or_default(),
+            sso_character_name: crate::esi::sso::load_saved_token().map(|t| t.character_name),
+            sso_character_id: crate::esi::sso::load_saved_token().map(|t| t.character_id),
+            sso_is_authenticating: false,
+            sso_is_pushing: false,
+            sso_auto_sync_location: crate::config::UserConfig::load()
+                .map(|c| c.sso.auto_sync_location)
+                .unwrap_or(false),
+            sso_is_fetching_location: false,
+            sso_location_scan_after: false,
+            sso_auth_rx: None,
+            sso_push_rx: None,
+            sso_location_rx: None,
         }
     }
 
@@ -595,6 +640,153 @@ impl DesktopApp {
 
     fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    pub fn start_sso_authentication(&mut self) {
+        if self.sso_is_authenticating {
+            return;
+        }
+        let client_id = match crate::esi::sso::resolve_client_id(&self.sso_client_id) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_toast(format!("⚠️ SSO unavailable: {}", e));
+                return;
+            }
+        };
+
+        self.sso_is_authenticating = true;
+        self.set_toast("Opening browser for EVE SSO authentication...");
+
+        let (tx, rx) = channel();
+        self.sso_auth_rx = Some(rx);
+
+        let callback_port = crate::esi::sso::DEFAULT_CALLBACK_PORT;
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::authenticate_character_via_pkce(
+                &http_client,
+                &client_id,
+                callback_port,
+            ));
+            let _ = tx.send(res.map_err(|e| e.to_string()));
+        });
+    }
+
+    pub fn disconnect_sso(&mut self) {
+        let _ = crate::esi::sso::delete_saved_token();
+        self.sso_character_name = None;
+        self.sso_character_id = None;
+        self.set_toast("Disconnected EVE character and deleted saved token.");
+    }
+
+    pub fn push_to_eve_autopilot(&mut self, destination_ids: Vec<u64>, label: &str) {
+        if self.sso_is_pushing {
+            self.set_toast("Autopilot sync already in progress...");
+            return;
+        }
+        if destination_ids.is_empty() {
+            self.set_toast("No waypoints found to push to EVE client.");
+            return;
+        }
+        if self.sso_character_name.is_none() {
+            self.set_toast("⚠️ Please connect your EVE character in Settings first!");
+            self.tab = ActiveTab::Settings;
+            return;
+        }
+
+        let client_id = match crate::esi::sso::resolve_client_id(&self.sso_client_id) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_toast(format!("⚠️ Autopilot sync error: {}", e));
+                return;
+            }
+        };
+        self.sso_is_pushing = true;
+        self.set_toast(format!(
+            "Injecting {} waypoints into live EVE HUD for {}...",
+            destination_ids.len(),
+            label
+        ));
+
+        let (tx, rx) = channel();
+        self.sso_push_rx = Some(rx);
+
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::push_waypoints_with_token(
+                &http_client,
+                &client_id,
+                &destination_ids,
+            ));
+            let _ = tx.send(res.map_err(|e| e.to_string()));
+        });
+    }
+
+    pub fn fetch_live_character_location(&mut self, scan_after: bool) {
+        if self.sso_is_fetching_location {
+            return;
+        }
+        if self.sso_character_name.is_none() {
+            self.set_toast("⚠️ Please connect your EVE character in Settings first!");
+            self.tab = ActiveTab::Settings;
+            return;
+        }
+
+        let client_id = match crate::esi::sso::resolve_client_id(&self.sso_client_id) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_toast(format!("⚠️ Location sync error: {}", e));
+                return;
+            }
+        };
+        self.sso_is_fetching_location = true;
+        self.sso_location_scan_after = scan_after;
+        self.set_toast("🛰️ Querying live character location from CCP ESI...");
+
+        let (tx, rx) = channel();
+        self.sso_location_rx = Some(rx);
+
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::get_character_location_with_token(
+                &http_client,
+                &client_id,
+            ));
+            let _ = tx.send(res.map_err(|e| e.to_string()));
+        });
     }
 
     fn selected_regions(&self) -> Vec<u32> {
@@ -918,6 +1110,84 @@ impl eframe::App for DesktopApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
+        // Poll SSO auth worker
+        if let Some(ref rx) = self.sso_auth_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_authenticating = false;
+                match res {
+                    Ok(tok) => {
+                        self.sso_character_name = Some(tok.character_name.clone());
+                        self.sso_character_id = Some(tok.character_id);
+                        self.set_toast(format!("🚀 Connected to EVE character: {}", tok.character_name));
+                        crate::audio::play_high_profit_alert();
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("SSO Authentication Error: {}", err));
+                    }
+                }
+                self.sso_auth_rx = None;
+            }
+        }
+
+        // Poll SSO autopilot push worker
+        if let Some(ref rx) = self.sso_push_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_pushing = false;
+                match res {
+                    Ok(stops) => {
+                        self.set_toast(format!("🚀 Injected {} waypoint(s) into live EVE client HUD!", stops));
+                        crate::audio::play_high_profit_alert();
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("Autopilot injection failed: {}", err));
+                    }
+                }
+                self.sso_push_rx = None;
+            }
+        }
+
+        // Poll SSO character location worker
+        if let Some(ref rx) = self.sso_location_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_fetching_location = false;
+                let scan_after = self.sso_location_scan_after;
+                self.sso_location_scan_after = false;
+                match res {
+                    Ok(loc) => {
+                        let sys_name_opt = self
+                            .sde
+                            .as_ref()
+                            .and_then(|s| s.get_system_name(loc.solar_system_id));
+                        if let Some(sys_name) = sys_name_opt {
+                            let old_system = self.home_system.clone();
+                            self.home_system = sys_name.clone();
+                            self.set_toast(format!(
+                                "🛰️ Detected in-game system: {} (ID: {})",
+                                sys_name, loc.solar_system_id
+                            ));
+                            crate::audio::play_high_profit_alert();
+                            if scan_after || old_system != sys_name {
+                                self.start_scan();
+                            }
+                        } else {
+                            self.set_toast(format!(
+                                "🛰️ In-game solar system ID {} detected, but not found in SDE.",
+                                loc.solar_system_id
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("Location sync error: {}", err));
+                    }
+                }
+                self.sso_location_rx = None;
+            }
+        }
+
+        if self.chain_is_running || self.sso_is_authenticating || self.sso_is_pushing || self.sso_is_fetching_location {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+
         // Auto-refresh timer check
         if self.auto_refresh && !self.is_scanning {
             let elapsed = self
@@ -1186,6 +1456,14 @@ fn render_ship_util_bars(ui: &mut egui::Ui, vol_frac: f32, budget_frac: f32) -> 
         }
     }
     resp
+}
+
+#[derive(Default)]
+struct DealsGridAction {
+    pub toggle_select: Option<usize>,
+    pub action_toast: Option<String>,
+    pub change_sort: Option<(DealSortBy, bool)>,
+    pub direct_push: Option<Vec<u64>>,
 }
 
 impl DesktopApp {
@@ -1493,6 +1771,51 @@ impl DesktopApp {
                 self.start_scan();
             }
 
+            // In-game location auto-sync toggle
+            let auto_label = if self.sso_auto_sync_location {
+                "🛸 Auto-Detect: ON"
+            } else {
+                "🛸 Auto-Detect"
+            };
+            let auto_btn = egui::SelectableLabel::new(
+                self.sso_auto_sync_location,
+                RichText::new(auto_label)
+                    .color(if self.sso_auto_sync_location {
+                        Color32::from_rgb(0, 255, 170)
+                    } else {
+                        Color32::LIGHT_GRAY
+                    })
+                    .strong(),
+            );
+            if ui.add(auto_btn)
+                .on_hover_text("Automatically detect your live in-game character's solar system via EVE ESI and use it as Deals starting system")
+                .clicked()
+            {
+                if self.sso_character_name.is_none() {
+                    self.set_toast("⚠️ Please connect your character via EVE SSO in Settings first!");
+                    self.tab = ActiveTab::Settings;
+                } else {
+                    self.sso_auto_sync_location = !self.sso_auto_sync_location;
+                    if let Ok(mut cfg) = crate::config::UserConfig::load() {
+                        cfg.sso.auto_sync_location = self.sso_auto_sync_location;
+                        let _ = cfg.save();
+                    }
+                    if self.sso_auto_sync_location {
+                        self.fetch_live_character_location(true);
+                    }
+                }
+            }
+
+            if self.sso_character_name.is_some() {
+                let sync_label = if self.sso_is_fetching_location { "⏳" } else { "🛰️" };
+                if ui.small_button(RichText::new(sync_label).color(Color32::from_rgb(0, 220, 255)).strong())
+                    .on_hover_text("Query ESI right now for your pilot's live in-game solar system and update starting location")
+                    .clicked()
+                {
+                    self.fetch_live_character_location(true);
+                }
+            }
+
             // System detected status pill
             let home_id_opt = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
             if let Some(hid) = home_id_opt {
@@ -1502,8 +1825,9 @@ impl DesktopApp {
                     .and_then(|r| self.sde.as_ref().and_then(|s| s.get_region_name(r)))
                     .unwrap_or_else(|| "Unknown".to_string());
                 let sys_name = self.sde.as_ref().and_then(|s| s.get_system_name(hid)).unwrap_or_default();
+                let sync_tag = if self.sso_auto_sync_location { " (🛰️ Auto-Synced)" } else { "" };
                 ui.label(
-                    RichText::new(format!("[{:.1}] {} · {}", sec, sys_name, reg_name))
+                    RichText::new(format!("[{:.1}] {} · {}{}", sec, sys_name, reg_name, sync_tag))
                         .size(11.0)
                         .color(sec_col)
                         .strong(),
@@ -2588,6 +2912,110 @@ impl DesktopApp {
             }
         }
 
+        let mut top_bar_push: Option<(Vec<u64>, String)> = None;
+        let mut top_bar_toast: Option<String> = None;
+        let mut top_bar_switch_settings = false;
+
+        // EVE Autopilot Quick Action Bar
+        egui::Frame::none()
+            .fill(Color32::from_rgb(16, 24, 38))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 255)))
+            .rounding(6.0)
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(ref char_name) = self.sso_character_name {
+                        ui.label(
+                            RichText::new(format!("🟢 Connected: {}", char_name))
+                                .size(12.5)
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .strong(),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("⚪ Pilot: Disconnected")
+                                .size(12.5)
+                                .color(Color32::GRAY),
+                        );
+                        if ui.small_button("🔑 Connect in Settings").clicked() {
+                            top_bar_switch_settings = true;
+                        }
+                    }
+                    ui.separator();
+
+                    let target_deal = self.selected_deal_idx
+                        .and_then(|idx| self.deals.get(idx))
+                        .or_else(|| filtered.first().map(|(_, d)| *d));
+
+                    if let Some(deal) = target_deal {
+                        let btn_label = if self.selected_deal_idx.is_some() {
+                            format!("🚀 Push Selected Deal to EVE Autopilot ({})", deal.item_name)
+                        } else {
+                            format!("🚀 Push Top Deal to EVE Autopilot (#1 {})", deal.item_name)
+                        };
+                        let push_btn = egui::Button::new(
+                            RichText::new(btn_label)
+                                .size(12.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+
+                        if ui
+                            .add(push_btn)
+                            .on_hover_text(format!(
+                                "Inject this deal's buy & sell waypoints straight into your running EVE client HUD:\n1. Buy at: {}\n2. Sell at: {}",
+                                deal.source_station_name, deal.dest_station_name
+                            ))
+                            .clicked()
+                        {
+                            top_bar_push = Some((deal.ordered_destination_ids(), format!("Deal: {}", deal.item_name)));
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet (Alt+N)")
+                                .size(12.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted trade sheet for in-game Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = deal.format_eve_flight_sheet();
+                            copy_to_clipboard(ui, sheet);
+                            top_bar_toast = Some(format!("Copied flight sheet for '{}' to clipboard!", deal.item_name));
+                        }
+                    }
+
+                    if let Some(ref route) = self.route {
+                        if !route.stops.is_empty() {
+                            ui.separator();
+                            let route_btn = egui::Button::new(
+                                RichText::new(format!("🗺️ Push Planned Route ({} Stops) to EVE", route.stops.len()))
+                                    .size(12.0)
+                                    .color(Color32::BLACK)
+                                    .strong()
+                            )
+                            .fill(Color32::from_rgb(0, 255, 180));
+
+                            if ui
+                                .add(route_btn)
+                                .on_hover_text("Directly inject all planned multi-hop route waypoints into your live EVE client Autopilot HUD")
+                                .clicked()
+                            {
+                                top_bar_push = Some((route.ordered_destination_ids(), "Planned Route".to_string()));
+                            }
+                        }
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
         // Responsive Layout: Choose between Side Panel (on wide screens) and Bottom Drawer (compact screens)
         let avail_w = ui.available_width();
         let avail_h = ui.available_height();
@@ -2598,8 +3026,8 @@ impl DesktopApp {
             let side_w = (avail_w * 0.36).clamp(380.0, 680.0);
             let table_w = (avail_w - side_w - 10.0).max(300.0);
 
-            let mut grid_res = (None, None, None);
-            let mut dossier_res = (false, false, None);
+            let mut grid_res = DealsGridAction::default();
+            let mut dossier_res = (false, false, None, None);
 
             ui.horizontal(|ui| {
                 ui.allocate_ui(Vec2::new(table_w, avail_h), |ui| {
@@ -2614,7 +3042,7 @@ impl DesktopApp {
                 });
             });
 
-            let (close_req, toggle_dock, d_toast) = dossier_res;
+            let (close_req, toggle_dock, d_toast, push_dest_ids) = dossier_res;
             if close_req {
                 self.selected_deal_idx = None;
             }
@@ -2629,19 +3057,24 @@ impl DesktopApp {
             if let Some(msg) = d_toast {
                 self.set_toast(msg);
             }
+            if let Some(dest_ids) = push_dest_ids {
+                self.push_to_eve_autopilot(dest_ids, "Deal Route");
+            }
 
-            let (toggle_select, action_toast, change_sort) = grid_res;
-            if let Some(idx) = toggle_select {
+            if let Some(dest_ids) = grid_res.direct_push {
+                self.push_to_eve_autopilot(dest_ids, "Deal Route");
+            }
+            if let Some(idx) = grid_res.toggle_select {
                 if self.selected_deal_idx == Some(idx) {
                     self.selected_deal_idx = None;
                 } else {
                     self.selected_deal_idx = Some(idx);
                 }
             }
-            if let Some(msg) = action_toast {
+            if let Some(msg) = grid_res.action_toast {
                 self.set_toast(msg);
             }
-            if let Some((new_sort, new_desc)) = change_sort {
+            if let Some((new_sort, new_desc)) = grid_res.change_sort {
                 self.sort_by = new_sort;
                 self.sort_descending = new_desc;
             }
@@ -2652,23 +3085,25 @@ impl DesktopApp {
                 avail_h
             };
 
-            let mut grid_res = (None, None, None);
+            let mut grid_res = DealsGridAction::default();
             ui.allocate_ui(Vec2::new(avail_w, table_height), |ui| {
                 grid_res = self.render_deals_table_grid(ui, &filtered);
             });
 
-            let (toggle_select, action_toast, change_sort) = grid_res;
-            if let Some(idx) = toggle_select {
+            if let Some(dest_ids) = grid_res.direct_push {
+                self.push_to_eve_autopilot(dest_ids, "Deal Route");
+            }
+            if let Some(idx) = grid_res.toggle_select {
                 if self.selected_deal_idx == Some(idx) {
                     self.selected_deal_idx = None;
                 } else {
                     self.selected_deal_idx = Some(idx);
                 }
             }
-            if let Some(msg) = action_toast {
+            if let Some(msg) = grid_res.action_toast {
                 self.set_toast(msg);
             }
-            if let Some((new_sort, new_desc)) = change_sort {
+            if let Some((new_sort, new_desc)) = grid_res.change_sort {
                 self.sort_by = new_sort;
                 self.sort_descending = new_desc;
             }
@@ -2678,12 +3113,12 @@ impl DesktopApp {
                 if let Some(deal) = self.deals.get(idx) {
                     ui.add_space(6.0);
                     let dossier_h = ui.available_height();
-                    let mut dossier_res = (false, false, None);
+                    let mut dossier_res = (false, false, None, None);
                     ui.allocate_ui(Vec2::new(avail_w, dossier_h), |ui| {
                         dossier_res = self.render_deal_dossier(ui, deal, false);
                     });
 
-                    let (close_req, toggle_dock, d_toast) = dossier_res;
+                    let (close_req, toggle_dock, d_toast, push_dest_ids) = dossier_res;
                     if close_req {
                         self.selected_deal_idx = None;
                     }
@@ -2698,8 +3133,21 @@ impl DesktopApp {
                     if let Some(msg) = d_toast {
                         self.set_toast(msg);
                     }
+                    if let Some(dest_ids) = push_dest_ids {
+                        self.push_to_eve_autopilot(dest_ids, "Deal Route");
+                    }
                 }
             }
+        }
+
+        if top_bar_switch_settings {
+            self.tab = ActiveTab::Settings;
+        }
+        if let Some(msg) = top_bar_toast {
+            self.set_toast(msg);
+        }
+        if let Some((dests, label)) = top_bar_push {
+            self.push_to_eve_autopilot(dests, &label);
         }
     }
 
@@ -2707,10 +3155,11 @@ impl DesktopApp {
         &self,
         ui: &mut egui::Ui,
         filtered: &[(usize, &ArbitrageDeal)],
-    ) -> (Option<usize>, Option<String>, Option<(DealSortBy, bool)>) {
+    ) -> DealsGridAction {
         let mut toggle_select: Option<usize> = None;
         let mut action_toast: Option<String> = None;
         let mut change_sort: Option<(DealSortBy, bool)> = None;
+        let mut direct_push: Option<Vec<u64>> = None;
         let current_selected_idx = self.selected_deal_idx;
         let current_sort = self.sort_by;
         let is_desc = self.sort_descending;
@@ -2769,7 +3218,7 @@ impl DesktopApp {
         };
 
         // Responsive fluid column width distribution to fill 100% of window width
-        let actions_w = (avail_w * 0.09).clamp(125.0, 160.0);
+        let actions_w = (avail_w * 0.14).clamp(210.0, 260.0);
         let rank_w = 38.0;
         let pool = (avail_w - rank_w - actions_w - 24.0).max(550.0);
 
@@ -3073,6 +3522,28 @@ impl DesktopApp {
                         // 16: Quick Actions
                         row.col(|ui| {
                             ui.horizontal(|ui| {
+                                let auto_btn = egui::Button::new(
+                                    RichText::new("🚀 Autopilot")
+                                        .size(11.0)
+                                        .color(Color32::BLACK)
+                                        .strong(),
+                                )
+                                .fill(Color32::from_rgb(0, 220, 255));
+                                if ui
+                                    .add(auto_btn)
+                                    .on_hover_text(format!(
+                                        "Inject 2-stop trade route into live EVE Autopilot HUD:\n1. Buy at: {}\n2. Sell at: {}",
+                                        deal.source_station_name, deal.dest_station_name
+                                    ))
+                                    .clicked()
+                                {
+                                    direct_push = Some(deal.ordered_destination_ids());
+                                    action_toast = Some(format!(
+                                        "Injecting route for '{}' into EVE Autopilot HUD...",
+                                        deal.item_name
+                                    ));
+                                }
+
                                 if ui.small_button("📋 Item").on_hover_text("Copy item name to clipboard").clicked() {
                                     copy_to_clipboard(ui, deal.item_name.clone());
                                     action_toast = Some(format!("Copied item '{}' to clipboard!", deal.item_name));
@@ -3091,7 +3562,12 @@ impl DesktopApp {
                 }
             });
 
-        (toggle_select, action_toast, change_sort)
+        DealsGridAction {
+            toggle_select,
+            action_toast,
+            change_sort,
+            direct_push,
+        }
     }
 
     fn render_deal_dossier(
@@ -3099,10 +3575,11 @@ impl DesktopApp {
         ui: &mut egui::Ui,
         deal: &ArbitrageDeal,
         is_side_panel: bool,
-    ) -> (bool, bool, Option<String>) {
+    ) -> (bool, bool, Option<String>, Option<Vec<u64>>) {
         let mut close_requested = false;
         let mut toggle_dock_requested = false;
         let mut toast = None;
+        let mut push_dest_ids = None;
 
         egui::Frame::none()
             .fill(Color32::from_rgb(18, 25, 42))
@@ -3139,6 +3616,38 @@ impl DesktopApp {
                         }
                         if !can_dock_side && !is_side_panel {
                             resp.on_hover_text("Side docking requires >= 1150px window width");
+                        }
+
+                        let push_btn = egui::Button::new(
+                            RichText::new("🚀 Push Deal to EVE Autopilot")
+                                .size(11.5)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+                        if ui
+                            .add(push_btn)
+                            .on_hover_text("Inject this deal's buy & sell stations straight into your running EVE client Autopilot HUD")
+                            .clicked()
+                        {
+                            push_dest_ids = Some(deal.ordered_destination_ids());
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet (Alt+N)")
+                                .size(11.5)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted trade sheet for in-game Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = deal.format_eve_flight_sheet();
+                            copy_to_clipboard(ui, sheet);
+                            toast = Some("Copied deal flight sheet to clipboard! Paste in EVE Notepad (Alt+N).".to_string());
                         }
                     });
                 });
@@ -3375,7 +3884,7 @@ impl DesktopApp {
                     });
             });
 
-        (close_requested, toggle_dock_requested, toast)
+        (close_requested, toggle_dock_requested, toast, push_dest_ids)
     }
 
     fn render_manifest_card(
@@ -3385,8 +3894,9 @@ impl DesktopApp {
         m: &TradeCorridorManifest,
         max_vol: f64,
         max_budget: f64,
-    ) -> Option<String> {
+    ) -> (Option<String>, Option<Vec<u64>>) {
         let mut toast = None;
+        let mut push_dest_ids = None;
         let vol_pct = (m.total_volume_used / max_vol) * 100.0;
         let budget_pct = (m.total_capital_required / max_budget) * 100.0;
         let src_sec_col = security_color(m.source_security);
@@ -3450,6 +3960,38 @@ impl DesktopApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let push_btn = egui::Button::new(
+                            RichText::new("🚀 Push Autopilot")
+                                .size(11.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+                        if ui
+                            .add(push_btn)
+                            .on_hover_text("Inject corridor stations into live EVE Autopilot HUD")
+                            .clicked()
+                        {
+                            push_dest_ids = Some(m.ordered_destination_ids());
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet")
+                                .size(11.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted corridor flight sheet for EVE Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = m.format_eve_flight_sheet(idx + 1);
+                            copy_to_clipboard(ui, sheet);
+                            toast = Some("Copied manifest flight sheet! Paste into in-game Notepad (Alt+N).".to_string());
+                        }
+
                         if ui.small_button("📋 Multi-Buy").on_hover_text("Copy in EVE Online Multi-Buy format: '<Item Name>\\t<Quantity>\\n' for in-game paste").clicked() {
                             let mb = m.deals.iter().map(|d| format!("{}\t{}", d.item_name, d.quantity)).collect::<Vec<_>>().join("\n");
                             copy_to_clipboard(ui, mb);
@@ -3510,7 +4052,7 @@ impl DesktopApp {
                     });
             });
 
-        toast
+        (toast, push_dest_ids)
     }
 
     fn render_manifests_tab(&mut self, ui: &mut egui::Ui) {
@@ -3600,6 +4142,7 @@ impl DesktopApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             if avail_w >= 1400.0 {
                 // Browser-grade 2-column responsive layout for wide displays
+                let mut push_manifest_dests: Option<Vec<u64>> = None;
                 for chunk in manifest_indices.chunks(2) {
                     if chunk.len() == 2 {
                         let idx0 = chunk[0];
@@ -3607,49 +4150,73 @@ impl DesktopApp {
                         let m0 = &self.manifests[idx0];
                         let m1 = &self.manifests[idx1];
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_manifest_card(
+                            let (msg0, dest0) = self.render_manifest_card(
                                 &mut cols[0],
                                 idx0,
                                 m0,
                                 max_vol,
                                 max_budget,
-                            ) {
+                            );
+                            if let Some(msg) = msg0 {
                                 manifest_toast = Some(msg);
                             }
-                            if let Some(msg) = self.render_manifest_card(
+                            if let Some(d) = dest0 {
+                                push_manifest_dests = Some(d);
+                            }
+
+                            let (msg1, dest1) = self.render_manifest_card(
                                 &mut cols[1],
                                 idx1,
                                 m1,
                                 max_vol,
                                 max_budget,
-                            ) {
+                            );
+                            if let Some(msg) = msg1 {
                                 manifest_toast = Some(msg);
+                            }
+                            if let Some(d) = dest1 {
+                                push_manifest_dests = Some(d);
                             }
                         });
                     } else {
                         let idx0 = chunk[0];
                         let m0 = &self.manifests[idx0];
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_manifest_card(
+                            let (msg0, dest0) = self.render_manifest_card(
                                 &mut cols[0],
                                 idx0,
                                 m0,
                                 max_vol,
                                 max_budget,
-                            ) {
+                            );
+                            if let Some(msg) = msg0 {
                                 manifest_toast = Some(msg);
+                            }
+                            if let Some(d) = dest0 {
+                                push_manifest_dests = Some(d);
                             }
                         });
                     }
                     ui.add_space(8.0);
                 }
+                if let Some(dests) = push_manifest_dests {
+                    self.push_to_eve_autopilot(dests, "Corridor Manifest");
+                }
             } else {
+                let mut push_manifest_dests: Option<Vec<u64>> = None;
                 // Fluid single-column layout for standard/compact displays
                 for (idx, m) in self.manifests.iter().enumerate() {
-                    if let Some(msg) = self.render_manifest_card(ui, idx, m, max_vol, max_budget) {
-                        manifest_toast = Some(msg);
+                    let (msg, dest) = self.render_manifest_card(ui, idx, m, max_vol, max_budget);
+                    if let Some(m_msg) = msg {
+                        manifest_toast = Some(m_msg);
+                    }
+                    if let Some(d) = dest {
+                        push_manifest_dests = Some(d);
                     }
                     ui.add_space(8.0);
+                }
+                if let Some(dests) = push_manifest_dests {
+                    self.push_to_eve_autopilot(dests, "Corridor Manifest");
                 }
             }
         });
@@ -3790,8 +4357,45 @@ impl DesktopApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let push_btn = egui::Button::new(
+                            RichText::new(if self.sso_is_pushing {
+                                "⏳ Pushing to EVE..."
+                            } else {
+                                "🚀 Push Route to EVE Autopilot"
+                            })
+                            .color(Color32::BLACK)
+                            .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+
+                        if ui
+                            .add_enabled(!self.sso_is_pushing, push_btn)
+                            .on_hover_text("Directly inject all planned waypoint stops into your live running EVE Online Autopilot HUD")
+                            .clicked()
+                        {
+                            let dest_ids = route.ordered_destination_ids();
+                            self.push_to_eve_autopilot(dest_ids, "Planned Route");
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet (Alt+N)")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted Flight Sheet for EVE Notepad (Alt+N) with full buy/sell stops")
+                            .clicked()
+                        {
+                            let sheet = route.format_eve_flight_sheet();
+                            copy_to_clipboard(ui, sheet);
+                            self.set_toast("Copied EVE Flight Sheet! Paste into in-game Notepad (Alt+N).");
+                        }
+
                         let copy_btn = egui::Button::new(
-                            RichText::new("📋 Copy Autopilot Trail")
+                            RichText::new("📋 Copy Waypoints")
                                 .color(Color32::BLACK)
                                 .strong(),
                         )
@@ -4900,8 +5504,45 @@ impl DesktopApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let push_btn = egui::Button::new(
+                            RichText::new(if self.sso_is_pushing {
+                                "⏳ Pushing to EVE..."
+                            } else {
+                                "🚀 Push Route to EVE Autopilot"
+                            })
+                            .color(Color32::BLACK)
+                            .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+
+                        if ui
+                            .add_enabled(!self.sso_is_pushing, push_btn)
+                            .on_hover_text("Directly inject all station stops into your live running EVE Online Autopilot HUD")
+                            .clicked()
+                        {
+                            let dest_ids = route.ordered_destination_ids();
+                            self.push_to_eve_autopilot(dest_ids, "Chain Route");
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy EVE Flight Sheet (Alt+N)")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted Flight Sheet with clickable in-game station links for EVE Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = route.format_eve_flight_sheet(selected_idx + 1);
+                            copy_to_clipboard(ui, sheet);
+                            self.set_toast("Copied EVE Flight Sheet! Paste into in-game Notepad (Alt+N).");
+                        }
+
                         let copy_btn = egui::Button::new(
-                            RichText::new("📋 Copy Autopilot Route")
+                            RichText::new("📋 Copy Waypoints")
                                 .color(Color32::BLACK)
                                 .strong(),
                         )
@@ -5230,6 +5871,7 @@ impl DesktopApp {
         let mut action_toast: Option<String> = None;
         let mut toggle_select: Option<usize> = None;
         let mut change_sort: Option<(DealSortBy, bool)> = None;
+        let mut push_dest_ids: Option<(Vec<u64>, &'static str)> = None;
 
         // 1. Controls Header Card
         egui::Frame::none()
@@ -5562,6 +6204,41 @@ impl DesktopApp {
                     ui.label(RichText::new(format!("Capital: {:.2}M ISK", total_pot_capital / 1_000_000.0)).color(Color32::GRAY));
                     ui.separator();
                     ui.label(RichText::new(format!("Volume: {:.1} m³", total_pot_vol)).color(Color32::GRAY));
+
+                    if let (Some(s), Some(d)) = (self.hub_source_filter, self.hub_dest_filter) {
+                        ui.separator();
+                        let push_corridor_btn = egui::Button::new(
+                            RichText::new("🚀 Push Corridor to EVE Autopilot")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+                        if ui.add_enabled(!self.sso_is_pushing, push_corridor_btn)
+                            .on_hover_text("Send origin and destination hub trade stations directly to your in-game Autopilot")
+                            .clicked()
+                        {
+                            let dests = hub_arbitrage::hub_corridor_destination_ids(s, d, &self.hub_packed_manifest);
+                            push_dest_ids = Some((dests, "Hub Corridor"));
+                        }
+
+                        if let Some(manifest) = &self.hub_packed_manifest {
+                            let sheet_btn = egui::Button::new(
+                                RichText::new("📋 Copy Corridor for EVE Notepad")
+                                    .color(Color32::BLACK)
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(255, 205, 0));
+                            if ui.add(sheet_btn)
+                                .on_hover_text("Copy formatted trade run manifest for in-game Notepad (Alt+N)")
+                                .clicked()
+                            {
+                                let jumps = self.graph.as_ref().map(|g| g.jump_count(s.system_id(), d.system_id(), self.safe_only)).unwrap_or(0);
+                                let sheet = hub_arbitrage::format_hub_flight_sheet(s, d, jumps, manifest);
+                                copy_to_clipboard(ui, sheet);
+                                action_toast = Some("Copied Hub Corridor Flight Sheet for in-game Notepad (Alt+N)!".to_string());
+                            }
+                        }
+                    }
                 });
             });
 
@@ -5603,6 +6280,56 @@ impl DesktopApp {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button(RichText::new("✖ Close Manifest").color(Color32::GRAY)).clicked() {
                                     close_manifest = true;
+                                }
+
+                                if let (Some(s), Some(d)) = (self.hub_source_filter, self.hub_dest_filter) {
+                                    let sheet_btn = egui::Button::new(
+                                        RichText::new("📋 Copy Manifest for EVE Notepad (Alt+N)")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(255, 205, 0));
+                                    if ui.add(sheet_btn)
+                                        .on_hover_text("Copy complete manifest shopping list and sell orders for in-game Notepad (Alt+N)")
+                                        .clicked()
+                                    {
+                                        let jumps = self.graph.as_ref().map(|g| g.jump_count(s.system_id(), d.system_id(), self.safe_only)).unwrap_or(0);
+                                        let sheet = hub_arbitrage::format_hub_flight_sheet(s, d, jumps, manifest);
+                                        copy_to_clipboard(ui, sheet);
+                                        action_toast = Some("Copied Hub Manifest Flight Sheet for in-game Notepad (Alt+N)!".to_string());
+                                    }
+
+                                    let push_btn = egui::Button::new(
+                                        RichText::new("🚀 Push Manifest to EVE Autopilot")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(0, 220, 255));
+                                    if ui.add_enabled(!self.sso_is_pushing, push_btn)
+                                        .on_hover_text("Send origin and destination hub trade stations directly to in-game Autopilot")
+                                        .clicked()
+                                    {
+                                        let dests = hub_arbitrage::hub_corridor_destination_ids(s, d, &Some(manifest.clone()));
+                                        push_dest_ids = Some((dests, "Hub Manifest"));
+                                    }
+                                } else if let Some(first) = manifest.packed.first() {
+                                    let push_btn = egui::Button::new(
+                                        RichText::new("🚀 Push Manifest to EVE Autopilot")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(0, 220, 255));
+                                    if ui.add_enabled(!self.sso_is_pushing, push_btn)
+                                        .on_hover_text("Send origin and destination trade stations directly to in-game Autopilot")
+                                        .clicked()
+                                    {
+                                        let dests = if first.deal.source_station_id == first.deal.dest_station_id {
+                                            vec![first.deal.source_station_id]
+                                        } else {
+                                            vec![first.deal.source_station_id, first.deal.dest_station_id]
+                                        };
+                                        push_dest_ids = Some((dests, "Hub Manifest"));
+                                    }
                                 }
                             });
                         });
@@ -5966,6 +6693,10 @@ impl DesktopApp {
             }
         }
 
+        if let Some((dests, label)) = push_dest_ids {
+            self.push_to_eve_autopilot(dests, label);
+        }
+
         if let Some(msg) = action_toast {
             self.set_toast(msg);
         }
@@ -6036,6 +6767,154 @@ impl DesktopApp {
                             self.set_toast("KPI bar set to Compact Pills");
                         }
                     });
+                });
+
+            ui.add_space(12.0);
+
+            // Card: EVE SSO & In-Game Autopilot Sync
+            egui::Frame::none()
+                .fill(Color32::from_rgb(18, 25, 40))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 200, 255)))
+                .rounding(6.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("🚀 EVE SSO & Live In-Game Autopilot Sync")
+                            .size(15.0)
+                            .color(Color32::from_rgb(0, 210, 255))
+                            .strong(),
+                    );
+                    ui.label(
+                        "Connect your EVE Online pilot via official CCP SSO (OAuth2 + PKCE) to push multi-stop trade routes and waypoints straight into your running EVE client Autopilot HUD (`Alt+A` / `POST /v2/ui/autopilot/waypoint/`).",
+                    );
+                    ui.add_space(8.0);
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("🔒 Official CCP Single Sign-On (OAuth2 PKCE)")
+                                .color(Color32::from_rgb(0, 220, 255))
+                                .size(12.0)
+                                .strong(),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Scopes: Waypoints (`Alt+A`) & Live Pilot Location")
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .size(11.5),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Safe client: No passwords or private keys stored.")
+                                .color(Color32::GRAY)
+                                .size(11.5),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(ref char_name) = self.sso_character_name {
+                            let char_id_str = self
+                                .sso_character_id
+                                .map(|id| format!(" [ID: {}]", id))
+                                .unwrap_or_default();
+                            ui.label(
+                                RichText::new(format!(
+                                    "✅ Connected Character: {}{}",
+                                    char_name, char_id_str
+                                ))
+                                .size(13.5)
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .strong(),
+                            );
+                            ui.add_space(10.0);
+                            let disc_btn = egui::Button::new(
+                                RichText::new("🔌 Disconnect")
+                                    .color(Color32::from_rgb(255, 100, 100)),
+                            );
+                            if ui.add(disc_btn).clicked() {
+                                self.disconnect_sso();
+                            }
+                        } else if self.sso_is_authenticating {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(
+                                    "⏳ Waiting for CCP SSO Authorization in web browser...",
+                                )
+                                .size(13.0)
+                                .color(Color32::from_rgb(255, 205, 0))
+                                .strong(),
+                            );
+                        } else {
+                            let conn_btn = egui::Button::new(
+                                RichText::new("🔑 Connect EVE Character via SSO")
+                                    .size(13.0)
+                                    .color(Color32::BLACK)
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(0, 230, 170));
+
+                            if ui.add(conn_btn).clicked() {
+                                self.start_sso_authentication();
+                            }
+                            ui.label(
+                                RichText::new("(Opens your default browser to login with CCP)")
+                                    .color(Color32::GRAY)
+                                    .size(11.5),
+                            );
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    let mut auto_sync = self.sso_auto_sync_location;
+                    let auto_sync_col = if auto_sync { Color32::from_rgb(0, 255, 170) } else { Color32::WHITE };
+                    if ui.checkbox(
+                        &mut auto_sync,
+                        RichText::new("Automatically sync in-game character location as Deals starting system")
+                            .strong()
+                            .color(auto_sync_col),
+                    )
+                    .on_hover_text("When enabled, Deals automatically queries CCP ESI for your pilot's live solar system and calculates all routes from where you are right now.")
+                    .changed()
+                    {
+                        self.sso_auto_sync_location = auto_sync;
+                        if let Ok(mut cfg) = crate::config::UserConfig::load() {
+                            cfg.sso.auto_sync_location = auto_sync;
+                            let _ = cfg.save();
+                        }
+                        if auto_sync && self.sso_character_name.is_some() {
+                            self.fetch_live_character_location(true);
+                        }
+                    }
+
+                    if self.sso_character_name.is_some() {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let test_btn = egui::Button::new(
+                                RichText::new("🛰️ Test Live Location Query")
+                                    .color(Color32::BLACK)
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(0, 220, 255));
+
+                            if ui.add_enabled(!self.sso_is_fetching_location, test_btn)
+                                .on_hover_text("Query ESI right now for your pilot's live in-game solar system and verify location permissions")
+                                .clicked()
+                            {
+                                self.fetch_live_character_location(false);
+                            }
+
+                            if self.sso_is_fetching_location {
+                                ui.spinner();
+                                ui.label(RichText::new("Querying ESI live location...").color(Color32::from_rgb(0, 220, 255)));
+                            }
+                        });
+                    }
                 });
 
             ui.add_space(12.0);

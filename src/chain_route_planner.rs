@@ -60,6 +60,105 @@ pub struct ChainRoute {
     pub waypoint_names: Vec<String>,
 }
 
+impl ChainRoute {
+    /// Returns the ordered sequence of unique station / system IDs for ESI in-game autopilot.
+    pub fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for leg in &self.legs {
+            for pickup in &leg.pickups {
+                for slot in &pickup.cargo_loaded {
+                    let st_id = slot.deal.source_station_id;
+                    if ids.last().copied() != Some(st_id) {
+                        ids.push(st_id);
+                    }
+                }
+            }
+            for slot in &leg.sell.cargo_sold {
+                let st_id = slot.deal.dest_station_id;
+                if ids.last().copied() != Some(st_id) {
+                    ids.push(st_id);
+                }
+            }
+        }
+        ids
+    }
+
+    /// Formats a complete in-game flight dossier suitable for EVE Notepad (Alt+N).
+    pub fn format_eve_flight_sheet(&self, route_idx: usize) -> String {
+        let mut s = String::new();
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s.push_str(&format!(
+            "🔗 CHAIN ROUTE #{} | {} Jumps | Net Profit: +{:.2}M ISK | ROI: {:.1}%\n",
+            route_idx + 1,
+            self.total_jumps,
+            self.total_profit / 1_000_000.0,
+            self.overall_roi_pct
+        ));
+        s.push_str(&format!(
+            "Capital: {:.2}M ISK | Peak Volume: {:.1} m³ | PPJ: {:.2}M/jump\n",
+            self.total_capital / 1_000_000.0,
+            self.peak_volume_m3,
+            self.profit_per_jump / 1_000_000.0
+        ));
+        s.push_str("═══════════════════════════════════════════════════════════\n\n");
+
+        for (leg_idx, leg) in self.legs.iter().enumerate() {
+            s.push_str(&format!(
+                "▶ LEG #{} ({} Jumps, +{:.2}M ISK):\n",
+                leg_idx + 1,
+                leg.leg_total_jumps,
+                leg.leg_total_profit / 1_000_000.0
+            ));
+
+            for pickup in &leg.pickups {
+                s.push_str(&format!(
+                    "  [BUY STOP] {} (⚡ {} jumps)\n",
+                    pickup.system_name, pickup.jumps_from_prev
+                ));
+                for slot in &pickup.cargo_loaded {
+                    s.push_str(&format!(
+                        "    • Station: {}\n",
+                        slot.deal.source_station_name
+                    ));
+                    s.push_str(&format!(
+                        "    • BUY: {}x {} @ {:.2} ISK (Cost: {:.2}M ISK, {:.1} m³)\n",
+                        slot.deal.quantity,
+                        slot.deal.item_name,
+                        slot.deal.buy_price,
+                        slot.capital / 1_000_000.0,
+                        slot.volume
+                    ));
+                }
+            }
+
+            s.push_str(&format!(
+                "  [SELL STOP] {} (⚡ {} jumps)\n",
+                leg.sell.system_name, leg.sell.jumps_from_prev
+            ));
+            for slot in &leg.sell.cargo_sold {
+                s.push_str(&format!(
+                    "    • Station: {}\n",
+                    slot.deal.dest_station_name
+                ));
+                s.push_str(&format!(
+                    "    • SELL: {}x {} @ {:.2} ISK (Gross: {:.2}M ISK, Profit: +{:.2}M ISK)\n",
+                    slot.deal.quantity,
+                    slot.deal.item_name,
+                    slot.deal.sell_price,
+                    (slot.deal.sell_price * slot.deal.quantity as f64) / 1_000_000.0,
+                    slot.net_profit / 1_000_000.0
+                ));
+            }
+            s.push('\n');
+        }
+
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s.push_str(&format!("Autopilot trail: {}\n", self.waypoint_names.join(" ➔ ")));
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s
+    }
+}
+
 /// Configuration for the chain search.
 #[derive(Debug, Clone)]
 pub struct ChainConfig {
@@ -796,7 +895,7 @@ pub fn find_chain_routes(
             // - If min_dist > 2: no continuous onward trades exist near this system;
             //   the candidate route naturally concludes at this destination!
             let max_allowed_departure_dist = if is_initial_leg {
-                min_dist.max(1).min(5)
+                min_dist.clamp(1, 5)
             } else if min_dist == 0 {
                 1
             } else if min_dist <= 2 {

@@ -287,3 +287,96 @@ pub fn compute_corridor_summary(
         top_item_name,
     }
 }
+
+/// Returns the ordered station IDs [source_station, dest_station] for ESI in-game autopilot.
+pub fn hub_corridor_destination_ids(
+    source_hub: CoreHub,
+    dest_hub: CoreHub,
+    manifest: &Option<ConstrainedPackResult>,
+) -> Vec<u64> {
+    if let Some(m) = manifest {
+        if let Some(first) = m.packed.first() {
+            let src = first.deal.source_station_id;
+            let dst = first.deal.dest_station_id;
+            if src == dst {
+                return vec![src];
+            } else {
+                return vec![src, dst];
+            }
+        }
+    }
+    vec![source_hub.primary_station_id(), dest_hub.primary_station_id()]
+}
+
+/// Formats a complete in-game flight sheet for EVE Notepad (Alt+N) for a hub trade run.
+pub fn format_hub_flight_sheet(
+    source_hub: CoreHub,
+    dest_hub: CoreHub,
+    safe_jumps: u32,
+    manifest: &ConstrainedPackResult,
+) -> String {
+    let mut s = String::new();
+    s.push_str("═══════════════════════════════════════════════════════════\n");
+    s.push_str(&format!(
+        "🏛️ HUB CORRIDOR RUN: {} ➔ {} (⚡ {} Jumps)\n",
+        source_hub.name(),
+        dest_hub.name(),
+        safe_jumps
+    ));
+    s.push_str(&format!(
+        "Total Profit: +{:.2}M ISK | Capital: {:.2}M ISK | Volume: {:.1} m³\n",
+        manifest.total_profit / 1_000_000.0,
+        manifest.total_capital / 1_000_000.0,
+        manifest.total_volume
+    ));
+    s.push_str("═══════════════════════════════════════════════════════════\n\n");
+
+    s.push_str(&format!(
+        "▶ 1. BUY AT ORIGIN HUB: {} ({})\n",
+        source_hub.name(),
+        source_hub.primary_station_label()
+    ));
+    for (idx, slot) in manifest.packed.iter().enumerate() {
+        s.push_str(&format!(
+            "  [{}] BUY {}x {} @ {:.2} ISK (Cost: {:.2}M ISK, {:.1} m³)\n",
+            idx + 1,
+            slot.deal.quantity,
+            slot.deal.item_name,
+            slot.deal.buy_price,
+            slot.capital / 1_000_000.0,
+            slot.volume
+        ));
+    }
+    s.push('\n');
+
+    s.push_str(&format!(
+        "▶ 2. WARP {} JUMPS & SELL AT DESTINATION HUB: {} ({})\n",
+        safe_jumps,
+        dest_hub.name(),
+        dest_hub.primary_station_label()
+    ));
+    for (idx, slot) in manifest.packed.iter().enumerate() {
+        s.push_str(&format!(
+            "  [{}] SELL {}x {} @ {:.2} ISK (Gross: {:.2}M ISK, Profit: +{:.2}M ISK, {:.1}%)\n",
+            idx + 1,
+            slot.deal.quantity,
+            slot.deal.item_name,
+            slot.deal.sell_price,
+            (slot.deal.sell_price * slot.deal.quantity as f64) / 1_000_000.0,
+            slot.net_profit / 1_000_000.0,
+            slot.deal.net_profit_pct
+        ));
+    }
+    s.push('\n');
+
+    s.push_str("═══════════════════════════════════════════════════════════\n");
+    s.push_str(&format!(
+        "Autopilot route: {} ({}) ➔ {} ({})\n",
+        source_hub.name(),
+        source_hub.primary_station_id(),
+        dest_hub.name(),
+        dest_hub.primary_station_id()
+    ));
+    s.push_str("═══════════════════════════════════════════════════════════\n");
+    s
+}

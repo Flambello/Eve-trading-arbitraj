@@ -4707,6 +4707,8 @@ impl DesktopApp {
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut new_selected_idx: Option<usize> = None;
+
             // Discovered Chains Selector Strip
             ui.horizontal(|ui| {
                 ui.label(
@@ -4714,6 +4716,28 @@ impl DesktopApp {
                         .strong()
                         .color(Color32::from_rgb(200, 230, 255)),
                 );
+                ui.separator();
+
+                ui.label(RichText::new("Active Route:").strong());
+                let current_idx = self.chain_selected_idx.unwrap_or(0);
+                let selected_label = if let Some(r) = self.chain_results.get(current_idx) {
+                    format!("#{} (+{:.2}M ISK, {}j, {} legs)", current_idx + 1, r.total_profit / 1_000_000.0, r.total_jumps, r.legs.len())
+                } else {
+                    "None".to_string()
+                };
+
+                egui::ComboBox::from_id_source("chain_route_dropdown_selector")
+                    .selected_text(selected_label)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for (idx, r) in self.chain_results.iter().enumerate() {
+                            let label = format!("#{} (+{:.2}M ISK, {}j, {} legs)", idx + 1, r.total_profit / 1_000_000.0, r.total_jumps, r.legs.len());
+                            let mut sel = current_idx;
+                            if ui.selectable_value(&mut sel, idx, label).clicked() {
+                                new_selected_idx = Some(idx);
+                            }
+                        }
+                    });
             });
 
             ui.add_space(6.0);
@@ -4723,56 +4747,75 @@ impl DesktopApp {
                 ui.horizontal(|ui| {
                     for (idx, route) in self.chain_results.iter().enumerate() {
                         let is_selected = self.chain_selected_idx == Some(idx);
-                        let bg_color = if is_selected {
-                            Color32::from_rgb(28, 42, 68)
-                        } else {
-                            Color32::from_rgb(16, 22, 36)
-                        };
-                        let border_color = if is_selected {
-                            Color32::from_rgb(0, 220, 255)
-                        } else {
-                            Color32::from_rgb(38, 52, 78)
-                        };
 
-                        let frame = egui::Frame::none()
-                            .fill(bg_color)
-                            .stroke(Stroke::new(if is_selected { 1.5_f32 } else { 1.0_f32 }, border_color))
-                            .rounding(6.0)
-                            .inner_margin(egui::Margin::symmetric(10.0, 8.0));
+                        ui.push_id(idx, |ui| {
+                            let bg_color = if is_selected {
+                                Color32::from_rgb(28, 42, 68)
+                            } else {
+                                Color32::from_rgb(16, 22, 36)
+                            };
+                            let border_color = if is_selected {
+                                Color32::from_rgb(0, 220, 255)
+                            } else {
+                                Color32::from_rgb(38, 52, 78)
+                            };
 
-                        frame.show(ui, |ui| {
-                            let resp = ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    let rank_text = format!("#{}", idx + 1);
-                                    let rank_color = match idx {
-                                        0 => Color32::from_rgb(255, 215, 0),
-                                        1 => Color32::from_rgb(200, 205, 215),
-                                        2 => Color32::from_rgb(205, 127, 50),
-                                        _ => Color32::from_rgb(140, 160, 190),
-                                    };
-                                    ui.label(RichText::new(rank_text).strong().color(rank_color));
+                            let frame = egui::Frame::none()
+                                .fill(bg_color)
+                                .stroke(Stroke::new(if is_selected { 1.5_f32 } else { 1.0_f32 }, border_color))
+                                .rounding(6.0)
+                                .inner_margin(egui::Margin::symmetric(10.0, 8.0));
 
-                                    ui.label(
-                                        RichText::new(format!("+{:.2}M ISK", route.total_profit / 1_000_000.0))
-                                            .strong()
-                                            .color(Color32::from_rgb(0, 255, 140)),
-                                    );
-                                });
+                            let frame_resp = frame.show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        let rank_text = format!("#{}", idx + 1);
+                                        let rank_color = match idx {
+                                            0 => Color32::from_rgb(255, 215, 0),
+                                            1 => Color32::from_rgb(200, 205, 215),
+                                            2 => Color32::from_rgb(205, 127, 50),
+                                            _ => Color32::from_rgb(140, 160, 190),
+                                        };
+                                        ui.label(RichText::new(rank_text).strong().color(rank_color));
 
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("{} jumps", route.total_jumps)).color(Color32::from_rgb(255, 205, 0)).size(11.0));
-                                    ui.label(RichText::new(format!("{:.2}M/j", route.profit_per_jump / 1_000_000.0)).color(Color32::from_rgb(0, 220, 255)).size(11.0));
-                                    ui.label(RichText::new(format!("{} legs", route.legs.len())).color(Color32::LIGHT_GRAY).size(11.0));
+                                        ui.label(
+                                            RichText::new(format!("+{:.2}M ISK", route.total_profit / 1_000_000.0))
+                                                .strong()
+                                                .color(Color32::from_rgb(0, 255, 140)),
+                                        );
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{} jumps", route.total_jumps)).color(Color32::from_rgb(255, 205, 0)).size(11.0));
+                                        ui.label(RichText::new(format!("{:.2}M/j", route.profit_per_jump / 1_000_000.0)).color(Color32::from_rgb(0, 220, 255)).size(11.0));
+                                        ui.label(RichText::new(format!("{} legs", route.legs.len())).color(Color32::LIGHT_GRAY).size(11.0));
+                                    });
                                 });
                             });
 
-                            if resp.response.interact(egui::Sense::click()).clicked() {
-                                self.chain_selected_idx = Some(idx);
+                            let card_rect = frame_resp.response.rect;
+                            let card_interact = ui.interact(card_rect, ui.id(), egui::Sense::click());
+                            if card_interact.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                if !is_selected {
+                                    ui.painter().rect_stroke(
+                                        card_rect,
+                                        6.0,
+                                        Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 220)),
+                                    );
+                                }
+                            }
+                            if card_interact.clicked() {
+                                new_selected_idx = Some(idx);
                             }
                         });
                     }
                 });
             });
+
+            if let Some(idx) = new_selected_idx {
+                self.chain_selected_idx = Some(idx);
+            }
 
             ui.add_space(14.0);
 

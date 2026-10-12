@@ -28,6 +28,8 @@ pub struct SsoToken {
     pub expires_at: i64, // Unix timestamp (seconds)
     pub character_id: u64,
     pub character_name: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 impl SsoToken {
@@ -38,6 +40,24 @@ impl SsoToken {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         now >= (self.expires_at - 60)
+    }
+
+    /// Returns true if the token needs proactive refresh (within 300 seconds / 5 minutes of expiration).
+    pub fn needs_refresh(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        now >= (self.expires_at - 300)
+    }
+
+    /// Returns the number of seconds until token expiration (or 0 if expired).
+    pub fn seconds_until_expiration(&self) -> i64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        (self.expires_at - now).max(0)
     }
 }
 
@@ -371,6 +391,7 @@ pub async fn exchange_code_for_token(
         expires_at,
         character_id,
         character_name,
+        client_id: Some(client_id.to_string()),
     };
 
     save_token(&sso_token)?;
@@ -387,10 +408,18 @@ pub async fn ensure_fresh_token(
         return Ok(());
     }
 
+    let effective_client_id = if !client_id.trim().is_empty() {
+        client_id.trim()
+    } else if let Some(ref cid) = token.client_id {
+        cid.as_str()
+    } else {
+        client_id
+    };
+
     let params = [
         ("grant_type", "refresh_token"),
         ("refresh_token", &token.refresh_token),
-        ("client_id", client_id),
+        ("client_id", effective_client_id),
     ];
 
     let resp = client
@@ -419,9 +448,72 @@ pub async fn ensure_fresh_token(
     token.access_token = token_data.access_token;
     token.refresh_token = token_data.refresh_token;
     token.expires_at = now + token_data.expires_in;
+    if token.client_id.is_none() && !effective_client_id.is_empty() {
+        token.client_id = Some(effective_client_id.to_string());
+    }
 
     let _ = save_token(token);
     Ok(())
+}
+
+/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
+pub async fn refresh_saved_token_if_needed(
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<Option<SsoToken>> {
+    let mut token = match load_saved_token() {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    if !token.needs_refresh() {
+        return Ok(Some(token));
+    }
+
+    let effective_client_id = if !client_id.trim().is_empty() {
+        client_id.trim().to_string()
+    } else if let Some(ref cid) = token.client_id {
+        cid.clone()
+    } else {
+        resolve_client_id(client_id)?
+    };
+
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", &token.refresh_token),
+        ("client_id", &effective_client_id),
+    ];
+
+    let resp = client
+        .post(SSO_TOKEN_URL)
+        .header("User-Agent", USER_AGENT_VAL)
+        .form(&params)
+        .send()
+        .await
+        .context("Failed to refresh SSO access token")?;
+
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        bail!("CCP SSO token refresh failed: {}", err_text);
+    }
+
+    let token_data: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse refreshed SSO token response")?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    token.access_token = token_data.access_token;
+    token.refresh_token = token_data.refresh_token;
+    token.expires_at = now + token_data.expires_in;
+    token.client_id = Some(effective_client_id);
+
+    save_token(&token)?;
+    Ok(Some(token))
 }
 
 /// Decodes the payload segment of a JWT token to extract `name` and `sub` (CHARACTER:EVE:<id>).

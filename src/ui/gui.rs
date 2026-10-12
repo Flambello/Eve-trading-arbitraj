@@ -230,6 +230,12 @@ fn resolve_csv_export_path(filename: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(filename)
 }
 
+/// Target corporation for in-game ISK donations.
+pub const CORP_DONATION_RECIPIENT: &str = "Expandabliss";
+
+/// Embedded Expandabliss corporation crest PNG bytes (124x124 RGBA).
+pub const CORP_ICON_PNG_BYTES: &[u8] = include_bytes!("../../assets/icons/expandabliss.png");
+
 pub struct DesktopApp {
     sde: Option<Arc<SdeLoader>>,
     graph: Option<Arc<SystemGraph>>,
@@ -340,6 +346,14 @@ pub struct DesktopApp {
     sso_auth_rx: Option<Receiver<Result<crate::esi::sso::SsoToken, String>>>,
     sso_push_rx: Option<Receiver<Result<usize, String>>>,
     sso_location_rx: Option<Receiver<Result<crate::esi::sso::CharacterLocation, String>>>,
+
+    // ── EVE SSO Token Auto-Refresh ────────────────────────────────
+    pub sso_last_token_refresh_check: Instant,
+    pub sso_is_refreshing_token: bool,
+    sso_refresh_rx: Option<Receiver<Result<crate::esi::sso::SsoToken, String>>>,
+
+    // ── In-Game ISK Donations & Corp Crest ────────────────────────
+    corp_icon_texture: Option<egui::TextureHandle>,
 }
 
 impl DesktopApp {
@@ -509,6 +523,10 @@ impl DesktopApp {
             sso_auth_rx: None,
             sso_push_rx: None,
             sso_location_rx: None,
+            sso_last_token_refresh_check: Instant::now() - Duration::from_secs(3600),
+            sso_is_refreshing_token: false,
+            sso_refresh_rx: None,
+            corp_icon_texture: None,
         }
     }
 
@@ -636,6 +654,10 @@ impl DesktopApp {
             sso_auth_rx: None,
             sso_push_rx: None,
             sso_location_rx: None,
+            sso_last_token_refresh_check: Instant::now() - Duration::from_secs(3600),
+            sso_is_refreshing_token: false,
+            sso_refresh_rx: None,
+            corp_icon_texture: None,
         }
     }
 
@@ -655,6 +677,80 @@ impl DesktopApp {
 
     fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    /// Lazily decodes and loads the embedded Expandabliss corporation crest PNG into an egui texture.
+    fn ensure_corp_icon(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+        if self.corp_icon_texture.is_none() {
+            if let Ok(img) = image::load_from_memory(CORP_ICON_PNG_BYTES) {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    rgba.as_raw(),
+                );
+                self.corp_icon_texture = Some(ctx.load_texture(
+                    "expandabliss_corp_icon",
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
+        self.corp_icon_texture.as_ref()
+    }
+
+    /// Checks if the saved EVE SSO token needs proactive refresh and initiates background renewal.
+    pub fn check_and_refresh_sso_token(&mut self, force: bool) {
+        if self.sso_is_refreshing_token {
+            return;
+        }
+        let token = match crate::esi::sso::load_saved_token() {
+            Some(t) => t,
+            None => return,
+        };
+
+        if !force && !token.needs_refresh() {
+            return;
+        }
+
+        let client_id = self.sso_client_id.clone();
+        self.sso_is_refreshing_token = true;
+        if force {
+            self.set_toast("🔄 Refreshing EVE SSO access token...");
+        }
+
+        let (tx, rx) = channel();
+        self.sso_refresh_rx = Some(rx);
+
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::refresh_saved_token_if_needed(
+                &http_client,
+                &client_id,
+            ));
+            match res {
+                Ok(Some(token)) => {
+                    let _ = tx.send(Ok(token));
+                }
+                Ok(None) => {
+                    let _ = tx.send(Err("No token found on disk to refresh".to_string()));
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                }
+            }
+        });
     }
 
     pub fn start_sso_authentication(&mut self) {
@@ -1205,10 +1301,35 @@ impl eframe::App for DesktopApp {
             }
         }
 
+        // Periodic background SSO token refresh check (every 30 seconds)
+        if self.sso_last_token_refresh_check.elapsed() >= Duration::from_secs(30) {
+            self.sso_last_token_refresh_check = Instant::now();
+            self.check_and_refresh_sso_token(false);
+        }
+
+        // Poll SSO token refresh worker
+        if let Some(ref rx) = self.sso_refresh_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_refreshing_token = false;
+                match res {
+                    Ok(token) => {
+                        self.sso_character_name = Some(token.character_name);
+                        self.sso_character_id = Some(token.character_id);
+                        self.set_toast("🔄 EVE SSO token auto-refreshed (valid for 20m)");
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("SSO token refresh error: {}", err));
+                    }
+                }
+                self.sso_refresh_rx = None;
+            }
+        }
+
         if self.chain_is_running
             || self.sso_is_authenticating
             || self.sso_is_pushing
             || self.sso_is_fetching_location
+            || self.sso_is_refreshing_token
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
@@ -1361,13 +1482,76 @@ impl eframe::App for DesktopApp {
                         }
                     }
 
+                    let corp_tex = self.ensure_corp_icon(ctx).cloned();
+                    let mut copy_corp_clicked = false;
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             RichText::new("EVE Traveling Merchant • Linux Fedora Native")
                                 .size(11.0)
                                 .color(Color32::from_rgb(120, 140, 170)),
                         );
+
+                        ui.separator();
+
+                        // In-Game ISK Donation Banner
+                        egui::Frame::none()
+                            .fill(Color32::from_rgba_unmultiplied(22, 28, 44, 220))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(218, 165, 32)))
+                            .rounding(4.0)
+                            .inner_margin(egui::vec2(6.0, 2.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if let Some(ref tex) = corp_tex {
+                                        ui.image((tex.id(), egui::vec2(16.0, 16.0)));
+                                    }
+                                    ui.label(
+                                        RichText::new("Support: ISK to")
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(180, 205, 235)),
+                                    );
+                                    ui.label(
+                                        RichText::new(CORP_DONATION_RECIPIENT)
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(255, 215, 0))
+                                            .strong(),
+                                    );
+                                    if ui
+                                        .button(
+                                            RichText::new("📋 Copy Corp")
+                                                .size(10.5)
+                                                .color(Color32::from_rgb(255, 230, 120))
+                                                .strong(),
+                                        )
+                                        .on_hover_ui(|ui| {
+                                            ui.heading("🪙 In-Game ISK Donations");
+                                            ui.label("EVE Traveling Merchant is 100% free & open-source.");
+                                            ui.label("Send voluntary ISK donations in-game to support development:");
+                                            ui.label(
+                                                RichText::new("Corporation: Expandabliss")
+                                                    .color(Color32::from_rgb(255, 215, 0))
+                                                    .strong(),
+                                            );
+                                            ui.add_space(4.0);
+                                            ui.label("1. Press Alt+W in EVE to open Wallet");
+                                            ui.label("2. Click 'Transfer ISK'");
+                                            ui.label("3. Search recipient: Expandabliss (Corporation)");
+                                            ui.label("Fly safe o7!");
+                                        })
+                                        .clicked()
+                                    {
+                                        copy_corp_clicked = true;
+                                    }
+                                });
+                            });
                     });
+
+                    if copy_corp_clicked {
+                        ui.output_mut(|o| o.copied_text = CORP_DONATION_RECIPIENT.to_string());
+                        self.set_toast(
+                            "Copied 'Expandabliss' to clipboard! Send ISK in-game via Wallet > Transfer.",
+                        );
+                    }
                 });
             });
 
@@ -1796,47 +1980,35 @@ impl DesktopApp {
                 self.start_scan();
             }
 
-            // In-game location auto-sync toggle
-            let auto_label = if self.sso_auto_sync_location {
-                "🛸 Auto-Detect: ON"
+            // Single dedicated "Check Location" button
+            let loc_btn_label = if self.sso_is_fetching_location {
+                "⏳ Checking..."
             } else {
-                "🛸 Auto-Detect"
+                "🛰️ Check Location"
             };
-            let auto_btn = egui::SelectableLabel::new(
-                self.sso_auto_sync_location,
-                RichText::new(auto_label)
-                    .color(if self.sso_auto_sync_location {
-                        Color32::from_rgb(0, 255, 170)
+            let loc_btn = egui::Button::new(
+                RichText::new(loc_btn_label)
+                    .size(11.5)
+                    .color(if self.sso_character_name.is_some() {
+                        Color32::from_rgb(0, 220, 255)
                     } else {
                         Color32::LIGHT_GRAY
                     })
                     .strong(),
             );
-            if ui.add(auto_btn)
-                .on_hover_text("Automatically detect your live in-game character's solar system via EVE ESI and use it as Deals starting system")
+            if ui
+                .add_enabled(!self.sso_is_fetching_location, loc_btn)
+                .on_hover_text(if self.sso_character_name.is_some() {
+                    "Query CCP ESI right now for your pilot's live in-game solar system, update Deals origin, and scan"
+                } else {
+                    "Connect your EVE character in Settings to enable 1-click in-game location detection"
+                })
                 .clicked()
             {
                 if self.sso_character_name.is_none() {
                     self.set_toast("⚠️ Please connect your character via EVE SSO in Settings first!");
                     self.tab = ActiveTab::Settings;
                 } else {
-                    self.sso_auto_sync_location = !self.sso_auto_sync_location;
-                    if let Ok(mut cfg) = crate::config::UserConfig::load() {
-                        cfg.sso.auto_sync_location = self.sso_auto_sync_location;
-                        let _ = cfg.save();
-                    }
-                    if self.sso_auto_sync_location {
-                        self.fetch_live_character_location(true);
-                    }
-                }
-            }
-
-            if self.sso_character_name.is_some() {
-                let sync_label = if self.sso_is_fetching_location { "⏳" } else { "🛰️" };
-                if ui.small_button(RichText::new(sync_label).color(Color32::from_rgb(0, 220, 255)).strong())
-                    .on_hover_text("Query ESI right now for your pilot's live in-game solar system and update starting location")
-                    .clicked()
-                {
                     self.fetch_live_character_location(true);
                 }
             }
@@ -1850,7 +2022,7 @@ impl DesktopApp {
                     .and_then(|r| self.sde.as_ref().and_then(|s| s.get_region_name(r)))
                     .unwrap_or_else(|| "Unknown".to_string());
                 let sys_name = self.sde.as_ref().and_then(|s| s.get_system_name(hid)).unwrap_or_default();
-                let sync_tag = if self.sso_auto_sync_location { " (🛰️ Auto-Synced)" } else { "" };
+                let sync_tag = "";
                 ui.label(
                     RichText::new(format!("[{:.1}] {} · {}{}", sec, sys_name, reg_name, sync_tag))
                         .size(11.0)
@@ -7009,9 +7181,56 @@ impl DesktopApp {
                                 .color(Color32::from_rgb(0, 255, 140))
                                 .strong(),
                             );
-                            ui.add_space(10.0);
+
+                            let saved_token_opt = crate::esi::sso::load_saved_token();
+                            let token_status_label = if let Some(ref t) = saved_token_opt {
+                                let secs = t.seconds_until_expiration();
+                                let mins = secs / 60;
+                                if self.sso_is_refreshing_token {
+                                    "⏳ Refreshing token...".to_string()
+                                } else if t.is_expired() {
+                                    "⚠️ Expired (auto-refreshing)".to_string()
+                                } else if t.needs_refresh() {
+                                    format!("⏳ Expiring in {}s (auto-refreshing)", secs)
+                                } else {
+                                    format!("🛡️ Token Active (Expires in {}m) • Auto-Refreshes", mins)
+                                }
+                            } else {
+                                "No token".to_string()
+                            };
+
+                            ui.separator();
+                            ui.label(
+                                RichText::new(token_status_label)
+                                    .size(11.5)
+                                    .color(Color32::from_rgb(0, 220, 255)),
+                            );
+
+                            ui.add_space(8.0);
+                            let ref_btn = egui::Button::new(
+                                RichText::new(if self.sso_is_refreshing_token {
+                                    "⏳ Refreshing"
+                                } else {
+                                    "🔄 Refresh Token"
+                                })
+                                .size(12.0)
+                                .color(Color32::from_rgb(255, 230, 120))
+                                .strong(),
+                            );
+                            if ui
+                                .add_enabled(!self.sso_is_refreshing_token, ref_btn)
+                                .on_hover_text(
+                                    "Manually renew the EVE SSO access token right now using your saved refresh token",
+                                )
+                                .clicked()
+                            {
+                                self.check_and_refresh_sso_token(true);
+                            }
+
+                            ui.add_space(6.0);
                             let disc_btn = egui::Button::new(
                                 RichText::new("🔌 Disconnect")
+                                    .size(12.0)
                                     .color(Color32::from_rgb(255, 100, 100)),
                             );
                             if ui.add(disc_btn).clicked() {
@@ -7051,47 +7270,40 @@ impl DesktopApp {
                     ui.separator();
                     ui.add_space(6.0);
 
-                    let mut auto_sync = self.sso_auto_sync_location;
-                    let auto_sync_col = if auto_sync { Color32::from_rgb(0, 255, 170) } else { Color32::WHITE };
-                    if ui.checkbox(
-                        &mut auto_sync,
-                        RichText::new("Automatically sync in-game character location as Deals starting system")
-                            .strong()
-                            .color(auto_sync_col),
-                    )
-                    .on_hover_text("When enabled, Deals automatically queries CCP ESI for your pilot's live solar system and calculates all routes from where you are right now.")
-                    .changed()
-                    {
-                        self.sso_auto_sync_location = auto_sync;
-                        if let Ok(mut cfg) = crate::config::UserConfig::load() {
-                            cfg.sso.auto_sync_location = auto_sync;
-                            let _ = cfg.save();
-                        }
-                        if auto_sync && self.sso_character_name.is_some() {
-                            self.fetch_live_character_location(true);
-                        }
-                    }
-
                     if self.sso_character_name.is_some() {
-                        ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            let test_btn = egui::Button::new(
-                                RichText::new("🛰️ Test Live Location Query")
-                                    .color(Color32::BLACK)
-                                    .strong(),
+                            let loc_btn = egui::Button::new(
+                                RichText::new(if self.sso_is_fetching_location {
+                                    "⏳ Querying Live Location..."
+                                } else {
+                                    "🛰️ Check Character Location"
+                                })
+                                .size(12.5)
+                                .color(Color32::BLACK)
+                                .strong(),
                             )
                             .fill(Color32::from_rgb(0, 220, 255));
 
-                            if ui.add_enabled(!self.sso_is_fetching_location, test_btn)
-                                .on_hover_text("Query ESI right now for your pilot's live in-game solar system and verify location permissions")
+                            if ui
+                                .add_enabled(!self.sso_is_fetching_location, loc_btn)
+                                .on_hover_text(
+                                    "Query ESI right now for your pilot's live in-game solar system and set it as Deals starting system",
+                                )
                                 .clicked()
                             {
-                                self.fetch_live_character_location(false);
+                                self.fetch_live_character_location(true);
                             }
+
+                            ui.label(
+                                RichText::new(
+                                    "Queries CCP ESI for your pilot's active solar system and automatically updates the Deals starting location.",
+                                )
+                                .size(11.5)
+                                .color(Color32::GRAY),
+                            );
 
                             if self.sso_is_fetching_location {
                                 ui.spinner();
-                                ui.label(RichText::new("Querying ESI live location...").color(Color32::from_rgb(0, 220, 255)));
                             }
                         });
                     }
@@ -7353,6 +7565,84 @@ impl DesktopApp {
                     ui.label("• Safe Stargate Navigation: Routes avoid lowsec (<0.45) and nullsec camps by default.");
                     ui.label("• Highsec Space Only: All trade routes and station orders are restricted to high security space.");
                 });
+
+            ui.add_space(14.0);
+
+            // Card 5: In-Game ISK Donations & Support
+            let corp_tex = self.ensure_corp_icon(ui.ctx()).cloned();
+            let mut copy_corp = false;
+            egui::Frame::none()
+                .fill(Color32::from_rgb(22, 28, 44))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(218, 165, 32)))
+                .rounding(8.0)
+                .inner_margin(16.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some(ref tex) = corp_tex {
+                            ui.image((tex.id(), egui::vec2(52.0, 52.0)));
+                            ui.add_space(12.0);
+                        }
+
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("🪙 Support EVE Traveling Merchant — In-Game ISK Donations")
+                                        .size(16.0)
+                                        .color(Color32::from_rgb(255, 215, 0))
+                                        .strong(),
+                                );
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgba_unmultiplied(255, 215, 0, 30))
+                                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 215, 0)))
+                                    .rounding(4.0)
+                                    .inner_margin(egui::vec2(8.0, 2.0))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new("COMMUNITY")
+                                                .size(10.0)
+                                                .color(Color32::from_rgb(255, 215, 0))
+                                                .strong(),
+                                        );
+                                    });
+                            });
+
+                            ui.add_space(4.0);
+                            ui.label(
+                                "EVE Traveling Merchant is 100% free, open-source, and community-driven. If the arbitrage scout and knapsack corridor route engine help you haul billions of ISK, consider sending a voluntary in-game ISK donation to support ongoing development and server infrastructure!",
+                            );
+
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Recipient Corporation:").strong());
+                                ui.label(
+                                    RichText::new(CORP_DONATION_RECIPIENT)
+                                        .size(14.0)
+                                        .color(Color32::from_rgb(255, 225, 80))
+                                        .strong(),
+                                );
+
+                                if ui.button(RichText::new("📋 Copy 'Expandabliss'").strong()).clicked() {
+                                    copy_corp = true;
+                                }
+                            });
+
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("How to donate in-game:").size(11.5).color(Color32::GRAY));
+                                ui.label(
+                                    RichText::new("1. Open Wallet (Alt+W)  •  2. Click 'Transfer ISK'  •  3. Search 'Expandabliss' (Corporation)  •  4. Fly Safe o7!")
+                                        .size(11.5)
+                                        .color(Color32::from_rgb(140, 190, 240)),
+                                );
+                            });
+                        });
+                    });
+                });
+
+            if copy_corp {
+                ui.output_mut(|o| o.copied_text = CORP_DONATION_RECIPIENT.to_string());
+                self.set_toast("Copied 'Expandabliss' to clipboard! Send ISK in-game via Wallet > Transfer.");
+            }
         });
     }
 

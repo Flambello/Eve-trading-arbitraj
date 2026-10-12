@@ -1547,3 +1547,215 @@ fn test_chain_routes_sorted_by_profit_per_jump_descending() {
         "1-leg route has 4,000 PPJ vs 2,500 PPJ for 2-leg route"
     );
 }
+
+#[test]
+fn test_chain_prefers_higher_ppj_deal_over_closer_low_ppj_deal() {
+    let mut systems = Vec::new();
+    let mut jumps = Vec::new();
+
+    // Home: 100 (Geras)
+    systems.push(SystemNode {
+        system_id: 100,
+        name: "Geras".to_string(),
+        security_status: 0.7,
+        region_id: 10000002,
+    });
+
+    // Poinen: 200 (2 jumps from Geras: 100 -> 101 -> 200)
+    systems.push(SystemNode {
+        system_id: 101,
+        name: "Way1".to_string(),
+        security_status: 0.8,
+        region_id: 10000002,
+    });
+    systems.push(SystemNode {
+        system_id: 200,
+        name: "Poinen".to_string(),
+        security_status: 0.6,
+        region_id: 10000002,
+    });
+    jumps.push((100, 101));
+    jumps.push((101, 200));
+
+    // Oimmo: 208 (8 jumps from Poinen: 200 -> 201 -> ... -> 208)
+    for id in 201..=208 {
+        systems.push(SystemNode {
+            system_id: id,
+            name: if id == 208 {
+                "Oimmo".to_string()
+            } else {
+                format!("Sys {}", id)
+            },
+            security_status: 0.6,
+            region_id: 10000002,
+        });
+        jumps.push((id - 1, id));
+    }
+
+    // Josameto: 300 (3 jumps from Geras: 100 -> 102 -> 103 -> 300)
+    systems.push(SystemNode {
+        system_id: 102,
+        name: "Way2".to_string(),
+        security_status: 0.8,
+        region_id: 10000002,
+    });
+    systems.push(SystemNode {
+        system_id: 103,
+        name: "Way3".to_string(),
+        security_status: 0.8,
+        region_id: 10000002,
+    });
+    systems.push(SystemNode {
+        system_id: 300,
+        name: "Josameto".to_string(),
+        security_status: 0.6,
+        region_id: 10000002,
+    });
+    jumps.push((100, 102));
+    jumps.push((102, 103));
+    jumps.push((103, 300));
+
+    // Tuurlainas: 304 (4 jumps from Josameto: 300 -> 301 -> 302 -> 303 -> 304)
+    for id in 301..=304 {
+        systems.push(SystemNode {
+            system_id: id,
+            name: if id == 304 {
+                "Tuurlainas".to_string()
+            } else {
+                format!("Sys {}", id)
+            },
+            security_status: 0.6,
+            region_id: 10000002,
+        });
+        jumps.push((id - 1, id));
+    }
+
+    let graph = SystemGraph::from_nodes_and_jumps(systems, jumps);
+
+    // Deal 1: Protein Delicacies at Poinen (200) -> Oimmo (208)
+    // 2 jumps empty + 8 jumps haul = 10 jumps total. Profit: 1,060,000 ISK -> PPJ = 106,000 ISK/j
+    let d_poinen = make_chain_deal(
+        1001,
+        "Protein Delicacies",
+        (200, "Poinen"),
+        (208, "Oimmo"),
+        1000,
+        15_000.0,
+        5_000_000.0,
+        1_060_000.0,
+    );
+
+    // Deal 2: Holoreels at Josameto (300) -> Tuurlainas (304)
+    // 3 jumps empty + 4 jumps haul = 7 jumps total. Profit: 1,120,000 ISK -> PPJ = 160,000 ISK/j
+    let d_josameto = make_chain_deal(
+        1002,
+        "Holoreels",
+        (300, "Josameto"),
+        (304, "Tuurlainas"),
+        1000,
+        19_000.0,
+        8_000_000.0,
+        1_120_000.0,
+    );
+
+    let cfg = ChainConfig {
+        home_system: 100, // Geras
+        max_legs: 1,
+        ship_max_volume: 30_000.0,
+        ship_max_budget: 50_000_000.0,
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[d_poinen, d_josameto], &graph, &cfg);
+    assert!(!routes.is_empty(), "Must find chain routes");
+
+    // Route #1 MUST be Holoreels from Josameto (160k PPJ), NOT Protein Delicacies (106k PPJ)
+    let best = &routes[0];
+    assert_eq!(
+        best.legs[0].pickups[0].system_id, 300,
+        "Chain route must pick Josameto (Holoreels) at 160,000 PPJ over closer Poinen at 106,000 PPJ"
+    );
+    assert_eq!(best.legs[0].sell.system_id, 304);
+    assert_eq!(
+        best.legs[0].pickups[0].cargo_loaded[0].deal.item_name,
+        "Holoreels"
+    );
+    assert_eq!(best.total_jumps, 7);
+    assert!((best.profit_per_jump - 160_000.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_chain_multi_leg_whole_trip_ppj_maximization() {
+    let mut systems = Vec::new();
+    let mut jumps = Vec::new();
+
+    // 100 (Home) -> 101 (Pickup 1) -> 102 (Dest 1 / Pickup 2) -> 103 (Dest 2)
+    systems.push(SystemNode {
+        system_id: 100,
+        name: "Home".to_string(),
+        security_status: 0.9,
+        region_id: 10000002,
+    });
+    systems.push(SystemNode {
+        system_id: 101,
+        name: "Pickup1".to_string(),
+        security_status: 0.9,
+        region_id: 10000002,
+    });
+    systems.push(SystemNode {
+        system_id: 102,
+        name: "Dest1".to_string(),
+        security_status: 0.9,
+        region_id: 10000002,
+    });
+    systems.push(SystemNode {
+        system_id: 103,
+        name: "Dest2".to_string(),
+        security_status: 0.9,
+        region_id: 10000002,
+    });
+
+    jumps.push((100, 101)); // 1 jump empty
+    jumps.push((101, 102)); // 1 jump haul
+    jumps.push((102, 103)); // 1 jump haul onward
+
+    let graph = SystemGraph::from_nodes_and_jumps(systems, jumps);
+
+    // Leg 1: 101 -> 102. Profit 20,000 in 2 jumps (1 empty + 1 haul) -> 10,000 PPJ
+    let d1 = make_chain_deal(
+        34,
+        "Leg 1 Item",
+        (101, "Pickup1"),
+        (102, "Dest1"),
+        100,
+        100.0,
+        10_000.0,
+        20_000.0,
+    );
+
+    // Leg 2: 102 -> 103. Profit 40,000 in 1 jump onward (0 empty + 1 haul)
+    // Combined: 60,000 profit in 3 jumps -> 20,000 PPJ (higher than Leg 1 alone!)
+    let d2 = make_chain_deal(
+        35,
+        "Leg 2 Item",
+        (102, "Dest1"),
+        (103, "Dest2"),
+        100,
+        100.0,
+        10_000.0,
+        40_000.0,
+    );
+
+    let cfg = ChainConfig {
+        home_system: 100,
+        max_legs: 2,
+        ..Default::default()
+    };
+
+    let routes = find_chain_routes(&[d1, d2], &graph, &cfg);
+    assert!(!routes.is_empty(), "Must find chain routes");
+
+    // Route #1 must be the 2-leg route because 20,000 PPJ > 10,000 PPJ!
+    assert_eq!(routes[0].legs.len(), 2);
+    assert!((routes[0].profit_per_jump - 20_000.0).abs() < 1e-4);
+}

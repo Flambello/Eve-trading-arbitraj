@@ -229,6 +229,7 @@ fn test_sso_token_save_unix_permissions() {
         expires_at: 9999999999,
         character_id: 2112345678,
         character_name: "Security Test Pilot".to_string(),
+        client_id: None,
     };
 
     let save_res = save_token(&token);

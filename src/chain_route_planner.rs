@@ -894,19 +894,16 @@ pub fn find_chain_routes(
             }
 
             // For continuous chaining:
-            // - If starting from home (is_initial_leg): reach the closest trade cluster (up to 5 jumps).
-            // - If current system has available deals (min_dist == 0):
-            //   evaluate current system (0 jumps) and immediate neighbors (1 jump) if they offer higher PPJ.
-            // - If current system has no available deals:
-            //   evaluate strictly the closest system tier within 2 jumps (min_dist <= 2).
-            // - If min_dist > 2: no continuous onward trades exist near this system;
-            //   the candidate route naturally concludes at this destination!
+            // - Initial leg: evaluate all reachable safe highsec corridors radiating outward from
+            //   the player's starting location. Distance from starting system is directly accounted
+            //   for in the leg score: net_profit / (jumps_to_source + jumps_source_to_dest).
+            // - Subsequent legs: enforce continuous onward chaining from the arrival destination.
+            //   The hauler can pick up at the arrival system (0 jumps) or within local proximity (<= 2 jumps).
+            //   If no continuous trades exist within 2 jumps, conclude the route at this destination!
             let max_allowed_departure_dist = if is_initial_leg {
-                min_dist.clamp(1, 5)
-            } else if min_dist == 0 {
-                1
+                u32::MAX
             } else if min_dist <= 2 {
-                min_dist
+                2
             } else {
                 continue;
             };
@@ -925,7 +922,7 @@ pub fn find_chain_routes(
             for (&(src_sys, dst_sys), corr_deals) in &deals_by_corridor {
                 let j_to_src =
                     graph.jump_count(candidate.current_system, src_sys, config.safe_only);
-                if j_to_src > max_allowed_departure_dist {
+                if j_to_src >= 9999 || j_to_src > max_allowed_departure_dist {
                     continue;
                 }
                 let j_src_dst = graph.jump_count(src_sys, dst_sys, config.safe_only);
@@ -965,6 +962,12 @@ pub fn find_chain_routes(
                 b.score
                     .partial_cmp(&a.score)
                     .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        b.pack_res
+                            .total_profit
+                            .partial_cmp(&a.pack_res.total_profit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
             });
             corridor_candidates.truncate(config.beam_width.max(20));
 

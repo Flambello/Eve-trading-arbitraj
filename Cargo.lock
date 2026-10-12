@@ -1070,6 +1070,7 @@ dependencies = [
  "egui_extras",
  "flate2",
  "futures-util",
+ "image",
  "indicatif",
  "lru",
  "petgraph",

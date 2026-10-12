@@ -110,6 +110,7 @@ fn test_sso_token_serde_and_expiration() {
         token_type: "Bearer".to_string(),
         character_id: 2112345678,
         character_name: "Captain Trader".to_string(),
+        client_id: Some("mock_client_id_123".to_string()),
     };
 
     let serialized = serde_json::to_string(&token).expect("Token serialization must succeed");
@@ -119,9 +120,35 @@ fn test_sso_token_serde_and_expiration() {
     assert_eq!(deserialized.character_name, "Captain Trader");
     assert_eq!(deserialized.character_id, 2112345678);
     assert_eq!(deserialized.access_token, "mock_jwt_access_token");
+    assert_eq!(
+        deserialized.client_id.as_deref(),
+        Some("mock_client_id_123")
+    );
     assert!(
         !deserialized.is_expired(),
         "Fresh token must not be expired"
+    );
+    assert!(
+        !deserialized.needs_refresh(),
+        "Token with 1200s TTL must not need refresh"
+    );
+    assert!(
+        deserialized.seconds_until_expiration() > 1100,
+        "Seconds until expiration should reflect remaining TTL"
+    );
+
+    // Token expiring within 5-minute proactive buffer (e.g. 250s left)
+    let proactive_refresh_token = SsoToken {
+        expires_at: now + 250,
+        ..token.clone()
+    };
+    assert!(
+        !proactive_refresh_token.is_expired(),
+        "Token with 250s left is not yet expired"
+    );
+    assert!(
+        proactive_refresh_token.needs_refresh(),
+        "Token with 250s (< 300s) left must trigger proactive auto-refresh"
     );
 
     // Token with expiration in the past
@@ -130,6 +157,11 @@ fn test_sso_token_serde_and_expiration() {
         ..token.clone()
     };
     assert!(expired_token.is_expired(), "Past token must report expired");
+    assert!(
+        expired_token.needs_refresh(),
+        "Expired token must need refresh"
+    );
+    assert_eq!(expired_token.seconds_until_expiration(), 0);
 
     // Token expiring within 60 second safety buffer
     let buffer_token = SsoToken {
@@ -140,6 +172,7 @@ fn test_sso_token_serde_and_expiration() {
         buffer_token.is_expired(),
         "Token expiring in 45s must trigger safety buffer refresh"
     );
+    assert!(buffer_token.needs_refresh());
 }
 
 #[test]

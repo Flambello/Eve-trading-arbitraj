@@ -230,6 +230,22 @@ fn resolve_csv_export_path(filename: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(filename)
 }
 
+/// Safely writes exported CSV content, rejecting symlinks and ensuring valid destination.
+fn safe_write_csv(export_path: &std::path::Path, csv_str: &str) -> anyhow::Result<()> {
+    if let Ok(meta) = std::fs::symlink_metadata(export_path) {
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("Refusing to export through symlink: {:?}", export_path);
+        }
+    }
+    if let Some(parent) = export_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    std::fs::write(export_path, csv_str)?;
+    Ok(())
+}
+
 /// Target corporation for in-game ISK donations.
 pub const CORP_DONATION_RECIPIENT: &str = "Expandabliss";
 
@@ -2930,7 +2946,7 @@ impl DesktopApp {
                         let csv_str = export_deals_to_csv(&export_filtered);
                         copy_to_clipboard(ui, csv_str.clone());
                         let export_path = resolve_csv_export_path("deals_export.csv");
-                        let _ = std::fs::write(&export_path, &csv_str);
+                        let _ = safe_write_csv(&export_path, &csv_str);
                         self.set_toast(format!("Exported {} deals to {} & copied to clipboard!", export_filtered.len(), export_path.display()));
                     }
                 });
@@ -4358,7 +4374,7 @@ impl DesktopApp {
                             let csv_str = export_manifests_to_csv(&self.manifests);
                             copy_to_clipboard(ui, csv_str.clone());
                             let export_path = resolve_csv_export_path("manifests_export.csv");
-                            let _ = std::fs::write(&export_path, &csv_str);
+                            let _ = safe_write_csv(&export_path, &csv_str);
                             self.set_toast(format!("Exported {} manifests to {} & copied to clipboard!", self.manifests.len(), export_path.display()));
                         }
                     });
@@ -6434,7 +6450,7 @@ impl DesktopApp {
                 filtered_deals.iter().enumerate().collect();
             let csv_str = export_deals_to_csv(&deals_for_csv);
             let export_path = resolve_csv_export_path("hub_arbitrage_export.csv");
-            let _ = std::fs::write(&export_path, &csv_str);
+            let _ = safe_write_csv(&export_path, &csv_str);
             copy_to_clipboard(ui, csv_str);
             action_toast = Some(format!(
                 "Exported {} hub deals to {} & copied to clipboard!",

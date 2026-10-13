@@ -113,6 +113,17 @@ fn default_callback_port() -> u16 {
     37373
 }
 
+impl SsoConfig {
+    /// Returns the callback port, ensuring it is in the safe unprivileged range (1024..=65535).
+    pub fn validated_callback_port(&self) -> u16 {
+        if self.callback_port < 1024 {
+            default_callback_port()
+        } else {
+            self.callback_port
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserConfig {
     pub ship: ShipConfig,

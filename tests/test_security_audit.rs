@@ -1,9 +1,12 @@
 use eve_trade_scout::arbitrage::{calculate_deal, sanitize_csv_cell, ArbitrageConfig};
 use eve_trade_scout::audio::is_safe_sound_theme_id;
-use eve_trade_scout::config::BIG_HAULER;
+use eve_trade_scout::config::{SsoConfig, BIG_HAULER};
 use eve_trade_scout::esi::client::{MAX_NETWORK_RETRIES, MAX_PAGES_LIMIT};
 use eve_trade_scout::esi::models::MarketOrder;
-use eve_trade_scout::esi::sso::{save_token, token_storage_path, SsoToken};
+use eve_trade_scout::esi::sso::{
+    build_authorize_url, is_valid_client_id, parse_jwt_character_claims, sanitize_sso_error,
+    save_token, token_storage_path, urldecode_simple, SsoToken,
+};
 use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::sde::loader::{
     ItemInfo, SdeLoader, MAX_DECOMPRESSED_SDE_BYTES, MAX_SDE_COMPRESSED_BYTES,
@@ -286,4 +289,110 @@ fn test_decompression_bomb_guard_stops_excessive_stream() {
         "Decompression guard should catch oversized stream"
     );
     assert!(total > safety_limit);
+}
+
+#[test]
+fn test_build_authorize_url_encodes_client_id_and_rejects_injection() {
+    let malicious_client_id = "test_client_id&redirect_uri=https://evil.com#";
+    let url = build_authorize_url(malicious_client_id, 37373, "state123", "challenge456");
+
+    // The client_id must be properly URL-encoded so that injected parameters cannot alter the query string
+    assert!(url.contains("client_id=test_client_id%26redirect_uri%3Dhttps%3A%2F%2Fevil.com%23"));
+    assert!(!url.contains("&redirect_uri=https://evil.com#"));
+}
+
+#[test]
+fn test_client_id_validation() {
+    // Valid Client IDs
+    assert!(is_valid_client_id("test_client_id_12345"));
+    assert!(is_valid_client_id("abc-def-123"));
+    assert!(is_valid_client_id("my_app_client"));
+
+    // Invalid Client IDs containing injection or invalid characters
+    assert!(!is_valid_client_id(""));
+    assert!(!is_valid_client_id("   "));
+    assert!(!is_valid_client_id("client; rm -rf /"));
+    assert!(!is_valid_client_id("client&param=value"));
+    assert!(!is_valid_client_id("client with spaces"));
+    assert!(!is_valid_client_id("client#hash"));
+}
+
+#[test]
+fn test_oauth_callback_urldecode_simple() {
+    assert_eq!(urldecode_simple("hello%20world"), "hello world");
+    assert_eq!(urldecode_simple("code%2B123%2Fxyz"), "code+123/xyz");
+    assert_eq!(urldecode_simple("state%3Dabc%26xyz"), "state=abc&xyz");
+    assert_eq!(urldecode_simple("simple+plus+test"), "simple plus test");
+    assert_eq!(urldecode_simple("no_encoding_needed"), "no_encoding_needed");
+    assert_eq!(urldecode_simple("incomplete%2"), "incomplete%2");
+}
+
+#[test]
+fn test_sanitize_sso_error() {
+    // Strips token references
+    let leak_error = "Error: invalid grant for access_token=secret_12345";
+    assert_eq!(
+        sanitize_sso_error(leak_error),
+        "OAuth token endpoint error (details withheld for security)"
+    );
+
+    // Strips refresh token references
+    let refresh_leak = "Failed: refresh_token is bad";
+    assert_eq!(
+        sanitize_sso_error(refresh_leak),
+        "OAuth token endpoint error (details withheld for security)"
+    );
+
+    // Replaces newlines and carriage returns
+    let multiline_err = "Error line 1\r\nError line 2";
+    assert_eq!(sanitize_sso_error(multiline_err), "Error line 1  Error line 2");
+
+    // Truncates overly long strings
+    let long_err = "a".repeat(500);
+    assert_eq!(sanitize_sso_error(&long_err).len(), 256);
+}
+
+#[test]
+fn test_jwt_claims_parsing_rejects_zero_or_missing_character_id() {
+    // 1. Missing or zero character ID should return None
+    let header_b64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+    // Payload with character ID 0: {"name":"Test Pilot","sub":"CHARACTER:EVE:0"}
+    let payload_zero = "eyJuYW1lIjoiVGVzdCBQaWxvdCIsInN1YiI6IkNIQVJBQ1RFUjpFVkU6MCJ9";
+    let token_zero = format!("{}.{}.fake_sig", header_b64, payload_zero);
+    assert!(parse_jwt_character_claims(&token_zero).is_none());
+
+    // Payload with valid character ID: {"name":"Test Pilot","sub":"CHARACTER:EVE:2112345678"}
+    let payload_valid = "eyJuYW1lIjoiVGVzdCBQaWxvdCIsInN1YiI6IkNIQVJBQ1RFUjpFVkU6MjExMjM0NTY3OCJ9";
+    let token_valid = format!("{}.{}.fake_sig", header_b64, payload_valid);
+    let parsed = parse_jwt_character_claims(&token_valid);
+    assert_eq!(parsed, Some((2112345678, "Test Pilot".to_string())));
+
+    // Payload with empty name should return None
+    let payload_empty_name = "eyJuYW1lIjoiICIsInN1YiI6IkNIQVJBQ1RFUjpFVkU6MjExMjM0NTY3OCJ9";
+    let token_empty_name = format!("{}.{}.fake_sig", header_b64, payload_empty_name);
+    assert!(parse_jwt_character_claims(&token_empty_name).is_none());
+}
+
+#[test]
+fn test_sso_config_validated_callback_port() {
+    let privileged_cfg = SsoConfig {
+        client_id: "test".to_string(),
+        callback_port: 80,
+        auto_sync_location: false,
+    };
+    assert_eq!(privileged_cfg.validated_callback_port(), 37373);
+
+    let zero_cfg = SsoConfig {
+        client_id: "test".to_string(),
+        callback_port: 0,
+        auto_sync_location: false,
+    };
+    assert_eq!(zero_cfg.validated_callback_port(), 37373);
+
+    let valid_cfg = SsoConfig {
+        client_id: "test".to_string(),
+        callback_port: 8080,
+        auto_sync_location: false,
+    };
+    assert_eq!(valid_cfg.validated_callback_port(), 8080);
 }

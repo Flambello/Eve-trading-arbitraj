@@ -222,7 +222,12 @@ impl EsiClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            bail!("ESI error {}: {}", status, body);
+            let sanitized: String = body
+                .chars()
+                .take(256)
+                .filter(|c| !c.is_control() || *c == ' ')
+                .collect();
+            bail!("ESI error {}: {}", status, sanitized);
         }
 
         let expires_at = parse_http_expires(&resp, 300);

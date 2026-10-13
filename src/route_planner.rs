@@ -138,11 +138,16 @@ pub fn plan_route(
             let leg_jumps = (jumps_to_src + jumps_src_to_dst).max(1);
             let score = deal.net_profit / (leg_jumps as f64);
 
-            if score > best_score
-                || (best_idx.is_some()
-                    && (score - best_score).abs() < 1e-4
-                    && deal.net_profit_pct > unused_deals[best_idx.unwrap()].net_profit_pct)
-            {
+            let is_better = if score > best_score {
+                true
+            } else if let Some(b_idx) = best_idx {
+                (score - best_score).abs() < 1e-4
+                    && deal.net_profit_pct > unused_deals[b_idx].net_profit_pct
+            } else {
+                false
+            };
+
+            if is_better {
                 best_score = score;
                 best_idx = Some(idx);
                 best_leg_jumps = leg_jumps;

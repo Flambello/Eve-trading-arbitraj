@@ -771,6 +771,21 @@ fn print_cli_summary(
 }
 
 fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
+    // Security check: Refuse to export through symlinks to prevent symlink traversal attacks
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "Refusing to export to a symlink destination for security reasons: {:?}",
+                path
+            );
+        }
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent export directory: {:?}", parent))?;
+        }
+    }
     let mut file = File::create(path)?;
     writeln!(
         file,

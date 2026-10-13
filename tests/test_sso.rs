@@ -762,6 +762,7 @@ fn test_token_response_deserialization_rotating_refresh_includes_refresh_token()
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_response() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!(
@@ -838,6 +839,7 @@ async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!(
@@ -906,6 +908,7 @@ async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!(

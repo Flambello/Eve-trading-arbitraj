@@ -183,3 +183,67 @@ fn test_cheapest_sell_and_best_buy_selection() {
         .collect();
     assert!(best_buy(&sell_only).is_none());
 }
+
+use eve_trade_scout::esi::{parse_http_expires_str, StoredEtag};
+
+#[test]
+fn test_stored_etag_freshness() {
+    let now = chrono::Utc::now();
+
+    // 1. Entry with future expiration date is fresh
+    let fresh_entry = StoredEtag {
+        etag: "\"abcdef\"".to_string(),
+        expires: Some(now + chrono::Duration::seconds(300)),
+        body_json: "[]".to_string(),
+    };
+    assert!(
+        fresh_entry.is_fresh(),
+        "Entry expiring in 300s must be fresh"
+    );
+
+    // 2. Entry with past expiration date is stale
+    let expired_entry = StoredEtag {
+        etag: "\"abcdef\"".to_string(),
+        expires: Some(now - chrono::Duration::seconds(10)),
+        body_json: "[]".to_string(),
+    };
+    assert!(
+        !expired_entry.is_fresh(),
+        "Entry expired 10s ago must be stale"
+    );
+
+    // 3. Entry with None expires (legacy cache entries) must be treated as stale
+    let legacy_entry = StoredEtag {
+        etag: "\"abcdef\"".to_string(),
+        expires: None,
+        body_json: "[]".to_string(),
+    };
+    assert!(
+        !legacy_entry.is_fresh(),
+        "Legacy entry with expires: None must be stale"
+    );
+}
+
+#[test]
+fn test_parse_http_expires_header() {
+    // Standard RFC 2822 HTTP date from ESI
+    let rfc2822_header = "Tue, 13 Oct 2026 12:30:00 GMT";
+    let parsed = parse_http_expires_str(Some(rfc2822_header), 300);
+    assert_eq!(
+        parsed.to_rfc3339(),
+        "2026-10-13T12:30:00+00:00",
+        "Should correctly parse RFC 2822 HTTP date"
+    );
+
+    // Fallback when header is None
+    let before = chrono::Utc::now();
+    let fallback = parse_http_expires_str(None, 300);
+    let after = chrono::Utc::now();
+    assert!(fallback >= before + chrono::Duration::seconds(299));
+    assert!(fallback <= after + chrono::Duration::seconds(301));
+
+    // Fallback when header is invalid / malformed
+    let invalid_fallback = parse_http_expires_str(Some("not-a-valid-date"), 300);
+    assert!(invalid_fallback >= before + chrono::Duration::seconds(299));
+    assert!(invalid_fallback <= after + chrono::Duration::seconds(301));
+}

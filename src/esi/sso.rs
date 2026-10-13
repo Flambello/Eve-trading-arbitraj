@@ -93,7 +93,22 @@ pub fn load_saved_token() -> Option<SsoToken> {
         return None;
     }
     let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+    let mut token: SsoToken = serde_json::from_str(&data).ok()?;
+
+    // Auto-backfill legacy tokens saved without client_id so future background refreshes succeed
+    if token
+        .client_id
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        if let Some(dev_id) = get_developer_client_id() {
+            token.client_id = Some(dev_id);
+            let _ = save_token(&token);
+        }
+    }
+
+    Some(token)
 }
 
 /// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
@@ -408,72 +423,10 @@ pub async fn ensure_fresh_token(
         return Ok(());
     }
 
-    let effective_client_id = if !client_id.trim().is_empty() {
-        client_id.trim()
-    } else if let Some(ref cid) = token.client_id {
-        cid.as_str()
-    } else {
-        client_id
-    };
-
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", &token.refresh_token),
-        ("client_id", effective_client_id),
-    ];
-
-    let resp = client
-        .post(SSO_TOKEN_URL)
-        .header("User-Agent", USER_AGENT_VAL)
-        .form(&params)
-        .send()
-        .await
-        .context("Failed to refresh SSO access token")?;
-
-    if !resp.status().is_success() {
-        let err_text = resp.text().await.unwrap_or_default();
-        bail!("CCP SSO token refresh failed: {}", err_text);
-    }
-
-    let token_data: TokenResponse = resp
-        .json()
-        .await
-        .context("Failed to parse refreshed SSO token response")?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    token.access_token = token_data.access_token;
-    token.refresh_token = token_data.refresh_token;
-    token.expires_at = now + token_data.expires_in;
-    if token.client_id.is_none() && !effective_client_id.is_empty() {
-        token.client_id = Some(effective_client_id.to_string());
-    }
-
-    let _ = save_token(token);
-    Ok(())
-}
-
-/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
-pub async fn refresh_saved_token_if_needed(
-    client: &reqwest::Client,
-    client_id: &str,
-) -> Result<Option<SsoToken>> {
-    let mut token = match load_saved_token() {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-
-    if !token.needs_refresh() {
-        return Ok(Some(token));
-    }
-
-    let effective_client_id = if !client_id.trim().is_empty() {
+    let effective_client_id: String = if !client_id.trim().is_empty() {
         client_id.trim().to_string()
-    } else if let Some(ref cid) = token.client_id {
-        cid.clone()
+    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        cid.to_string()
     } else {
         resolve_client_id(client_id)?
     };
@@ -494,6 +447,80 @@ pub async fn refresh_saved_token_if_needed(
 
     if !resp.status().is_success() {
         let err_text = resp.text().await.unwrap_or_default();
+        if err_text.contains("invalid_grant") {
+            let _ = delete_saved_token();
+            bail!(
+                "EVE SSO session has expired or was revoked. Please log in again: {}",
+                err_text
+            );
+        }
+        bail!("CCP SSO token refresh failed: {}", err_text);
+    }
+
+    let token_data: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse refreshed SSO token response")?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    token.access_token = token_data.access_token;
+    token.refresh_token = token_data.refresh_token;
+    token.expires_at = now + token_data.expires_in;
+    token.client_id = Some(effective_client_id);
+
+    let _ = save_token(token);
+    Ok(())
+}
+
+/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
+pub async fn refresh_saved_token_if_needed(
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<Option<SsoToken>> {
+    let mut token = match load_saved_token() {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    if !token.needs_refresh() {
+        return Ok(Some(token));
+    }
+
+    let effective_client_id: String = if !client_id.trim().is_empty() {
+        client_id.trim().to_string()
+    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        cid.to_string()
+    } else {
+        resolve_client_id(client_id)?
+    };
+
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", &token.refresh_token),
+        ("client_id", &effective_client_id),
+    ];
+
+    let resp = client
+        .post(SSO_TOKEN_URL)
+        .header("User-Agent", USER_AGENT_VAL)
+        .form(&params)
+        .send()
+        .await
+        .context("Failed to refresh SSO access token")?;
+
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        if err_text.contains("invalid_grant") {
+            let _ = delete_saved_token();
+            bail!(
+                "EVE SSO session has expired or was revoked. Please log in again: {}",
+                err_text
+            );
+        }
         bail!("CCP SSO token refresh failed: {}", err_text);
     }
 
@@ -637,11 +664,10 @@ pub async fn push_waypoints_with_token(
     client_id: &str,
     destination_ids: &[u64],
 ) -> Result<usize> {
-    let effective_client_id = resolve_client_id(client_id)?;
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, &effective_client_id, &mut token).await?;
+    ensure_fresh_token(client, client_id, &mut token).await?;
     push_waypoints_to_client(client, &token.access_token, destination_ids).await
 }
 
@@ -699,10 +725,9 @@ pub async fn get_character_location_with_token(
     client: &reqwest::Client,
     client_id: &str,
 ) -> Result<CharacterLocation> {
-    let effective_client_id = resolve_client_id(client_id)?;
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, &effective_client_id, &mut token).await?;
+    ensure_fresh_token(client, client_id, &mut token).await?;
     fetch_character_location(client, &token).await
 }

@@ -4,7 +4,7 @@ use eve_trade_scout::arbitrage::{
     bundle_route_cargo, find_deals, sanitize_csv_cell, ArbitrageConfig, ArbitrageDeal,
 };
 use eve_trade_scout::config::{profile_from_str, UserConfig};
-use eve_trade_scout::esi::{fetch_markets, EsiClient};
+use eve_trade_scout::esi::{fetch_markets_fresh, EsiClient};
 use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::route_planner::{plan_route, TradeRoute};
 use eve_trade_scout::sde::SdeLoader;
@@ -316,7 +316,7 @@ async fn main() -> Result<()> {
                 }
             };
 
-            let markets = match fetch_markets(&esi, &scan_regions).await {
+            let markets = match fetch_markets_fresh(&esi, &scan_regions).await {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = startup_tx.send(ui::StartupMsg::Error(format!(
@@ -488,7 +488,7 @@ async fn main() -> Result<()> {
         " Fetching live market orders from ESI for {} region(s)...",
         scan_regions.len()
     );
-    let markets = fetch_markets(&esi, &scan_regions)
+    let markets = fetch_markets_fresh(&esi, &scan_regions)
         .await
         .context("Failed to fetch market data from EVE ESI")?;
     let _ = esi.save_cache().await;

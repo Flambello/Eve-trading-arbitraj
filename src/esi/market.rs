@@ -14,10 +14,24 @@ pub struct RegionMarket {
 }
 
 pub async fn fetch_region_market(client: &EsiClient, region_id: u32) -> Result<RegionMarket> {
+    fetch_region_market_opts(client, region_id, false).await
+}
+
+pub async fn fetch_region_market_fresh(client: &EsiClient, region_id: u32) -> Result<RegionMarket> {
+    fetch_region_market_opts(client, region_id, true).await
+}
+
+pub async fn fetch_region_market_opts(
+    client: &EsiClient,
+    region_id: u32,
+    force_refresh: bool,
+) -> Result<RegionMarket> {
     let endpoint = format!("/markets/{}/orders/", region_id);
     let query = vec![("order_type", "all".to_string())];
 
-    let raw_orders: Vec<MarketOrder> = client.get_all_pages(&endpoint, &query).await?;
+    let raw_orders: Vec<MarketOrder> = client
+        .get_all_pages_opts(&endpoint, &query, force_refresh)
+        .await?;
 
     let mut sell_orders: HashMap<u32, Vec<MarketOrder>> = HashMap::new();
     let mut buy_orders: HashMap<u32, Vec<MarketOrder>> = HashMap::new();
@@ -46,20 +60,32 @@ pub async fn fetch_markets(
     client: &EsiClient,
     region_ids: &[u32],
 ) -> Result<HashMap<u32, RegionMarket>> {
+    fetch_markets_opts(client, region_ids, false).await
+}
+
+pub async fn fetch_markets_fresh(
+    client: &EsiClient,
+    region_ids: &[u32],
+) -> Result<HashMap<u32, RegionMarket>> {
+    fetch_markets_opts(client, region_ids, true).await
+}
+
+pub async fn fetch_markets_opts(
+    client: &EsiClient,
+    region_ids: &[u32],
+    force_refresh: bool,
+) -> Result<HashMap<u32, RegionMarket>> {
     let mut tasks = Vec::new();
 
     for &rid in region_ids {
-        let client_ref = client; // or clone if needed, but client has Arc inside or we can spawn
-                                 // We can create a task for each region:
+        let client_ref = client;
         tasks.push(async move {
-            let market = fetch_region_market(client_ref, rid).await?;
+            let market = fetch_region_market_opts(client_ref, rid, force_refresh).await?;
             Ok::<(u32, RegionMarket), anyhow::Error>((rid, market))
         });
     }
 
     let mut result = HashMap::new();
-    // Using futures join or sequentially if ref, or tokio::join
-    // Let's do futures::future::join_all:
     let outcomes = futures_util::future::join_all(tasks).await;
     for out in outcomes {
         let (rid, market) = out?;

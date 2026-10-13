@@ -3,8 +3,8 @@ use clap::Parser;
 use eve_trade_scout::arbitrage::{
     bundle_route_cargo, find_deals, sanitize_csv_cell, ArbitrageConfig, ArbitrageDeal,
 };
-use eve_trade_scout::config::{profile_from_str, UserConfig};
-use eve_trade_scout::esi::{fetch_markets, EsiClient};
+use eve_trade_scout::config::UserConfig;
+use eve_trade_scout::esi::{fetch_markets_fresh, EsiClient};
 use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::route_planner::{plan_route, TradeRoute};
 use eve_trade_scout::sde::SdeLoader;
@@ -109,6 +109,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let log_dir = std::path::Path::new("logs");
+    let _log_guard = eve_trade_scout::logging::init_logging(Some(log_dir), "info")
+        .expect("Failed to initialize logging subsystem");
+
     let args = Args::parse();
 
     let mut cfg = UserConfig::load().unwrap_or_default();
@@ -152,7 +156,7 @@ async fn main() -> Result<()> {
         cfg.scan.auto_refresh = true;
     }
 
-    let ship_profile = profile_from_str(&cfg.ship.profile)?;
+    let ship_profile = cfg.ship_profile()?;
 
     println!("╔═══════════════════════════════════════════════════════════════╗");
     println!("║                 EVE TRAVELING MERCHANT                        ║");
@@ -316,7 +320,7 @@ async fn main() -> Result<()> {
                 }
             };
 
-            let markets = match fetch_markets(&esi, &scan_regions).await {
+            let markets = match fetch_markets_fresh(&esi, &scan_regions).await {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = startup_tx.send(ui::StartupMsg::Error(format!(
@@ -488,7 +492,7 @@ async fn main() -> Result<()> {
         " Fetching live market orders from ESI for {} region(s)...",
         scan_regions.len()
     );
-    let markets = fetch_markets(&esi, &scan_regions)
+    let markets = fetch_markets_fresh(&esi, &scan_regions)
         .await
         .context("Failed to fetch market data from EVE ESI")?;
     let _ = esi.save_cache().await;
@@ -524,15 +528,10 @@ async fn main() -> Result<()> {
     println!(" Found {} profitable trade deals!", deals.len());
     println!();
 
-    let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
-    let launch_gui = (args.gui || (has_display && !args.tui))
-        && !args.no_tui
-        && !args.no_ui
-        && args.export.is_none();
     let is_interactive =
         stdout().is_terminal() && !args.no_tui && !args.no_ui && args.export.is_none();
 
-    if deals.is_empty() && !launch_gui {
+    if deals.is_empty() {
         println!(" No profitable deals met your current filters.");
         println!(" Suggestions:");
         println!(
@@ -581,17 +580,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn format_unit_price(val: f64) -> String {
-    if val >= 1_000_000_000.0 {
-        format!("{:.2}B", val / 1_000_000_000.0)
-    } else if val >= 1_000_000.0 {
-        format!("{:.2}M", val / 1_000_000.0)
-    } else if val >= 1_000.0 {
-        format!("{:.2}k", val / 1_000.0)
-    } else {
-        format!("{:.2}", val)
-    }
-}
+use eve_trade_scout::ui::format_unit_price;
+
 
 fn print_cli_summary(
     deals: &[ArbitrageDeal],
@@ -771,6 +761,21 @@ fn print_cli_summary(
 }
 
 fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
+    // Security check: Refuse to export through symlinks to prevent symlink traversal attacks
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            bail!(
+                "Refusing to export to a symlink destination for security reasons: {:?}",
+                path
+            );
+        }
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent export directory: {:?}", parent))?;
+        }
+    }
     let mut file = File::create(path)?;
     writeln!(
         file,

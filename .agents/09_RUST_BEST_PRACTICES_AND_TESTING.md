@@ -47,8 +47,8 @@ If `cargo check` or `cargo test` produces ANY failure or compiler warning:
 
 ### B. Type Safety & Domain Invariants
 - **Ship Limits**: Never hardcode ship cargo capacity (60,000 m³ / 30,000 m³) or budget limits (500M / 50M ISK) as raw literals across multiple files. Always reference `ShipProfile` (`BIG_HAULER`, `SMALL_HAULER`).
-- **Enforced 15% Net ROI**: Every arbitrage deal must strictly enforce $\ge 15.0\%$ net profitability after sales tax and broker fees before being emitted:
-  $$\text{net\_profit\_pct} = \frac{\text{net\_profit}}{\text{capital\_required}} \times 100 \ge 15.0$$
+- **Enforced 10.0% Net ROI**: Every arbitrage deal must strictly enforce $\ge 10.0\%$ net profitability after sales tax and broker fees before being emitted:
+  $$\text{net\_profit\_pct} = \frac{\text{net\_profit}}{\text{capital\_required}} \times 100 \ge 10.0$$
 
 ### C. Concurrency & Async Architecture
 - **Tokio Runtime**: All async networking runs under `#[tokio::main]`.
@@ -62,42 +62,46 @@ If `cargo check` or `cargo test` produces ANY failure or compiler warning:
 
 ---
 
-## 3. Testing Necessities & Test Suites Catalog
+## 3. Testing Integrity Protocol: Zero Fake Tests & Mandatory Root Cause Investigation
 
-The codebase enforces full automated test suites across all domain components and invariants. All tests are located in `tests/` and run via `cargo test --verbose` or `make test`.
+The integrity of the automated test suite is paramount. Tests are not merely a verification metric; they are the ironclad barrier preventing logic errors, financial calculation mistakes, and navigation routing hazards for players.
+
+### Rules of Testing Rigor:
+1. **Never Write Fake or Superficial Tests**:
+   - **No Tautological Assertions**: Never assert constants against themselves (`assert_eq!(CONSTANT, "literal")`), assert trivial truth (`assert!(true)`), or discard return values (`let _ = result;`).
+   - **No Testing Mocks Instead of Production Logic**: Never write hand-rolled testing loops or mock copies of functions when the actual production implementation should be invoked. If production code is not directly testable, refactor production code into clean, modular, testable functions.
+   - **No Vacuous Conditional Assertions**: Never wrap assertions inside `if let Some(...)` or conditional guards that can evaluate to false and silently skip execution. If a fixture or record is required, ensure it exists in the test fixture and assert its presence (`.expect(...)`).
+   - **No Test-Bypass Shortcuts in Production Code**: Never insert `#[cfg(test)] return;` or mock early exits in production logic to simulate passing execution without actually executing the code.
+
+2. **Never Weaken or Modify Failing Tests Just to Force a Pass**:
+   - When a test fails or encounters an assertion error, **NEVER**:
+     - Modify the test assertions to lower acceptable thresholds.
+     - Comment out, delete, or bypass failing test cases.
+     - Tamper with expected values to match buggy or broken output.
+
+3. **Mandatory Root Cause Investigation**:
+   - Every test failure represents a real defect in production logic, data modeling, database fixtures, or environment setup.
+   - Contributors and AI agents must investigate the failure down to its root cause, formulate a fix for the underlying production code or database schema, and verify that the original strict assertions pass cleanly.
+
+---
+
+## 4. Testing Necessities & Test Suites Catalog
+
+The codebase enforces full automated test suites across all domain components and invariants. All 11 integration test suites are located in `tests/` (105 tests passing) and run via `cargo test --verbose` or `make test`.
 
 ### Test Suite Structure
 
 1. **`tests/test_arbitrage.rs` (Arbitrage Engine & Invariants)**
    - `test_ship_profile_values`: Validates exact max volume and budget for `BIG_HAULER` (60k m³, 500M ISK) and `SMALL_HAULER` (30k m³, 50M ISK).
    - `test_profit_per_jump_formula`: Confirms jumps from starting system are included in the denominator (`total_jumps = jumps_from_home + jumps_source_dest`).
-   - `test_minimum_15_percent_net_profitability_enforced`: Verifies 15.0% after-tax ROI threshold strictly rejects sub-15% trades and accepts profitable ones.
+   - `test_minimum_10_percent_net_profitability_enforced`: Verifies 10.0% after-tax ROI threshold strictly rejects sub-10% trades and accepts profitable ones.
    - `test_is_npc_station_id_threshold`: Tests station ID threshold separating NPC stations ($< 10^{12}$) from player Upwell structures ($\ge 10^{12}$).
    - `test_npc_stations_only_toggle_filter`: Validates that enabling the toggle excludes player structures and disabling it includes them.
    - `test_highsec_only_filtering_excludes_lowsec_and_nullsec`: Confirms systems with security $< 0.45$ are excluded.
    - `test_quantity_solver_constraints`: Tests the 4-way quantity solver against volume caps, ISK budget caps, order supply, and order demand limits.
    - `test_deal_sorting_ppj_descending`: Verifies sorting strictly orders deals by PPJ descending, breaking ties by net profit descending.
 
-2. **`tests/test_config.rs` (Config & Profiles)**
-   - `test_ship_profile_parsing_valid`: Tests parsing of valid inputs ("big", "small", aliases, case insensitivity, whitespace).
-   - `test_ship_profile_parsing_invalid`: Tests graceful error reporting on invalid profile names.
-   - `test_user_config_defaults_and_invariants`: Verifies default configuration preserves 15% ROI, safe routing, and NPC station filtering.
-   - `test_user_config_toml_roundtrip`: Verifies complete serializability to and from TOML format.
-
-3. **`tests/test_graph.rs` (Graph & Stargate Pathfinding)**
-   - `test_system_security_and_is_highsec`: Validates security lookup and highsec classification threshold ($\ge 0.45$).
-   - `test_jump_counts_normal_and_safe_mode`: Validates Dijkstra jump counts and safe mode lowsec endpoint rejection (9999).
-   - `test_shortest_path_safe_highsec_only`: Confirms shortest path routes safely around lowsec systems when in safe mode.
-
-4. **`tests/test_route_planner.rs` (Sequential Route Planning)**
-   - `test_route_planner_empty_deals`: Validates graceful handling of empty opportunity sets.
-   - `test_route_planner_greedy_chaining_and_max_stops`: Verifies multi-stop route construction, volume/budget deduction, and max stop cutoff.
-
-5. **`tests/test_esi_models.rs` (ESI Models & JSON Parsing)**
-   - `test_market_order_json_deserialization`: Verifies correct deserialization of live CCP ESI JSON responses.
-   - `test_cheapest_sell_and_best_buy_selection`: Validates picking lowest sell price and highest buy price from order arrays.
-
-6. **`tests/test_chain_route_planner.rs` (Multi-Leg Chained Optimizer)**
+2. **`tests/test_chain_route_planner.rs` (Multi-Leg Chained Optimizer)**
    - `test_chain_no_deals_returns_empty`: Empty deal handling.
    - `test_chain_basic_single_leg`: Verifies single leg buy/sell sequence and profit calculation.
    - `test_chain_knapsack_packs_multiple_deals_at_one_stop`: Multi-item knapsack packing at station.
@@ -108,7 +112,42 @@ The codebase enforces full automated test suites across all domain components an
    - `test_chain_detour_zero_equals_strict_mode`: Confirms equivalence between 0-detour and strict mode.
    - `test_chain_safe_only_excludes_lowsec_paths`: Avoidance of dangerous systems in safe mode.
    - `test_chain_max_legs_respected`: Respect of maximum legs slider.
-   - `test_chain_15pct_roi_invariant_maintained`: Strict 15.0% net ROI invariant preservation across all chained deals.
+   - `test_chain_10pct_roi_invariant_maintained`: Strict 10.0% net ROI invariant preservation across all chained deals.
+
+3. **`tests/test_config.rs` (Config & Profiles)**
+   - `test_ship_profile_parsing_valid`: Tests parsing of valid inputs ("big", "small", aliases, case insensitivity, whitespace).
+   - `test_ship_profile_parsing_invalid`: Tests graceful error reporting on invalid profile names.
+   - `test_user_config_defaults_and_invariants`: Verifies default configuration preserves 10% ROI, safe routing, and NPC station filtering.
+   - `test_user_config_toml_roundtrip`: Verifies complete serializability to and from TOML format.
+
+4. **`tests/test_donation_branding.rs` (Donation & Branding)**
+   - Verifies tip jar character ID and name branding in desktop UI and dossiers.
+
+5. **`tests/test_esi_models.rs` (ESI Models & JSON Parsing)**
+   - `test_market_order_json_deserialization`: Verifies correct deserialization of live CCP ESI JSON responses.
+   - `test_cheapest_sell_and_best_buy_selection`: Validates picking lowest sell price and highest buy price from order arrays.
+
+6. **`tests/test_graph.rs` (Graph & Stargate Pathfinding)**
+   - `test_system_security_and_is_highsec`: Validates security lookup and highsec classification threshold ($\ge 0.45$).
+   - `test_jump_counts_normal_and_safe_mode`: Validates Dijkstra jump counts and safe mode lowsec endpoint rejection (9999).
+   - `test_shortest_path_safe_highsec_only`: Confirms shortest path routes safely around lowsec systems when in safe mode.
+   - Tests adjacent region discovery across stargates.
+
+7. **`tests/test_hub_arbitrage.rs` (Multi-Hub Arbitrage)**
+   - Matrix price comparison and trade corridors across Jita, Amarr, Dodixie, Rens, and Hek.
+
+8. **`tests/test_route_planner.rs` (Sequential Route Planning)**
+   - `test_route_planner_empty_deals`: Validates graceful handling of empty opportunity sets.
+   - `test_route_planner_greedy_chaining_and_max_stops`: Verifies multi-stop route construction, volume/budget deduction, and max stop cutoff.
+
+9. **`tests/test_sde_search.rs` (SDE Search)**
+   - Validates solar system substring and fuzzy search, station lookup, and item type queries from SQLite.
+
+10. **`tests/test_security_audit.rs` (Security Audit)**
+    - Verifies untrusted input handling, path traversal prevention, CSV injection sanitization, and numeric bounds (rejecting NaN/Inf).
+
+11. **`tests/test_sso.rs` (EVE Online SSO v2 PKCE)**
+    - Validates PKCE OAuth authorization flow, state parameter verification, token exchange and refresh logic.
 
 ### Adding New Features
 Whenever adding a new trading filter, formula, or routing mode:
@@ -118,7 +157,7 @@ Whenever adding a new trading filter, formula, or routing mode:
 
 ---
 
-## 4. Release Build Standard
+## 5. Release Build Standard
 
 Production binaries must be built using the release profile:
 ```bash

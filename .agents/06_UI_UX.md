@@ -28,7 +28,7 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
 - **Station Access Pool Switch**: Instant 1-click toggle between:
   - 🏛️ **NPC Stations Only** (Preferred & Default): Strictly targets NPC stations with guaranteed 100% public docking.
   - 🏰 **+ Citadels Included**: Adds player-owned Citadels / Upwell Structures to the arbitrage search pool.
-- **Min ROI % Drag Slider**: Live adjustments starting at the enforced minimum of $15.0\%$.
+- **Min ROI % Drag Slider**: Live adjustments starting at the enforced minimum of $10.0\%$.
 - **Max Jumps Filter**: Slider to restrict maximum travel jumps (or set to 0 for unlimited).
 - **Executive KPI Strip**: Real-time badges displaying Top Deal Profit (`+XX.XX M ISK`) and Top Profit Per Jump (`XX.XX M / jump`).
 
@@ -136,7 +136,7 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
  5   Caldari Navy Raven     Jita             420.0M   Hek               440.3M      1  50 000   420.0     20.3    +17.2%  1.69
  ...
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Filters: Net ROI ≥ 15% after taxes · Spread ≥ 3% · Net profit ≥ 1 M ISK · Max volume: 60 000 m³
+ Filters: Net ROI ≥ 10% after taxes · Spread ≥ 3% · Net profit ≥ 1 M ISK · Max volume: 60 000 m³
 ```
 
 **Column definitions:**
@@ -256,26 +256,26 @@ Current configuration:
 Usage: eve-merchant [OPTIONS]
 
 Options:
-  -s, --ship <SHIP>              Ship profile: 'big' (60k m³, 500M) or 'small' (30k m³, 50M)
-      --system <SYSTEM>          Starting solar system name [default: Jita]
-      --regions <REGIONS>        Comma-separated region IDs [default: 10000002]
-      --no-adjacent              Disable automatic scanning of stargate-adjacent neighbor regions
-      --max-jumps <MAX_JUMPS>    Maximum travel jumps allowed from starting system
-      --safe                     Force highsec safe route only (avoid lowsec/nullsec)
-      --unsafe-routes            Allow lowsec and nullsec routes
-      --npc-only                 Restrict search strictly to NPC stations (guaranteed public docking)
-      --allow-structures         Allow player-owned structures (Upwell Citadels) in search pool
-      --min-profit <MIN_PROFIT>  Minimum net profit in ISK [default: 1000000]
-      --min-spread <MIN_SPREAD>  Minimum price spread percentage [default: 3.0]
-      --min-roi <MIN_ROI>        Minimum net ROI % after taxes [default: 15.0]
-  -t, --top <TOP>                Number of top deals to display in CLI mode [default: 25]
-      --max-stops <MAX_STOPS>    Maximum stops in route [default: 5]
-      --route                    Print planned multi-stop route
-      --gui                      Force desktop GUI window mode (egui native window)
-      --tui                      Force terminal TUI mode (ratatui)
-      --no-ui                    Disable interactive UI (GUI & TUI) and output directly to console
-      --no-tui                   Disable interactive TUI and output directly to console
-      --export <EXPORT>          Export found deals to CSV file
-      --update-sde               Force update / re-download of SDE database
-  -h, --help                     Print help
+  -s, --ship <SHIP>                    Ship profile: 'big' (60k m³, 500M) or 'small' (30k m³, 50M)
+      --system <SYSTEM>                Starting solar system name [default: Jita]
+      --regions <REGIONS>              Comma-separated region IDs [default: 10000002]
+      --adjacent-regions <BOOL>        Automatically scan stargate-connected neighbor regions [default: true]
+      --safe                           Force highsec safe route only (avoid lowsec/nullsec)
+      --unsafe-routes                  Allow lowsec and nullsec routes
+      --npc-only                       Restrict search strictly to NPC stations (guaranteed public docking)
+      --allow-structures               Allow player-owned structures (Upwell Citadels) in search pool
+      --min-profit <MIN_PROFIT>        Minimum net profit in ISK [default: 1000000]
+      --min-spread <MIN_SPREAD>        Minimum price spread percentage [default: 3.0]
+      --min-roi <MIN_ROI>              Minimum net ROI % after taxes [default: 10.0]
+  -t, --top <TOP>                      Number of top deals to display in CLI mode [default: 25]
+      --max-stops <MAX_STOPS>          Maximum stops in route [default: 5]
+      --route                          Print planned multi-stop route
+      --gui                            Force desktop GUI window mode (egui native window)
+      --auto-refresh                   Automatically refresh market data every 5 minutes in GUI mode
+      --tui                            Force terminal TUI mode (ratatui)
+      --no-ui                          Disable interactive UI (GUI & TUI) and output directly to console
+      --no-tui                         Disable interactive TUI and output directly to console
+      --export <EXPORT>                Export found deals to CSV file
+      --update-sde                     Force update / re-download of SDE database
+  -h, --help                           Print help
 ```

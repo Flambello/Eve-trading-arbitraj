@@ -68,25 +68,37 @@ pub fn has_audio_support() -> bool {
     }
 }
 
-fn play_sound_internal(sound_theme_id: &str) {
+/// Builds command arguments for canberra-gtk-play if the sound theme ID is safe.
+pub fn build_canberra_command_args(sound_theme_id: &str) -> Option<Vec<String>> {
     if !is_safe_sound_theme_id(sound_theme_id) {
-        return;
+        return None;
     }
+    Some(vec![
+        "-i".to_string(),
+        sound_theme_id.to_string(),
+        "-d".to_string(),
+        "EVE Traveling Merchant".to_string(),
+    ])
+}
+
+fn play_sound_internal(sound_theme_id: &str) {
+    let args = match build_canberra_command_args(sound_theme_id) {
+        Some(a) => a,
+        None => return,
+    };
 
     #[cfg(test)]
     {
         // Guard against spawning external processes and emitting terminal bells in unit tests
-        assert!(
-            !sound_theme_id.is_empty(),
-            "Sound theme ID must not be empty"
-        );
+        assert_eq!(args[0], "-i");
+        assert_eq!(args[1], sound_theme_id);
     }
 
     #[cfg(not(test))]
     {
         // 1. Canberra GTK play (Freedesktop system sound event)
         if let Ok(status) = Command::new("canberra-gtk-play")
-            .args(["-i", sound_theme_id, "-d", "EVE Traveling Merchant"])
+            .args(&args)
             .status()
         {
             if status.success() {
@@ -132,15 +144,58 @@ mod tests {
             "/tmp/nonexistent_audio_path_xyz"
         )));
 
-        // 2. has_audio_support returns a valid bool without panicking
-        let supported = has_audio_support();
-        let _ = supported; // Either true or false depending on host system
+        // 2. Temp directory with mocked player binary returns true
+        let temp_dir = std::env::temp_dir().join(format!("eve_audio_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        assert!(!check_audio_support_in_paths(temp_dir.as_os_str()));
+
+        let dummy_bin = temp_dir.join("canberra-gtk-play");
+        std::fs::write(&dummy_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&dummy_bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&dummy_bin, perms).unwrap();
+        }
+        assert!(
+            check_audio_support_in_paths(temp_dir.as_os_str()),
+            "Directory containing executable canberra-gtk-play must report audio support"
+        );
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // 3. has_audio_support matches actual PATH environment check
+        let expected = std::env::var_os("PATH")
+            .map(|p| check_audio_support_in_paths(&p))
+            .unwrap_or(false);
+        assert_eq!(has_audio_support(), expected);
     }
 
     #[test]
-    fn test_play_sound_does_not_panic() {
-        play_sound_internal("message-new-instant");
-        play_sound_internal("bell");
+    fn test_play_sound_command_generation_and_safety() {
+        // Valid sound themes produce correct command args
+        let args = build_canberra_command_args("message-new-instant")
+            .expect("Valid theme must produce args");
+        assert_eq!(
+            args,
+            vec!["-i", "message-new-instant", "-d", "EVE Traveling Merchant"]
+        );
+
+        let bell_args = build_canberra_command_args("bell").expect("Bell theme must produce args");
+        assert_eq!(
+            bell_args,
+            vec!["-i", "bell", "-d", "EVE Traveling Merchant"]
+        );
+
+        // Malicious or invalid themes return None
+        assert!(build_canberra_command_args("../../../etc/passwd").is_none());
+        assert!(build_canberra_command_args("bell; rm -rf /").is_none());
+        assert!(build_canberra_command_args("").is_none());
+        assert!(build_canberra_command_args("   ").is_none());
+
+        // Play sound functions execute safely without panicking
         play_high_profit_alert();
         play_test_sound();
     }

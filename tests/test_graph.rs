@@ -149,3 +149,79 @@ fn test_adjacent_regions() {
     let nonexistent = graph.adjacent_regions(99999999, true);
     assert!(nonexistent.is_empty());
 }
+
+#[test]
+fn test_disconnected_components_and_unknown_systems() {
+    // Two disconnected highsec components:
+    // Component 1: Jita (30000142) <-> Perimeter (30000144)
+    // Component 2: Kisogo (30000200) <-> Maurasi (30000201) (isolated island)
+    let systems = vec![
+        SystemNode {
+            system_id: 30000142,
+            name: "Jita".to_string(),
+            security_status: 0.95,
+            region_id: 10000002,
+        },
+        SystemNode {
+            system_id: 30000144,
+            name: "Perimeter".to_string(),
+            security_status: 0.90,
+            region_id: 10000002,
+        },
+        SystemNode {
+            system_id: 30000200,
+            name: "Kisogo".to_string(),
+            security_status: 0.85,
+            region_id: 10000003,
+        },
+        SystemNode {
+            system_id: 30000201,
+            name: "Maurasi".to_string(),
+            security_status: 0.75,
+            region_id: 10000003,
+        },
+    ];
+
+    let jumps = vec![
+        (30000142, 30000144), // Component 1 internal link
+        (30000200, 30000201), // Component 2 internal link
+    ];
+
+    let graph = SystemGraph::from_nodes_and_jumps(systems, jumps);
+
+    let jita = 30000142;
+    let perimeter = 30000144;
+    let kisogo = 30000200;
+    let maurasi = 30000201;
+    let unknown_sys = 99999999;
+
+    // Within component 1: reachable
+    assert_eq!(graph.jump_count(jita, perimeter, false), 1);
+    assert_eq!(graph.jump_count(jita, perimeter, true), 1);
+    assert_eq!(graph.shortest_path(jita, perimeter, true), vec![jita, perimeter]);
+
+    // Within component 2: reachable
+    assert_eq!(graph.jump_count(kisogo, maurasi, false), 1);
+    assert_eq!(graph.jump_count(kisogo, maurasi, true), 1);
+    assert_eq!(graph.shortest_path(kisogo, maurasi, true), vec![kisogo, maurasi]);
+
+    // Across disconnected components: must return 9999 jumps and empty shortest path
+    assert_eq!(graph.jump_count(jita, kisogo, false), 9999);
+    assert_eq!(graph.jump_count(jita, kisogo, true), 9999);
+    assert!(graph.shortest_path(jita, kisogo, false).is_empty());
+    assert!(graph.shortest_path(jita, kisogo, true).is_empty());
+
+    assert_eq!(graph.jump_count(perimeter, maurasi, false), 9999);
+    assert_eq!(graph.jump_count(perimeter, maurasi, true), 9999);
+    assert!(graph.shortest_path(perimeter, maurasi, false).is_empty());
+    assert!(graph.shortest_path(perimeter, maurasi, true).is_empty());
+
+    // Unknown system ID: must return 9999 jumps and empty path
+    assert_eq!(graph.jump_count(jita, unknown_sys, false), 9999);
+    assert_eq!(graph.jump_count(jita, unknown_sys, true), 9999);
+    assert_eq!(graph.jump_count(unknown_sys, jita, false), 9999);
+    assert_eq!(graph.jump_count(unknown_sys, jita, true), 9999);
+    assert!(graph.shortest_path(jita, unknown_sys, false).is_empty());
+    assert!(graph.shortest_path(jita, unknown_sys, true).is_empty());
+    assert!(graph.shortest_path(unknown_sys, jita, true).is_empty());
+}

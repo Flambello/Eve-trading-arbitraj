@@ -212,12 +212,19 @@ struct BeamCandidate {
     exhausted_dest_stations: HashSet<(u32, u64)>, // (type_id, dest_station_id) that hit max_dest_loads
 }
 
-/// Calculates extra jumps if routing `from` → `waypoint` → `to` vs `from` → `to` direct.
-pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe: bool) -> u32 {
+/// Calculates extra jumps if routing `from` → `waypoint` → `to` vs `from` → `to` direct,
+/// accepting precomputed direct jumps to avoid redundant graph traversals in hot loops.
+pub fn detour_cost_with_direct(
+    from: u32,
+    waypoint: u32,
+    to: u32,
+    direct: u32,
+    graph: &SystemGraph,
+    safe: bool,
+) -> u32 {
     if waypoint == from || waypoint == to {
         return 0;
     }
-    let direct = graph.jump_count(from, to, safe);
     if direct >= 9999 {
         return 9999;
     }
@@ -230,6 +237,12 @@ pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe:
         return 9999;
     }
     (j1 + j2).saturating_sub(direct)
+}
+
+/// Calculates extra jumps if routing `from` → `waypoint` → `to` vs `from` → `to` direct.
+pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe: bool) -> u32 {
+    let direct = graph.jump_count(from, to, safe);
+    detour_cost_with_direct(from, waypoint, to, direct, graph, safe)
 }
 
 /// Result of finite-stock constrained knapsack packing across route stops and legs.
@@ -678,10 +691,11 @@ pub fn find_chain_routes(
                             if sys_id == current_pos || sys_id == target_dest {
                                 continue;
                             }
-                            let detour = detour_cost(
+                            let detour = detour_cost_with_direct(
                                 current_pos,
                                 sys_id,
                                 target_dest,
+                                direct_jumps,
                                 graph,
                                 config.safe_only,
                             );
@@ -1017,12 +1031,13 @@ pub fn find_chain_routes(
 
                 // En-route bonus pickups between src_sys and dst_sys (only if cargo hold has room)
                 if current_rem_vol > 0.001 && current_rem_isk > 0.001 {
+                    let direct_jumps = graph.jump_count(src_sys, dst_sys, config.safe_only);
                     let mut candidates_enroute = Vec::new();
                     for (&sys_id, sys_deals) in &deals_by_source {
                         if sys_id == src_sys || sys_id == dst_sys {
                             continue;
                         }
-                        let detour = detour_cost(src_sys, sys_id, dst_sys, graph, config.safe_only);
+                        let detour = detour_cost_with_direct(src_sys, sys_id, dst_sys, direct_jumps, graph, config.safe_only);
                         if config.detour_enabled {
                             if detour <= config.max_detour_jumps {
                                 candidates_enroute.push((sys_id, detour, sys_deals));

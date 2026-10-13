@@ -1,10 +1,9 @@
-#![allow(dead_code)]
-
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use rusqlite::{params, Connection, OpenFlags};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -170,6 +169,13 @@ pub struct SdeLoader {
     conn: Mutex<Connection>,
     has_inv_volumes: bool,
     has_packaged_col: bool,
+    station_names: HashMap<u64, String>,
+    station_systems: HashMap<u64, u32>,
+    system_names: HashMap<u32, String>,
+    system_regions: HashMap<u32, u32>,
+    system_securities: HashMap<u32, f64>,
+    region_names: HashMap<u32, String>,
+    item_cache: Mutex<HashMap<u32, Option<ItemInfo>>>,
 }
 
 impl SdeLoader {
@@ -229,10 +235,26 @@ impl SdeLoader {
             found
         };
 
+        let (
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+        ) = Self::preload_static_tables(&conn);
+
         Ok(Self {
             conn: Mutex::new(conn),
             has_inv_volumes,
             has_packaged_col,
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+            item_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -327,12 +349,18 @@ impl SdeLoader {
             INSERT INTO invGroups VALUES
                 (4, 4),    -- Material
                 (18, 4),   -- Minerals (Category 4: Material)
-                (280, 17); -- Spirits / General Commodities (Category 17: Commodity)
+                (280, 17), -- Spirits / General Commodities (Category 17: Commodity)
+                (409, 17), -- Insignia (Category 17: Commodity)
+                (370, 17), -- Pirate Criminal Tags (Category 17: Commodity)
+                (1034, 43); -- Planetary Commodities (Category 43: Planetary Commodities)
 
             INSERT INTO invTypes VALUES
                 (34, 'Tritanium', 0.01, 0.01, 18, 1),
                 (35, 'Pyerite', 0.01, 0.01, 18, 1),
-                (9850, 'Spirits', 0.50, 0.50, 280, 1);
+                (9850, 'Spirits', 0.50, 0.50, 280, 1),
+                (15587, 'Federation Navy Midshipman Insignia I', 0.10, 0.10, 409, 1),
+                (12304, 'Angel Copper Tag', 0.10, 0.10, 370, 1),
+                (9832, 'Coolant', 0.38, 0.38, 1034, 1);
 
             INSERT INTO mapSolarSystemJumps VALUES
                 (30000142, 30000144),
@@ -340,11 +368,71 @@ impl SdeLoader {
             ",
         )?;
 
+        let (
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+        ) = Self::preload_static_tables(&conn);
+
         Ok(Self {
             conn: Mutex::new(conn),
             has_inv_volumes: false,
             has_packaged_col: true,
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+            item_cache: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Decompress a gzip stream to a destination path, enforcing maximum decompression safety limit and SQLite header validation.
+    pub fn decompress_and_validate_archive<R: Read>(mut reader: R, dest_path: &Path) -> Result<u64> {
+        let decoder = GzDecoder::new(&mut reader);
+        let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
+
+        let temp_db_path = dest_path.with_extension("sqlite.part");
+        let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
+
+        let mut buffer = [0u8; 64 * 1024];
+        let mut total_decompressed = 0u64;
+
+        loop {
+            let bytes_read = bounded_reader.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            total_decompressed += bytes_read as u64;
+            if total_decompressed > MAX_DECOMPRESSED_SDE_BYTES {
+                let _ = std::fs::remove_file(&temp_db_path);
+                bail!(
+                    "SDE decompression aborted: exceeded maximum safety threshold of {} bytes (potential decompression bomb)",
+                    MAX_DECOMPRESSED_SDE_BYTES
+                );
+            }
+            out_file.write_all(&buffer[..bytes_read])?;
+        }
+        out_file.flush()?;
+        drop(out_file);
+
+        // Verify SQLite database magic header bytes
+        {
+            let mut header = [0u8; 16];
+            let mut check_file = File::open(&temp_db_path)?;
+            check_file.read_exact(&mut header)?;
+            if &header != b"SQLite format 3\0" {
+                let _ = std::fs::remove_file(&temp_db_path);
+                bail!("Downloaded file does not contain a valid SQLite database header");
+            }
+        }
+
+        std::fs::rename(&temp_db_path, dest_path)?;
+        Ok(total_decompressed)
     }
 
     pub async fn download(dest_path: &Path) -> Result<()> {
@@ -366,7 +454,7 @@ impl SdeLoader {
             .timeout(Duration::from_secs(600))
             .build()?;
 
-        let resp = client
+        let mut resp = client
             .get(FUZZWORK_SDE_URL)
             .send()
             .await
@@ -392,18 +480,15 @@ impl SdeLoader {
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                .unwrap()
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
                 .progress_chars("#>-"),
         );
 
         let temp_gz_path = dest_path.with_extension("sqlite.gz.part");
         let mut file = File::create(&temp_gz_path)?;
 
-        let mut stream = resp.bytes_stream();
         let mut downloaded_bytes = 0u64;
-        use futures_util::StreamExt;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = resp.chunk().await? {
             downloaded_bytes += chunk.len() as u64;
             if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
                 let _ = std::fs::remove_file(&temp_gz_path);
@@ -420,58 +505,96 @@ impl SdeLoader {
 
         println!(" [SDE] Decompressing gzip archive into SQLite database...");
         let compressed_file = File::open(&temp_gz_path)?;
-        let decoder = GzDecoder::new(BufReader::new(compressed_file));
-        let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
-
-        let temp_db_path = dest_path.with_extension("sqlite.part");
-        let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
-
-        let mut buffer = [0u8; 64 * 1024];
-        let decomp_pb = ProgressBar::new_spinner();
-        decomp_pb.set_message("Decompressing database...");
-        let mut total_decompressed = 0u64;
-
-        loop {
-            let bytes_read = bounded_reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-            total_decompressed += bytes_read as u64;
-            if total_decompressed > MAX_DECOMPRESSED_SDE_BYTES {
-                let _ = std::fs::remove_file(&temp_db_path);
-                let _ = std::fs::remove_file(&temp_gz_path);
-                bail!(
-                    "SDE decompression aborted: exceeded maximum safety threshold of {} bytes (potential decompression bomb)",
-                    MAX_DECOMPRESSED_SDE_BYTES
-                );
-            }
-            out_file.write_all(&buffer[..bytes_read])?;
-            decomp_pb.inc(bytes_read as u64);
+        let decomp_res = Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
+        if let Err(e) = decomp_res {
+            let _ = std::fs::remove_file(&temp_gz_path);
+            return Err(e);
         }
-        out_file.flush()?;
-        drop(out_file);
-        decomp_pb.finish_with_message("Decompression complete!");
-
-        // Verify SQLite database magic header bytes
-        {
-            let mut header = [0u8; 16];
-            let mut check_file = File::open(&temp_db_path)?;
-            check_file.read_exact(&mut header)?;
-            if &header != b"SQLite format 3\0" {
-                let _ = std::fs::remove_file(&temp_db_path);
-                let _ = std::fs::remove_file(&temp_gz_path);
-                bail!("Downloaded file does not contain a valid SQLite database header");
-            }
-        }
-
-        std::fs::rename(&temp_db_path, dest_path)?;
         let _ = std::fs::remove_file(&temp_gz_path);
 
         println!(" [SDE] Ready: {:?}", dest_path);
         Ok(())
     }
 
+    fn preload_static_tables(
+        conn: &Connection,
+    ) -> (
+        HashMap<u64, String>,
+        HashMap<u64, u32>,
+        HashMap<u32, String>,
+        HashMap<u32, u32>,
+        HashMap<u32, f64>,
+        HashMap<u32, String>,
+    ) {
+        let mut station_names = HashMap::new();
+        let mut station_systems = HashMap::new();
+        let mut system_names = HashMap::new();
+        let mut system_regions = HashMap::new();
+        let mut system_securities = HashMap::new();
+        let mut region_names = HashMap::new();
+
+        if let Ok(mut stmt) = conn.prepare("SELECT stationID, stationName, solarSystemID FROM staStations") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(sta_id), Ok(raw_name), Ok(sys_id)) = (
+                        row.get::<_, u64>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, u32>(2),
+                    ) {
+                        station_names.insert(sta_id, format_station_name(&raw_name));
+                        station_systems.insert(sta_id, sys_id);
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut stmt) = conn.prepare("SELECT solarSystemID, solarSystemName, security, regionID FROM mapSolarSystems") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(sys_id), Ok(sys_name), Ok(sec), Ok(reg_id)) = (
+                        row.get::<_, u32>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, f64>(2),
+                        row.get::<_, u32>(3),
+                    ) {
+                        system_names.insert(sys_id, sys_name);
+                        system_securities.insert(sys_id, sec);
+                        system_regions.insert(sys_id, reg_id);
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut stmt) = conn.prepare("SELECT regionID, regionName FROM mapRegions") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(reg_id), Ok(reg_name)) = (
+                        row.get::<_, u32>(0),
+                        row.get::<_, String>(1),
+                    ) {
+                        region_names.insert(reg_id, reg_name);
+                    }
+                }
+            }
+        }
+
+        (
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+        )
+    }
+
     pub fn get_item_info(&self, type_id: u32) -> Option<ItemInfo> {
+        if let Ok(cache) = self.item_cache.lock() {
+            if let Some(res) = cache.get(&type_id) {
+                return res.clone();
+            }
+        }
+
         let conn = self.conn.lock().ok()?;
 
         let query = if self.has_packaged_col {
@@ -488,8 +611,8 @@ impl SdeLoader {
              WHERE t.typeID = ?1"
         };
 
-        let mut stmt = conn.prepare(query).ok()?;
-        stmt.query_row(params![type_id], |row| {
+        let mut stmt = conn.prepare_cached(query).ok()?;
+        let info = stmt.query_row(params![type_id], |row| {
             let vol: f64 = row.get(2)?;
             let pub_flag: i64 = row.get(5)?;
             Ok(ItemInfo {
@@ -501,7 +624,13 @@ impl SdeLoader {
                 published: pub_flag == 1,
             })
         })
-        .ok()
+        .ok();
+
+        if let Ok(mut cache) = self.item_cache.lock() {
+            cache.insert(type_id, info.clone());
+        }
+
+        info
     }
 
     /// Resolve a user input string to a solar system ID.
@@ -575,29 +704,49 @@ impl SdeLoader {
     }
 
     pub fn get_system_name(&self, system_id: u32) -> Option<String> {
+        if let Some(name) = self.system_names.get(&system_id) {
+            return Some(name.clone());
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .prepare_cached("SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
     pub fn get_system_security(&self, system_id: u32) -> Option<f64> {
+        if let Some(&sec) = self.system_securities.get(&system_id) {
+            return Some(sec);
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT security FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .prepare_cached("SELECT security FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
     pub fn get_system_region(&self, system_id: u32) -> Option<u32> {
+        if let Some(&reg_id) = self.system_regions.get(&system_id) {
+            return Some(reg_id);
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .prepare_cached("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
+    /// Performs substring and token-aware fuzzy matching across all solar systems in the SDE.
+    ///
+    /// Automatically strips station suffixes (e.g. " - Moon 4 - Navy Assembly") and roman numerals
+    /// (e.g. "IV") to resolve the underlying solar system name.
+    ///
+    /// # Arguments
+    /// * `query` - User input string (e.g. "Jita", "jita 4", "Amarr VIII").
+    /// * `limit` - Maximum number of search results to return.
+    ///
+    /// # Returns
+    /// Vector of [`SystemSearchResult`] sorted with prefix matches prioritized over substring matches.
     pub fn search_systems(&self, query: &str, limit: usize) -> Vec<SystemSearchResult> {
         let cleaned = clean_location_input(query).to_lowercase();
         if cleaned.is_empty() {
@@ -663,42 +812,41 @@ impl SdeLoader {
     }
 
     pub fn get_station_system(&self, station_id: u64) -> Option<u32> {
+        if let Some(&sys_id) = self.station_systems.get(&station_id) {
+            return Some(sys_id);
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT solarSystemID FROM staStations WHERE stationID = ?1")
+            .prepare_cached("SELECT solarSystemID FROM staStations WHERE stationID = ?1")
             .ok()?;
         stmt.query_row(params![station_id], |row| row.get(0)).ok()
     }
 
     pub fn get_station_name(&self, station_id: u64) -> Option<String> {
+        if let Some(name) = self.station_names.get(&station_id) {
+            return Some(name.clone());
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT stationName FROM staStations WHERE stationID = ?1")
+            .prepare_cached("SELECT stationName FROM staStations WHERE stationID = ?1")
             .ok()?;
         let raw_name: String = stmt.query_row(params![station_id], |row| row.get(0)).ok()?;
         Some(format_station_name(&raw_name))
     }
 
     pub fn get_region_name(&self, region_id: u32) -> Option<String> {
+        if let Some(name) = self.region_names.get(&region_id) {
+            return Some(name.clone());
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT regionName FROM mapRegions WHERE regionID = ?1")
+            .prepare_cached("SELECT regionName FROM mapRegions WHERE regionID = ?1")
             .ok()?;
         stmt.query_row(params![region_id], |row| row.get(0)).ok()
     }
 
-    pub fn all_regions(&self) -> Result<Vec<(u32, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-        let mut stmt =
-            conn.prepare("SELECT regionID, regionName FROM mapRegions ORDER BY regionName")?;
-        let mut rows = stmt.query([])?;
-        let mut list = Vec::new();
-        while let Some(row) = rows.next()? {
-            list.push((row.get(0)?, row.get(1)?));
-        }
-        Ok(list)
-    }
 
+    /// Loads all solar systems from the `mapSolarSystems` SDE table into in-memory [`SystemNode`] structures.
     pub fn all_systems(&self) -> Result<Vec<SystemNode>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut stmt = conn.prepare(
@@ -718,6 +866,7 @@ impl SdeLoader {
         Ok(list)
     }
 
+    /// Loads all stargate jump connections from the `mapSolarSystemJumps` SDE table as `(from, to)` pairs.
     pub fn all_jumps(&self) -> Result<Vec<(u32, u32)>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut stmt =

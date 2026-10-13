@@ -1,11 +1,30 @@
-use eve_trade_scout::ui::gui::{CORP_DONATION_RECIPIENT, CORP_ICON_PNG_BYTES};
+use eve_trade_scout::ui::gui::{
+    format_donation_instructions, CORP_DONATION_RECIPIENT, CORP_ICON_PNG_BYTES,
+};
 use image::GenericImageView;
 
 #[test]
-fn test_donation_recipient_constant() {
+fn test_donation_recipient_constant_and_instruction_formatting() {
     assert_eq!(
         CORP_DONATION_RECIPIENT, "Expandabliss",
         "Donation recipient corporation must be Expandabliss"
+    );
+
+    // Verify formatting of general and specific in-game donation instructions
+    let general_instructions = format_donation_instructions(None);
+    assert!(
+        general_instructions.contains("Expandabliss"),
+        "General donation instructions must mention Expandabliss"
+    );
+    assert_eq!(
+        general_instructions,
+        "Send ISK donation to corporation: Expandabliss"
+    );
+
+    let specific_instructions = format_donation_instructions(Some(50));
+    assert_eq!(
+        specific_instructions,
+        "Send 50M ISK donation to corporation: Expandabliss"
     );
 }
 

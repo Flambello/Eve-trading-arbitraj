@@ -94,6 +94,20 @@ impl<'a> AppState<'a> {
     }
 }
 
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
+        let _ = execute!(io::stdout(), crossterm::cursor::Show);
+    }
+}
+
 pub fn run_tui(
     deals: &[ArbitrageDeal],
     route: &TradeRoute,
@@ -105,6 +119,8 @@ pub fn run_tui(
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let _guard = TerminalGuard;
+
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -119,14 +135,8 @@ pub fn run_tui(
 
     let res = main_loop(&mut terminal, &mut state);
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    drop(_guard);
+    let _ = terminal.show_cursor();
 
     res
 }
@@ -232,17 +242,8 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState) {
     f.render_widget(tabs, area);
 }
 
-fn format_unit_price(val: f64) -> String {
-    if val >= 1_000_000_000.0 {
-        format!("{:.2}B", val / 1_000_000_000.0)
-    } else if val >= 1_000_000.0 {
-        format!("{:.2}M", val / 1_000_000.0)
-    } else if val >= 1_000.0 {
-        format!("{:.2}k", val / 1_000.0)
-    } else {
-        format!("{:.2}", val)
-    }
-}
+use super::format_unit_price;
+
 
 fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
     let header_cells = [

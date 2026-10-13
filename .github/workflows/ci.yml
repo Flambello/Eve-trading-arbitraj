@@ -22,7 +22,7 @@ jobs:
     steps:
     - name: Install Fedora System Dependencies & Packaging Tools
       run: |
-        dnf install -y git gcc pkg-config rust cargo clippy rustfmt desktop-file-utils appstream
+        dnf install -y git gcc pkg-config rust cargo clippy rustfmt desktop-file-utils
 
     - name: Checkout Source Code
       uses: actions/checkout@v4
@@ -34,13 +34,9 @@ jobs:
         rustc --version
         cargo --version
         desktop-file-validate --version || true
-        appstreamcli --version || true
 
     - name: Validate Desktop Entry File
-      run: desktop-file-validate packaging/flatpak/io.github.flambello.eve_merchant.desktop
-
-    - name: Validate AppStream Metainfo XML
-      run: appstreamcli validate --no-net packaging/flatpak/io.github.flambello.eve_merchant.metainfo.xml
+      run: desktop-file-validate eve-trade.desktop
 
     - name: Check Code Formatting
       run: cargo fmt --check

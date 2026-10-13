@@ -2,10 +2,9 @@
 
 [![CI](https://github.com/Flambello/eve-traveling-merchant/actions/workflows/ci.yml/badge.svg)](https://github.com/Flambello/eve-traveling-merchant/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Flambello/eve-traveling-merchant?color=orange&logo=github)](https://github.com/Flambello/eve-traveling-merchant/releases)
-[![Flathub](https://img.shields.io/badge/Flathub-io.github.flambello.eve__merchant-blue?logo=flathub)](https://flathub.org/apps/io.github.flambello.eve_merchant)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust](https://img.shields.io/badge/Rust-1.78%2B-blue.svg?logo=rust)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20%28Wayland%20%2F%20X11%29-green.svg?logo=linux)](https://kernel.org/)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-green.svg)](https://github.com/Flambello/eve-traveling-merchant/releases)
 
 > **Location-Centric Cross-Station Arbitrage Engine & Multi-Item Corridor Route Planner for EVE Online**  
 > Pure compiled Rust binary (`eve-merchant`) with zero runtime dependencies, maximum performance, and native desktop GUI / TUI interfaces.
@@ -45,26 +44,29 @@ Traditional trade finders often force you to haul single items, leave your hold 
 
 ## Installation
 
-### Option 1: Install from Flathub (Recommended for Linux Desktops)
+### Option 1: Standalone Linux Release Binary (.tar.gz)
+
+Download the latest pre-compiled release tarball for Linux x86_64:
 
 ```bash
-flatpak install flathub io.github.flambello.eve_merchant
-flatpak run io.github.flambello.eve_merchant
-```
-
-### Option 2: Pre-compiled GitHub Release Binary
-
-Download the latest release tarball for Linux x86_64:
-
-```bash
-# Download latest release archive
+# Download latest Linux release archive
 wget https://github.com/Flambello/eve-traveling-merchant/releases/latest/download/eve-traveling-merchant-linux-x86_64.tar.gz
 
-# Extract and run
+# Extract archive
 tar -xzf eve-traveling-merchant-linux-x86_64.tar.gz
-cd eve-traveling-merchant
-./eve-merchant --gui
+cd eve-traveling-merchant-linux-x86_64
+
+# Launch the desktop GUI interface
+./start-gui.sh    # or directly: ./eve-merchant --gui
 ```
+
+### Option 2: Portable Windows Release Bundle (.zip)
+
+Download the latest standalone `.zip` bundle for Windows x86_64 from [GitHub Releases](https://github.com/Flambello/eve-traveling-merchant/releases/latest):
+
+1. Download `eve-traveling-merchant-windows-x86_64.zip`.
+2. Extract the archive into a folder of your choice.
+3. Double-click `eve-merchant.exe` to launch the native desktop GUI.
 
 ### Option 3: Install via Cargo
 
@@ -156,9 +158,11 @@ eve-merchant --ship big --system Jita --export deals.csv
 
 | Flag | Default | Description |
 |---|---|---|
-| `--gui` | `auto` | Force desktop GUI window mode (`egui` native window) |
+| `--gui` | `auto` | Force desktop GUI window mode (`egui` native window; default when display server is active) |
 | `--tui` | `false` | Force terminal TUI mode (`ratatui`) |
-| `--no-ui` | `false` | Disable interactive interfaces and output directly to console |
+| `--no-ui` | `false` | Disable interactive interfaces (GUI & TUI) and output directly to console |
+| `--no-tui` | `false` | Disable interactive TUI and output directly to console |
+| `--auto-refresh` | `false` | Automatically refresh market data every 5 minutes in GUI mode |
 | `-s, --ship <SHIP>` | `big` | Ship profile (`big`: 60k m³/500M or `small`: 30k m³/50M) |
 | `--system <SYSTEM>` | `Jita` | Starting solar system name |
 | `--adjacent-regions` | `true` | Automatically scan stargate-connected neighbor regions |
@@ -172,6 +176,7 @@ eve-merchant --ship big --system Jita --export deals.csv
 | `--min-roi <PCT>` | `10.0` | Enforced minimum net ROI % after taxes |
 | `-t, --top <N>` | `25` | Number of deals in CLI summary |
 | `--max-stops <N>` | `5` | Maximum stops in planned route |
+| `--route` | `false` | Print planned multi-stop route in CLI mode |
 | `--export <PATH>` | — | Export discovered deals to CSV file |
 | `--update-sde` | — | Force re-download / update of SDE SQLite database |
 
@@ -179,24 +184,34 @@ eve-merchant --ship big --system Jita --export deals.csv
 
 ## Packaging & Distribution
 
-### Building the Flatpak Locally
+### Building the Standalone Linux Tarball Locally
 
 ```bash
-# Install flatpak-builder
-sudo dnf install flatpak-builder -y  # on Fedora
+# Compile optimized release binary and assemble distribution bundle
+make dist
 
-# Build and install the Flatpak package locally
-flatpak-builder --user --install --force-clean build-dir packaging/flatpak/io.github.flambello.eve_merchant.yml
+# Inspect created archive
+tar -ztvf eve-traveling-merchant-linux-x86_64.tar.gz
 ```
 
-### Validating Desktop & Metadata Files
+### Building the Windows Standalone Bundle Locally
 
+Using Windows PowerShell:
+```powershell
+# Compile optimized binary
+cargo build --release --bin eve-merchant
+
+# Assemble portable zip
+$Dist = "eve-traveling-merchant-windows-x86_64"
+New-Item -ItemType Directory -Force -Path $Dist
+Copy-Item "target\release\eve-merchant.exe", "README.md", "LICENSE", "CHANGELOG.md" -Destination $Dist
+Compress-Archive -Path "$Dist\*" -DestinationPath "$Dist.zip" -Force
+```
+
+Cross-compiling from Linux using MinGW-w64:
 ```bash
-# Validate desktop entry
-desktop-file-validate packaging/flatpak/io.github.flambello.eve_merchant.desktop
-
-# Validate AppStream metainfo XML
-appstreamcli validate --no-net packaging/flatpak/io.github.flambello.eve_merchant.metainfo.xml
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu --bin eve-merchant
 ```
 
 ---

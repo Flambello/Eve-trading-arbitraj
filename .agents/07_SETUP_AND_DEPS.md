@@ -19,24 +19,24 @@
 ```toml
 [package]
 name    = "eve-trade-scout"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
-description = "EVE Online arbitrage route planner"
+description = "EVE Online location-centric arbitrage route planner & multi-item cargo knapsack optimizer"
 
 [[bin]]
-name = "eve-trade"
+name = "eve-merchant"
 path = "src/main.rs"
 
 [dependencies]
 # Async runtime
-tokio        = { version = "1",    features = ["full"] }
+tokio        = { version = "1.38", features = ["full"] }
 
-# HTTP client — async, TLS, gzip, connection pool
-reqwest      = { version = "0.12", features = ["json", "gzip", "rustls-tls"], default-features = false }
+# HTTP client — async, TLS, gzip, stream
+reqwest      = { version = "0.12", features = ["json", "gzip", "rustls-tls", "stream"], default-features = false }
 
 # Serialization / deserialization
-serde        = { version = "1",    features = ["derive"] }
-serde_json   = "1"
+serde        = { version = "1.0",  features = ["derive"] }
+serde_json   = "1.0"
 
 # TOML config files
 toml         = "0.8"
@@ -52,30 +52,33 @@ petgraph     = "0.6"
 lru          = "0.12"
 
 # Terminal UI
-ratatui      = "0.27"
-crossterm    = "0.27"
+ratatui      = "0.28"
+crossterm    = "0.28"
+
+# Desktop GUI (egui / eframe)
+eframe       = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui_extras  = { version = "0.28", features = ["default"] }
 
 # CLI argument parsing
-clap         = { version = "4",    features = ["derive"] }
+clap         = { version = "4.5",  features = ["derive"] }
 
 # Progress bars (SDE download, market fetch)
 indicatif    = "0.17"
 
 # Error handling
-anyhow       = "1"
-thiserror    = "1"
+anyhow       = "1.0"
 
 # Date/time (ESI timestamps)
 chrono       = { version = "0.4",  features = ["serde"] }
 
-# bzip2 decompression for SDE download
-bzip2        = "0.4"
+# gzip decompression for SDE download
+flate2       = "1.0"
 
-# Async file I/O
-tokio        = { version = "1",    features = ["fs"] }
-
-[dev-dependencies]
-tokio-test   = "0.4"
+# System directories & crypto
+dirs         = "5.0"
+ring         = "0.17"
+base64       = "0.22"
+image        = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.release]
 opt-level     = 3
@@ -130,20 +133,20 @@ cargo build --release
 
 The release binary will be at:
 ```
-target/release/eve-trade
+target/release/eve-merchant
 ```
 
 ### Step 5 — First run
 
 ```bash
-./target/release/eve-trade
+./target/release/eve-merchant
 ```
 
 On first run it will:
-1. Create `~/.config/eve-trade-scout/config.toml` with defaults
+1. Create `~/.config/eve-traveling-merchant/config.toml` with defaults
 2. Download the SDE SQLite database to `data/eve_sde.sqlite` (~115 MB compressed → ~650 MB)
 3. Build the stargate graph in memory (~2–3 s)
-4. Open the interactive TUI — prompt for ship profile and home system
+4. Open the native desktop GUI window (or TUI if headless)
 
 Subsequent runs skip the SDE download (auto-checks every 30 days).
 
@@ -155,7 +158,7 @@ Subsequent runs skip the SDE download (auto-checks every 30 days).
 cargo install --path .
 
 # Then run from anywhere:
-eve-trade
+eve-merchant
 ```
 
 ---
@@ -163,7 +166,7 @@ eve-trade
 ## Config File Location
 
 ```
-~/.config/eve-trade-scout/config.toml
+~/.config/eve-traveling-merchant/config.toml
 ```
 
 ### Default `config.toml`
@@ -182,7 +185,7 @@ safe_route_only = true
 [filters]
 min_profit_isk     = 1_000_000.0
 min_spread_pct     = 3.0
-min_net_profit_pct = 15.0         # Enforced minimum 15% overall ROI after taxes
+min_net_profit_pct = 10.0         # Enforced minimum 10% overall ROI after taxes
 
 [fees]
 broker_fee_pct = 3.0
@@ -206,8 +209,8 @@ Eve trading arbitraj/
 ├── cache/
 │   └── etags.json              ← ESI ETag cache (git-ignored)
 ├── target/
-│   ├── debug/eve-trade         ← debug binary
-│   └── release/eve-trade       ← release binary (ship this one)
+│   ├── debug/eve-merchant      ← debug binary
+│   └── release/eve-merchant    ← release binary (ship this one)
 ├── Cargo.toml
 ├── Cargo.lock
 └── README.md
@@ -221,7 +224,7 @@ Eve trading arbitraj/
 /target
 /data/eve_sde.sqlite
 /cache/
-~/.config/eve-trade-scout/
+~/.config/eve-traveling-merchant/
 ```
 
 ---
@@ -237,7 +240,7 @@ cargo test
 ## Updating the SDE
 
 ```bash
-./target/release/eve-trade --update-sde
+./target/release/eve-merchant --update-sde
 ```
 
 ---

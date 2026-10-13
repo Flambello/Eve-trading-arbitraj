@@ -12,7 +12,7 @@
    - **Ship mode** — Big (60 000 m³ / 500 M ISK budget) or Small (30 000 m³ / 50 M ISK budget)
    - **Starting solar system** (your current location, with real-time autocomplete)
 2. It fetches live market data for your **Home Region PLUS stargate-connected adjacent neighbor regions** via CCP's **EVE ESI REST API**
-3. It finds items that can be bought cheaply at a station near you and sold for more at another station, enforcing $\ge 15.0\%$ net ROI
+3. It finds items that can be bought cheaply at a station near you and sold for more at another station, enforcing $\ge 10.0\%$ net ROI
 4. It groups multiple profitable deals on identical origin-to-destination corridors using **multi-item cargo packing (knapsack)** to fully utilize ship hold and budget
 5. It prioritizes high-ROI routes and dead ends ($\ge 40\%$) and ranks every opportunity by **profit per jump** (accounting for travel to the source *and* from source to destination)
 6. It presents a **sorted deal list**, **packed cargo corridor manifests**, and an optimized **multi-stop trade route**
@@ -70,19 +70,23 @@ Eve trading arbitraj/
 │
 ├── src/
 │   ├── lib.rs                      ← library root (eve_trade_scout crate)
-│   ├── main.rs                     ← binary entry point (eve-trade executable)
+│   ├── main.rs                     ← binary entry point (eve-merchant executable)
 │   ├── config.rs                   ← ship profiles, user settings (TOML)
 │   ├── esi/
 │   │   ├── mod.rs
 │   │   ├── client.rs               ← async HTTP layer (reqwest + ETag caching)
 │   │   ├── market.rs               ← market order fetching & parsing
-│   │   └── models.rs               ← ESI response types (serde structs)
+│   │   ├── models.rs               ← ESI response types (serde structs)
+│   │   └── sso.rs                  ← ESI SSO PKCE OAuth2 authentication
 │   ├── sde/
 │   │   ├── mod.rs
 │   │   └── loader.rs               ← SDE SQLite reader (item volumes, system graph)
 │   ├── graph.rs                    ← stargate graph + Dijkstra pathfinding (petgraph)
 │   ├── arbitrage.rs                ← core profit calculation engine & quantity solver
 │   ├── route_planner.rs            ← multi-stop greedy route builder
+│   ├── chain_route_planner.rs      ← multi-leg chained routes with knapsack & detours
+│   ├── hub_arbitrage.rs            ← core trade hub arbitrage & corridor runs
+│   ├── audio.rs                    ← freedesktop notifications & sound alerts
 │   └── ui/
 │       ├── mod.rs                  ← UI dispatcher (GUI vs TUI vs CLI)
 │       ├── gui.rs                  ← native desktop GUI (egui / eframe)
@@ -91,12 +95,18 @@ Eve trading arbitraj/
 ├── data/                           ← cached SDE SQLite database
 │   └── .gitkeep
 │
-├── tests/                          ← comprehensive automated test suites (19 tests)
-│   ├── test_arbitrage.rs           ← 15% ROI, station filter, highsec filter, PPJ, hauler limits
+├── tests/                          ← comprehensive automated test suites (11 suites, 105 tests)
+│   ├── test_arbitrage.rs           ← 10% ROI, station filter, highsec filter, PPJ, hauler limits
 │   ├── test_config.rs              ← ship profile parser, user config defaults & TOML roundtrip
 │   ├── test_graph.rs               ← highsec security tags, safe route bypass, Dijkstra jumps
 │   ├── test_route_planner.rs       ← greedy trade chaining, multi-stop constraints
-│   └── test_esi_models.rs          ← JSON order deserialization, best buy/sell matching
+│   ├── test_esi_models.rs          ← JSON order deserialization, best buy/sell matching
+│   ├── test_chain_route_planner.rs ← multi-leg chain beam search, detour cost, knapsack packing
+│   ├── test_hub_arbitrage.rs       ← core hub corridors, filters, manifests, and summaries
+│   ├── test_sde_search.rs          ← Roman numerals, autocomplete, SQL escaping resilience
+│   ├── test_security_audit.rs      ← decompression bomb guard, SSO validation, CSV escaping
+│   ├── test_sso.rs                 ← PKCE derivation, token lifecycle, claims validation
+│   └── test_donation_branding.rs   ← in-game donation recipient & branding formatting
 │
 ├── Cargo.toml
 ├── Cargo.lock
@@ -111,7 +121,7 @@ Eve trading arbitraj/
 | Layer | Crate / Tool | Reason |
 |---|---|---|
 | Language | **Rust 1.78+** (stable) | Single binary, zero runtime, memory-safe |
-| Library & Binary | `eve_trade_scout` / `eve-trade` | Modular crate exposes lib for integration testing |
+| Library & Binary | `eve_trade_scout` / `eve-merchant` | Modular crate exposes lib for integration testing |
 | Async runtime | `tokio` | Industry standard async executor |
 | HTTP client | `reqwest` | Async, TLS, gzip, ETag-friendly |
 | JSON parsing | `serde` + `serde_json` | Zero-copy deserialization |

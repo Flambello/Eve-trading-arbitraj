@@ -4,5 +4,19 @@
 /cache/
 *.log
 *.tar.gz
+*.zip
 SHA256SUMS
-packaging/flatpak/.flatpak-cargo-generator.py
+
+# Application Logs & Diagnostics
+logs/
+*.log
+*.log.*
+*.jsonl
+
+# Crash Dumps & Core Dumps
+crash-dumps/
+*.dmp
+*.dump
+core
+core.*
+vgcore.*

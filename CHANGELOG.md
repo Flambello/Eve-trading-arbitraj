@@ -16,6 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Multi-Leg Chained Optimizer**: Greedy beam search algorithm calculating sequential trading routes with en-route detour pickups and capital recycling.
 - **Live ESI Market Integration**: Asynchronous concurrent order fetching across multiple regions with ETag disk caching and rate-limiting backoff.
 - **Stargate Dijkstra Router**: High-performance graph pathfinding with LRU memoization and highsec safe routing avoidance.
-- **Flathub & Flatpak Packaging**: Freedesktop AppStream 1.0 metadata, desktop entry, multi-resolution application icons, and offline cargo build manifest.
+- **Portable Linux & Windows Packaging**: Standalone release archives with native desktop launchers, multi-resolution application icons, and automated multi-platform CI/CD.
 - **Automated Test Suites**: 49+ integration tests covering arbitrage invariants, profile bounds, Dijkstra pathfinding, knapsack optimization, and ESI serialization.
 - **Sound Alerts**: Audible alerts and desktop notification banners upon finding high-ROI trades.

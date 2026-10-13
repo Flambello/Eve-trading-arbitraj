@@ -444,6 +444,8 @@ fn test_config_auto_sync_location_roundtrip() {
     assert_eq!(loaded.sso.client_id, "test_client_id_xyz");
 }
 
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct EnvGuard {
     var: &'static str,
     orig: Option<std::ffi::OsString>,
@@ -481,6 +483,7 @@ impl Drop for EnvGuard {
 
 #[test]
 fn test_developer_client_id_resolution() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use eve_trade_scout::esi::sso::{get_developer_client_id, resolve_client_id};
 
     // 1. Explicit custom ID resolves directly
@@ -566,4 +569,149 @@ fn test_developer_client_id_resolution() {
 
     // Clean up temporary directory
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_load_saved_token_auto_backfills_missing_client_id() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use eve_trade_scout::esi::sso::{load_saved_token, token_storage_path};
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("eve_test_backfill_cfg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("Must create test temp dir");
+
+    let _xdg_guard = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
+
+    // Create developer_client_id file
+    let app_config_dir = temp_dir.join("eve-traveling-merchant");
+    std::fs::create_dir_all(&app_config_dir).expect("Must create app config dir");
+    std::fs::write(
+        app_config_dir.join("developer_client_id"),
+        "auto_backfilled_client_id_888\n",
+    )
+    .expect("Must write dev client id");
+
+    // Write a legacy token with missing client_id (null)
+    let legacy_token_json = serde_json::json!({
+        "access_token": "legacy_jwt",
+        "refresh_token": "legacy_refresh",
+        "token_type": "Bearer",
+        "expires_at": now_secs() + 1000,
+        "character_id": 99999,
+        "character_name": "Legacy Pilot"
+    });
+    let token_file = token_storage_path();
+    std::fs::write(
+        &token_file,
+        serde_json::to_string_pretty(&legacy_token_json).unwrap(),
+    )
+    .expect("Must write legacy token");
+
+    // Calling load_saved_token should backfill client_id from get_developer_client_id()
+    let loaded = load_saved_token().expect("Token must load successfully");
+    assert_eq!(loaded.character_name, "Legacy Pilot");
+    assert_eq!(
+        loaded.client_id.as_deref(),
+        Some("auto_backfilled_client_id_888"),
+        "Loaded token must have client_id backfilled"
+    );
+
+    // Verify token on disk was also updated with the backfilled client_id
+    let disk_raw = std::fs::read_to_string(&token_file).expect("Must read re-saved token file");
+    let disk_token: SsoToken = serde_json::from_str(&disk_raw).expect("Must parse disk token");
+    assert_eq!(
+        disk_token.client_id.as_deref(),
+        Some("auto_backfilled_client_id_888")
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::metadata(&token_file).unwrap().permissions();
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o600,
+            "Re-saved token file must maintain 0600 permissions"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_ensure_fresh_token_unexpired_skips_network() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token;
+
+    let client = reqwest::Client::new();
+    let mut token = SsoToken {
+        access_token: "active_token".to_string(),
+        refresh_token: "refresh_secret".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 12345,
+        character_name: "Pilot Alpha".to_string(),
+        client_id: None,
+    };
+
+    let res = ensure_fresh_token(&client, "", &mut token).await;
+    assert!(res.is_ok(), "Unexpired token must not trigger network call");
+    assert_eq!(token.access_token, "active_token");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token;
+
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!("eve_test_token_err_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
+
+    let client = reqwest::Client::new();
+    let mut expired_token = SsoToken {
+        access_token: "expired_access".to_string(),
+        refresh_token: "refresh_secret".to_string(),
+        expires_at: now_secs() - 60, // Expired
+        token_type: "Bearer".to_string(),
+        character_id: 12345,
+        character_name: "Pilot Alpha".to_string(),
+        client_id: None,
+    };
+
+    let res = ensure_fresh_token(&client, "", &mut expired_token).await;
+    assert!(
+        res.is_err(),
+        "Must fail when token is expired and no client ID can be resolved"
+    );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(err_msg.contains("No EVE Application Client ID configured"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token;
+
+    let client = reqwest::Client::new();
+    let mut expired_token = SsoToken {
+        access_token: "expired_access".to_string(),
+        refresh_token: "invalid_refresh_token_payload".to_string(),
+        expires_at: now_secs() - 100, // Expired
+        token_type: "Bearer".to_string(),
+        character_id: 12345,
+        character_name: "Pilot Alpha".to_string(),
+        client_id: Some("mock_client_id".to_string()),
+    };
+
+    let res = ensure_fresh_token(&client, "mock_client_id", &mut expired_token).await;
+    assert!(
+        res.is_err(),
+        "Refreshing expired token with invalid credentials must return Err"
+    );
 }

@@ -10,9 +10,8 @@ as a polished open-source application ready for others to install and use.
 | Method | Who installs it | Command to install | Notes |
 |---|---|---|---|
 | **crates.io** | Any Rust user | `cargo install eve-trade-scout` | Easiest, builds from source |
-| **GitHub Releases** (binary) | Any Linux user | Download & run | Pre-compiled, zero deps |
-| **AppImage** | Any Linux user | `chmod +x && ./EVETradeScout.AppImage` | Universal Linux bundle |
-| **Flatpak** | Fedora / freedesktop users | `flatpak install eve-trade-scout` | Sandboxed, GUI-store friendly |
+| **GitHub Releases** (Linux) | Any Linux user | Download `.tar.gz` & extract | Standalone binary + launcher |
+| **GitHub Releases** (Windows) | Any Windows user | Download `.zip` & extract | Standalone `.exe` binary |
 | **AUR** (Arch) | Arch / Manjaro users | `yay -S eve-trade-scout` | Community maintained |
 | **RPM / DNF** | Fedora users | `dnf install eve-trade-scout` | Native Fedora package |
 
@@ -27,7 +26,7 @@ The Rust ecosystem's official package registry. Users with Rust installed can do
 
 ```bash
 cargo install eve-trade-scout
-# Compiles from source, installs to ~/.cargo/bin/eve-trade
+# Compiles from source, installs to ~/.cargo/bin/eve-merchant
 ```
 
 ### What's needed
@@ -42,16 +41,16 @@ cargo install eve-trade-scout
 ```toml
 [package]
 name        = "eve-trade-scout"
-version     = "1.0.0"
+version     = "0.1.0"
 edition     = "2021"
-description = "EVE Online arbitrage route planner — find profitable trades between stations"
+description = "EVE Online location-centric arbitrage route planner & multi-item cargo knapsack optimizer"
 license     = "GPL-3.0-or-later"
-repository  = "https://github.com/YOUR_USERNAME/eve-trade-scout"
-homepage    = "https://github.com/YOUR_USERNAME/eve-trade-scout"
+repository  = "https://github.com/Flambello/eve-traveling-merchant"
+homepage    = "https://github.com/Flambello/eve-traveling-merchant"
 readme      = "README.md"
-keywords    = ["eve-online", "trading", "arbitrage", "mmo", "cli"]
-categories  = ["command-line-utilities", "games"]
-exclude     = [".agents/", "data/", "cache/"]
+keywords    = ["eve-online", "trading", "arbitrage", "route-planner", "flathub"]
+categories  = ["games", "gui", "command-line-utilities"]
+exclude     = [".agents/", "data/", "cache/", "*.sqlite*", "*.bz2", ".github/"]
 ```
 
 4. Publish:
@@ -89,10 +88,10 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: eve-trade
+            artifact: eve-merchant
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu    # ARM64 (Raspberry Pi, servers)
-            artifact: eve-trade
+            artifact: eve-merchant
             cross: true                          # use cross-rs for cross-compilation
 
     steps:
@@ -119,7 +118,7 @@ jobs:
         run: |
           TARGET="${{ matrix.target }}"
           BINARY="target/$TARGET/release/${{ matrix.artifact }}"
-          ARCHIVE="eve-trade-scout-$TARGET.tar.gz"
+          ARCHIVE="eve-traveling-merchant-$TARGET.tar.gz"
           tar -czf "$ARCHIVE" -C "target/$TARGET/release" "${{ matrix.artifact }}"
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
 
@@ -144,10 +143,10 @@ GitHub Actions will:
 Users can then:
 ```bash
 # Download
-wget https://github.com/YOUR_USERNAME/eve-trade-scout/releases/latest/download/eve-trade-scout-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf eve-trade-scout-x86_64-unknown-linux-gnu.tar.gz
-chmod +x eve-trade
-./eve-trade
+wget https://github.com/Flambello/eve-traveling-merchant/releases/latest/download/eve-traveling-merchant-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf eve-traveling-merchant-x86_64-unknown-linux-gnu.tar.gz
+chmod +x eve-merchant
+./eve-merchant
 ```
 
 ---
@@ -165,7 +164,7 @@ cargo install cargo-appimage
 
 # Build the AppImage
 cargo appimage
-# → produces: target/appimage/eve-trade-scout.AppImage
+# → produces: target/appimage/eve-merchant.AppImage
 ```
 
 Or use **`appimagetool`** manually for more control:
@@ -177,63 +176,43 @@ chmod +x appimagetool-x86_64.AppImage
 
 # Create AppDir structure
 mkdir -p AppDir/usr/bin
-cp target/release/eve-trade AppDir/usr/bin/
+cp target/release/eve-merchant AppDir/usr/bin/
 
 # Create .desktop file
-cat > AppDir/eve-trade-scout.desktop << EOF
+cat > AppDir/eve-merchant.desktop << EOF
 [Desktop Entry]
-Name=EVE Trade Scout
-Exec=eve-trade
-Icon=eve-trade-scout
+Name=EVE Traveling Merchant
+Exec=eve-merchant
+Icon=eve-merchant
 Type=Application
 Categories=Game;Utility;
 EOF
 
 # Add an icon (128x128 PNG)
-cp assets/icon.png AppDir/eve-trade-scout.png
+cp assets/icon.png AppDir/eve-merchant.png
 
 # Package
-./appimagetool-x86_64.AppImage AppDir EVETradeScout-x86_64.AppImage
+./appimagetool-x86_64.AppImage AppDir EVETravelingMerchant-x86_64.AppImage
 ```
 
 Add the AppImage build to the GitHub Actions release workflow to attach it to every release.
 
 ---
 
-## 4. Flatpak (Optional — Nice for Fedora)
+## 4. Multi-Platform Standalone Bundles (Linux & Windows)
 
-Flatpak is the standard way to distribute GUI/terminal apps on Fedora and other
-freedesktop-compatible distros (GNOME Software, KDE Discover, Flathub).
+The project ships zero-dependency standalone release archives for Linux and Windows:
 
-### Flatpak manifest: `com.example.EveTradeScout.yml`
+### Linux Bundle (`eve-traveling-merchant-linux-x86_64.tar.gz`)
+- Pre-compiled optimized release binary (`eve-merchant`)
+- Native desktop entry (`eve-trade.desktop`) and Freedesktop icons
+- Shell launcher script (`start-gui.sh`)
+- Full documentation and license files
 
-```yaml
-app-id: com.example.EveTradeScout
-runtime: org.freedesktop.Platform
-runtime-version: "23.08"
-sdk: org.freedesktop.Sdk
-sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
-command: eve-trade
-
-finish-args:
-  - --share=network              # ESI API access
-  - --filesystem=home            # read/write config + SDE data
-
-modules:
-  - name: eve-trade-scout
-    buildsystem: simple
-    build-commands:
-      - cargo build --release --offline
-      - install -Dm755 target/release/eve-trade /app/bin/eve-trade
-    sources:
-      - type: git
-        url: https://github.com/YOUR_USERNAME/eve-trade-scout.git
-        tag: v1.0.0
-      - type: shell
-        commands:
-          - cargo fetch --manifest-path Cargo.toml
-```
+### Windows Bundle (`eve-traveling-merchant-windows-x86_64.zip`)
+- Pre-compiled optimized release executable (`eve-merchant.exe`)
+- Embedded assets, application icons, and documentation
+- Portable zero-install execution directly on Windows 10/11
 
 ---
 

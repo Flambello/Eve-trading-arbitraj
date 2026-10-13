@@ -237,3 +237,34 @@ async fn test_sde_station_canonical_name_and_system_resolution() {
         Some(30000144)
     );
 }
+
+#[tokio::test]
+async fn test_sde_search_systems_sql_wildcards_and_injection_resilience() {
+    let sde = get_test_sde().await;
+
+    // 1. Limit = 0 must return empty vector without error
+    let zero_limit = sde.search_systems("Jita", 0);
+    assert!(zero_limit.is_empty(), "Limit 0 must return empty results");
+
+    // 2. Wildcard search "%" and "_" should execute safely without SQL crashes
+    let pct_results = sde.search_systems("%", 3);
+    assert!(pct_results.len() <= 3, "Wildcard search must respect limit");
+
+    let underscore_results = sde.search_systems("_", 3);
+    assert!(underscore_results.len() <= 3, "Wildcard search must respect limit");
+
+    // 3. SQL injection attempt strings must be sanitized safely via parameterized bindings
+    let injection_quotes = sde.search_systems("Jita' OR '1'='1", 5);
+    assert!(
+        injection_quotes.is_empty() || injection_quotes.iter().all(|r| r.system_name.contains("Jita")),
+        "SQL injection payload must not bypass query boundaries"
+    );
+
+    let semicolon_injection = sde.search_systems("Jita; DROP TABLE mapSolarSystems;--", 5);
+    assert!(
+        semicolon_injection.is_empty() || semicolon_injection.iter().any(|r| r.system_name == "Jita"),
+        "Semicolon SQL payload must execute safely without database error"
+    );
+    // Verify database remains intact and table was not dropped
+    assert_eq!(sde.get_system_id("Jita"), Some(30000142));
+}

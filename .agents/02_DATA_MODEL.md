@@ -35,18 +35,20 @@ pub const SMALL_HAULER: ShipProfile = ShipProfile {
 A single order deserialized from the ESI response.
 
 ```rust
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketOrder {
     pub order_id:      u64,
     pub type_id:       u32,
     pub location_id:   u64,   // station or structure ID
     pub system_id:     u32,
-    pub price:         f64,   // ISK per unit
+    pub volume_total:  u32,
     pub volume_remain: u32,
-    pub is_buy_order:  bool,
     pub min_volume:    u32,
-    pub range:         String,
-    pub issued:        DateTime<Utc>,
+    pub price:         f64,   // ISK per unit
+    pub is_buy_order:  bool,
+    pub duration:      u32,
+    pub issued:        Option<String>,
+    pub range:         Option<String>,
 }
 ```
 
@@ -102,7 +104,7 @@ pub struct ArbitrageDeal {
     pub gross_profit:       f64,
     pub taxes_and_fees:     f64,
     pub net_profit:         f64,
-    pub net_profit_pct:     f64,   // (net_profit / capital_required) * 100 (enforced >= 15%)
+    pub net_profit_pct:     f64,   // (net_profit / capital_required) * 100 (enforced >= 10.0%)
 
     pub jumps_from_home:    u32,   // home → source
     pub jumps_source_dest:  u32,   // source → destination
@@ -115,19 +117,30 @@ pub struct ArbitrageDeal {
 
 ---
 
-## 5. TradeRoute
+## 5. TradeRoute & RouteStop
 
-A planned multi-stop route chaining several deals.
+A planned multi-stop route chaining several deals sequentially.
 
 ```rust
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteStop {
+    pub step:              usize,
+    pub deal:              ArbitrageDeal,
+    pub jumps_from_prev:   u32,
+    pub prev_system_id:    u32,
+    pub prev_system_name:  String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeRoute {
-    pub deals:         Vec<ArbitrageDeal>,
-    pub waypoints:     Vec<u32>,   // ordered system IDs
-    pub total_jumps:   u32,
-    pub total_profit:  f64,
-    pub total_volume:  f64,        // peak volume committed at any point
-    pub total_capital: f64,        // peak ISK committed at any point
+    pub stops:                  Vec<RouteStop>,
+    pub waypoints:              Vec<u32>,        // ordered system IDs
+    pub waypoint_names:         Vec<String>,     // ordered system names
+    pub total_jumps:            u32,
+    pub total_profit:           f64,
+    pub total_capital_required: f64,             // peak capital committed
+    pub max_volume_used:        f64,             // peak volume committed
+    pub avg_profit_per_jump:    f64,
 }
 ```
 
@@ -135,10 +148,10 @@ pub struct TradeRoute {
 
 ## 6. UserConfig
 
-Persistent settings stored in `~/.config/eve-trade-scout/config.toml`.
+Persistent settings stored at `~/.config/eve-traveling-merchant/config.toml` (with legacy fallback to `~/.config/eve-trade-scout/config.toml`).
 
 ```rust
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserConfig {
     pub ship:     ShipConfig,
     pub location: LocationConfig,
@@ -146,58 +159,69 @@ pub struct UserConfig {
     pub filters:  FilterConfig,
     pub fees:     FeeConfig,
     pub cache:    CacheConfig,
+    pub sso:      SsoConfig,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ShipConfig {
     pub profile: String,           // "big" | "small"
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LocationConfig {
     pub home_system: String,       // e.g. "Jita"
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScanConfig {
-    pub regions:           Vec<u32>,
-    pub safe_route_only:   bool,
-    pub npc_stations_only: bool,   // Default: true (restrict search strictly to NPC stations vs allow player citadels)
+    pub regions:               Vec<u32>,
+    pub safe_route_only:       bool,
+    pub npc_stations_only:     bool,   // Default: true (restrict search strictly to NPC stations vs allow player citadels)
+    pub scan_adjacent_regions: bool,   // Default: true (scan stargate-connected neighbor regions)
+    pub auto_refresh:          bool,   // Default: false (auto-refresh every 5 minutes in GUI)
+    pub sound_alerts:          bool,   // Default: true (audible alerts for >= 100% ROI deals)
+    pub sound_min_roi_pct:     f64,    // Default: 100.0%
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterConfig {
     pub min_profit_isk:     f64,
     pub min_spread_pct:     f64,
-    pub min_net_profit_pct: f64,   // Default: 15.0% enforced minimum ROI after taxes
+    pub min_net_profit_pct: f64,   // Default: 10.0% enforced minimum ROI after taxes
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeeConfig {
     pub broker_fee_pct: f64,
     pub sales_tax_pct:  f64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CacheConfig {
     pub directory:        String,
     pub sde_max_age_days: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SsoConfig {
+    pub client_id:          String,
+    pub callback_port:      u16,
+    pub auto_sync_location: bool,
 }
 ```
 
 ---
 
-## 7. ESI Cache Entry
+## 7. ESI Cache Entry (StoredEtag)
 
-Stored on disk (one JSON file per endpoint family) for ETag-based conditional requests.
+Stored on disk in `cache/etags.json` for ETag-based conditional HTTP GET requests.
 
 ```rust
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CacheEntry {
-    pub url:     String,
-    pub etag:    String,
-    pub expires: DateTime<Utc>,
-    pub data:    serde_json::Value,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredEtag {
+    pub etag:      String,
+    pub expires:   Option<DateTime<Utc>>,
+    pub body_json: String,
 }
 ```
 

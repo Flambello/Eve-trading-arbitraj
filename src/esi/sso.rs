@@ -93,7 +93,22 @@ pub fn load_saved_token() -> Option<SsoToken> {
         return None;
     }
     let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+    let mut token: SsoToken = serde_json::from_str(&data).ok()?;
+
+    // Auto-backfill legacy tokens saved without client_id so future background refreshes succeed
+    if token
+        .client_id
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        if let Some(dev_id) = get_developer_client_id() {
+            token.client_id = Some(dev_id);
+            let _ = save_token(&token);
+        }
+    }
+
+    Some(token)
 }
 
 /// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
@@ -193,13 +208,39 @@ pub fn get_developer_client_id() -> Option<String> {
     None
 }
 
+/// Validates that an EVE Application Client ID matches safe alphanumeric and hyphen/underscore formatting.
+pub fn is_valid_client_id(client_id: &str) -> bool {
+    let trimmed = client_id.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 128
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Sanitizes an upstream error response from the SSO token endpoint by truncating and stripping tokens.
+pub fn sanitize_sso_error(raw: &str) -> String {
+    let truncated: String = raw.chars().take(256).collect();
+    if truncated.contains("access_token") || truncated.contains("refresh_token") {
+        "OAuth token endpoint error (details withheld for security)".to_string()
+    } else {
+        truncated.replace(['\r', '\n'], " ")
+    }
+}
+
 /// Resolves the effective Client ID: if `custom` is non-empty, use it; otherwise check private local sources.
 pub fn resolve_client_id(custom: &str) -> Result<String> {
     let trimmed = custom.trim();
     if !trimmed.is_empty() {
+        if !is_valid_client_id(trimmed) {
+            bail!("Invalid EVE Application Client ID format. Must contain only alphanumeric characters, dashes, or underscores.");
+        }
         return Ok(trimmed.to_string());
     }
     if let Some(id) = get_developer_client_id() {
+        if !is_valid_client_id(&id) {
+            bail!("Invalid developer Client ID format in local configuration.");
+        }
         return Ok(id);
     }
     bail!(
@@ -215,6 +256,7 @@ pub fn build_authorize_url(
     code_challenge: &str,
 ) -> String {
     let redirect_uri = format!("http://localhost:{}/callback", callback_port);
+    let encoded_client = urlencoding_simple(client_id);
     let encoded_redirect = urlencoding_simple(&redirect_uri);
     let encoded_scopes = urlencoding_simple(ESI_SCOPES);
     let encoded_state = urlencoding_simple(state);
@@ -222,7 +264,7 @@ pub fn build_authorize_url(
 
     format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
-        SSO_AUTH_URL, client_id, encoded_redirect, encoded_scopes, encoded_state, encoded_challenge
+        SSO_AUTH_URL, encoded_client, encoded_redirect, encoded_scopes, encoded_state, encoded_challenge
     )
 }
 
@@ -240,6 +282,32 @@ fn urlencoding_simple(s: &str) -> String {
     out
 }
 
+/// Basic URL decoding helper for percent-encoded query parameters.
+pub fn urldecode_simple(s: &str) -> String {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(val) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or_default(),
+                16,
+            ) {
+                out.push(val);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Listens on 127.0.0.1:<port> for the OAuth callback from the browser.
 /// Returns the authorization code once received.
 pub async fn listen_for_auth_code(
@@ -253,14 +321,37 @@ pub async fn listen_for_auth_code(
 
     let listen_fut = async {
         loop {
-            let (mut socket, _) = listener.accept().await?;
-            let mut buf = [0u8; 4096];
-            let n = socket.read(&mut buf).await?;
-            if n == 0 {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
+
+            let mut request_buf = Vec::with_capacity(2048);
+            let mut temp_buf = [0u8; 1024];
+            const MAX_REQUEST_SIZE: usize = 8192;
+
+            loop {
+                let n = match socket.read(&mut temp_buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                request_buf.extend_from_slice(&temp_buf[..n]);
+                if request_buf.windows(4).any(|w| w == b"\r\n\r\n")
+                    || request_buf.len() >= MAX_REQUEST_SIZE
+                {
+                    break;
+                }
+            }
+
+            if request_buf.is_empty() {
                 continue;
             }
 
-            let request_str = String::from_utf8_lossy(&buf[..n]);
+            let request_str = String::from_utf8_lossy(&request_buf);
             let first_line = request_str.lines().next().unwrap_or_default();
 
             // Expected format: GET /callback?code=XYZ&state=ABC HTTP/1.1
@@ -276,9 +367,9 @@ pub async fn listen_for_auth_code(
                     let mut parts = pair.split('=');
                     if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
                         if k == "code" {
-                            code = Some(v.to_string());
+                            code = Some(urldecode_simple(v));
                         } else if k == "state" {
-                            state = Some(v.to_string());
+                            state = Some(urldecode_simple(v));
                         }
                     }
                 }
@@ -366,7 +457,8 @@ pub async fn exchange_code_for_token(
 
     if !resp.status().is_success() {
         let err_text = resp.text().await.unwrap_or_default();
-        bail!("CCP SSO token exchange failed: {}", err_text);
+        let sanitized = sanitize_sso_error(&err_text);
+        bail!("CCP SSO token exchange failed: {}", sanitized);
     }
 
     let token_data: TokenResponse = resp
@@ -382,7 +474,7 @@ pub async fn exchange_code_for_token(
 
     // Decode character name and character ID from JWT access token payload
     let (character_id, character_name) = parse_jwt_character_claims(&token_data.access_token)
-        .unwrap_or((0, "EVE Pilot".to_string()));
+        .context("Failed to extract valid character claims from SSO access token")?;
 
     let sso_token = SsoToken {
         access_token: token_data.access_token,
@@ -408,72 +500,10 @@ pub async fn ensure_fresh_token(
         return Ok(());
     }
 
-    let effective_client_id = if !client_id.trim().is_empty() {
-        client_id.trim()
-    } else if let Some(ref cid) = token.client_id {
-        cid.as_str()
-    } else {
-        client_id
-    };
-
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", &token.refresh_token),
-        ("client_id", effective_client_id),
-    ];
-
-    let resp = client
-        .post(SSO_TOKEN_URL)
-        .header("User-Agent", USER_AGENT_VAL)
-        .form(&params)
-        .send()
-        .await
-        .context("Failed to refresh SSO access token")?;
-
-    if !resp.status().is_success() {
-        let err_text = resp.text().await.unwrap_or_default();
-        bail!("CCP SSO token refresh failed: {}", err_text);
-    }
-
-    let token_data: TokenResponse = resp
-        .json()
-        .await
-        .context("Failed to parse refreshed SSO token response")?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    token.access_token = token_data.access_token;
-    token.refresh_token = token_data.refresh_token;
-    token.expires_at = now + token_data.expires_in;
-    if token.client_id.is_none() && !effective_client_id.is_empty() {
-        token.client_id = Some(effective_client_id.to_string());
-    }
-
-    let _ = save_token(token);
-    Ok(())
-}
-
-/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
-pub async fn refresh_saved_token_if_needed(
-    client: &reqwest::Client,
-    client_id: &str,
-) -> Result<Option<SsoToken>> {
-    let mut token = match load_saved_token() {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-
-    if !token.needs_refresh() {
-        return Ok(Some(token));
-    }
-
-    let effective_client_id = if !client_id.trim().is_empty() {
+    let effective_client_id: String = if !client_id.trim().is_empty() {
         client_id.trim().to_string()
-    } else if let Some(ref cid) = token.client_id {
-        cid.clone()
+    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        cid.to_string()
     } else {
         resolve_client_id(client_id)?
     };
@@ -494,7 +524,81 @@ pub async fn refresh_saved_token_if_needed(
 
     if !resp.status().is_success() {
         let err_text = resp.text().await.unwrap_or_default();
-        bail!("CCP SSO token refresh failed: {}", err_text);
+        if err_text.contains("invalid_grant") {
+            let _ = delete_saved_token();
+            bail!(
+                "EVE SSO session has expired or was revoked. Please log in again."
+            );
+        }
+        let sanitized = sanitize_sso_error(&err_text);
+        bail!("CCP SSO token refresh failed: {}", sanitized);
+    }
+
+    let token_data: TokenResponse = resp
+        .json()
+        .await
+        .context("Failed to parse refreshed SSO token response")?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    token.access_token = token_data.access_token;
+    token.refresh_token = token_data.refresh_token;
+    token.expires_at = now + token_data.expires_in;
+    token.client_id = Some(effective_client_id);
+
+    let _ = save_token(token);
+    Ok(())
+}
+
+/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
+pub async fn refresh_saved_token_if_needed(
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<Option<SsoToken>> {
+    let mut token = match load_saved_token() {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    if !token.needs_refresh() {
+        return Ok(Some(token));
+    }
+
+    let effective_client_id: String = if !client_id.trim().is_empty() {
+        client_id.trim().to_string()
+    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        cid.to_string()
+    } else {
+        resolve_client_id(client_id)?
+    };
+
+    let params = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", &token.refresh_token),
+        ("client_id", &effective_client_id),
+    ];
+
+    let resp = client
+        .post(SSO_TOKEN_URL)
+        .header("User-Agent", USER_AGENT_VAL)
+        .form(&params)
+        .send()
+        .await
+        .context("Failed to refresh SSO access token")?;
+
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        if err_text.contains("invalid_grant") {
+            let _ = delete_saved_token();
+            bail!(
+                "EVE SSO session has expired or was revoked. Please log in again."
+            );
+        }
+        let sanitized = sanitize_sso_error(&err_text);
+        bail!("CCP SSO token refresh failed: {}", sanitized);
     }
 
     let token_data: TokenResponse = resp
@@ -522,13 +626,21 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
     let _header = parts.next()?;
     let payload_b64 = parts.next()?;
 
-    let decoded_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    // Support both unpadded and padded base64url payloads
+    let decoded_bytes = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .or_else(|_| {
+            let pad_len = (4 - (payload_b64.len() % 4)) % 4;
+            let padded = format!("{}{}", payload_b64, "=".repeat(pad_len));
+            base64::engine::general_purpose::URL_SAFE.decode(&padded)
+        })
+        .ok()?;
     let v: serde_json::Value = serde_json::from_slice(&decoded_bytes).ok()?;
 
     let name = v
         .get("name")
         .and_then(|n| n.as_str())
-        .unwrap_or("EVE Pilot")
+        .filter(|s| !s.trim().is_empty())?
         .to_string();
 
     let character_id = v
@@ -538,7 +650,7 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
             // sub format: "CHARACTER:EVE:12345678"
             sub_str.split(':').next_back()?.parse::<u64>().ok()
         })
-        .unwrap_or(0);
+        .filter(|&id| id > 0)?;
 
     Some((character_id, name))
 }
@@ -637,11 +749,10 @@ pub async fn push_waypoints_with_token(
     client_id: &str,
     destination_ids: &[u64],
 ) -> Result<usize> {
-    let effective_client_id = resolve_client_id(client_id)?;
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, &effective_client_id, &mut token).await?;
+    ensure_fresh_token(client, client_id, &mut token).await?;
     push_waypoints_to_client(client, &token.access_token, destination_ids).await
 }
 
@@ -679,10 +790,11 @@ pub async fn fetch_character_location(
         if status.as_u16() == 403 {
             bail!("Missing required scope 'esi-location.read_location.v1'. Please re-connect character in Settings.");
         }
+        let sanitized = sanitize_sso_error(&body);
         bail!(
             "ESI character location request failed ({}): {}",
             status,
-            body
+            sanitized
         );
     }
 
@@ -699,10 +811,9 @@ pub async fn get_character_location_with_token(
     client: &reqwest::Client,
     client_id: &str,
 ) -> Result<CharacterLocation> {
-    let effective_client_id = resolve_client_id(client_id)?;
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, &effective_client_id, &mut token).await?;
+    ensure_fresh_token(client, client_id, &mut token).await?;
     fetch_character_location(client, &token).await
 }

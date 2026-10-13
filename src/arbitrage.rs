@@ -58,6 +58,7 @@ impl ArbitrageDeal {
     }
 }
 
+/// A consolidated cargo manifest grouping multiple profitable deals along an identical station-to-station corridor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeCorridorManifest {
     pub source_system_id: u32,
@@ -77,6 +78,7 @@ pub struct TradeCorridorManifest {
     pub profit_per_jump: f64,
 }
 
+/// Configuration parameters and filters for the cross-station arbitrage engine.
 #[derive(Debug, Clone)]
 pub struct ArbitrageConfig {
     pub ship: ShipProfile,
@@ -90,11 +92,25 @@ pub struct ArbitrageConfig {
     pub npc_stations_only: bool,
 }
 
+/// Identifies whether a given location ID corresponds to an NPC station.
+///
+/// In EVE Online, NPC stations have positive location IDs below the Upwell Structure threshold
+/// of 1,000,000,000,000 (`10^12`). Location IDs $\ge 10^{12}$ denote player-owned Citadels / Engineering Complexes.
 pub fn is_npc_station(location_id: u64) -> bool {
-    // Upwell structures have IDs > 1_000_000_000_000
-    location_id < 1_000_000_000_000
+    // NPC stations have positive IDs below the Upwell Structure threshold (1_000_000_000_000)
+    location_id > 0 && location_id < 1_000_000_000_000
 }
 
+/// Scans regional order books for profitable cross-station arbitrage opportunities.
+///
+/// Filters candidate trades by:
+/// - Volume and capital limits defined in [`ArbitrageConfig::ship`]
+/// - Minimum gross price spread and net profit thresholds
+/// - Enforced minimum after-tax net profitability ($\ge 10.0\%$ ROI)
+/// - Safe highsec routing ($\ge 0.45$ security status)
+/// - Optional NPC stations only restriction
+///
+/// Returns a list of [`ArbitrageDeal`] sorted by `profit_per_jump` descending, breaking ties by `net_profit` descending.
 pub fn find_deals(
     markets: &HashMap<u32, RegionMarket>,
     sde: &SdeLoader,
@@ -215,6 +231,18 @@ pub fn find_deals(
     deals
 }
 
+/// Calculates the trade financials for a single candidate deal between a source sell order and destination buy order.
+///
+/// Returns `None` if:
+/// - Source or destination station are identical
+/// - Prices are non-positive, NaN, or infinite
+/// - Either system is lowsec/nullsec (when highsec safety is enforced)
+/// - Stations violate the NPC station filter
+/// - Origin or destination systems are unreachable
+/// - Quantity solves to 0 units (e.g. item cannot fit ship cargo or exceeds budget)
+/// - Quantity does not satisfy buyer's `min_volume` requirement
+/// - Net profit is below `cfg.min_profit`
+/// - Net ROI percentage is below `cfg.min_net_profit_pct` (enforced minimum 10.0%)
 pub fn calculate_deal(
     type_id: u32,
     item: &ItemInfo,
@@ -251,19 +279,6 @@ pub fn calculate_deal(
     if cfg.npc_stations_only && (!is_npc_station(src_station) || !is_npc_station(dst_station)) {
         return None;
     }
-
-    // Jump calculations
-    let jumps_from_home = graph.jump_count(cfg.home_system, src_system_id, cfg.safe_only);
-    if cfg.safe_only && jumps_from_home >= 9999 {
-        return None;
-    }
-
-    let jumps_source_dest = graph.jump_count(src_system_id, dst_system_id, cfg.safe_only);
-    if cfg.safe_only && jumps_source_dest >= 9999 {
-        return None;
-    }
-
-    let total_jumps = (jumps_from_home + jumps_source_dest).max(1);
 
     // Quantity constraints:
     // 1. Cargo volume limit
@@ -328,6 +343,19 @@ pub fn calculate_deal(
     if net_profit_pct < cfg.min_net_profit_pct {
         return None;
     }
+
+    // Jump calculations: evaluate graph distances only for viable profitable deals
+    let jumps_from_home = graph.jump_count(cfg.home_system, src_system_id, cfg.safe_only);
+    if cfg.safe_only && jumps_from_home >= 9999 {
+        return None;
+    }
+
+    let jumps_source_dest = graph.jump_count(src_system_id, dst_system_id, cfg.safe_only);
+    if cfg.safe_only && jumps_source_dest >= 9999 {
+        return None;
+    }
+
+    let total_jumps = (jumps_from_home + jumps_source_dest).max(1);
 
     let spread_pct = ((sell_price - buy_price) / buy_price) * 100.0;
     let profit_per_jump = net_profit / (total_jumps as f64);
@@ -412,6 +440,10 @@ pub fn calculate_deal(
     })
 }
 
+/// Consolidates individual arbitrage deals sharing identical station-to-station corridors into packed multi-item cargo manifests.
+///
+/// Uses knapsack value-density packing (`profit_per_m3` descending) to maximize total profit while respecting
+/// ship volume and capital budget constraints.
 pub fn bundle_route_cargo(
     deals: &[ArbitrageDeal],
     ship: ShipProfile,
@@ -729,3 +761,18 @@ impl TradeCorridorManifest {
         s
     }
 }
+
+/// Filters deals based on NPC trade status.
+/// When `include_npc` is true, all deals are retained.
+/// When `include_npc` is false, deals flagged with `is_npc_trade == true` are excluded.
+pub fn filter_deals_by_npc_status(
+    deals: &[ArbitrageDeal],
+    include_npc: bool,
+) -> Vec<&ArbitrageDeal> {
+    deals
+        .iter()
+        .filter(|d| include_npc || !d.is_npc_trade)
+        .collect()
+}
+
+

@@ -110,7 +110,18 @@ pub struct SsoConfig {
 }
 
 fn default_callback_port() -> u16 {
-    37373
+    crate::esi::sso::DEFAULT_CALLBACK_PORT
+}
+
+impl SsoConfig {
+    /// Returns the callback port, ensuring it is in the safe unprivileged range (1024..=65535).
+    pub fn validated_callback_port(&self) -> u16 {
+        if self.callback_port < 1024 {
+            default_callback_port()
+        } else {
+            self.callback_port
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -163,6 +174,11 @@ impl Default for UserConfig {
 }
 
 impl UserConfig {
+    /// Resolves the filesystem path to the user's `config.toml`.
+    ///
+    /// Prefers `~/.config/eve-traveling-merchant/config.toml`. If that does not exist but
+    /// a legacy `~/.config/eve-trade-scout/config.toml` exists, returns the legacy path for backwards compatibility.
+    /// Otherwise returns the modern path.
     pub fn config_path() -> Result<PathBuf> {
         let base = dirs::config_dir().context("Could not determine user config directory")?;
         let new_path = base.join("eve-traveling-merchant").join("config.toml");
@@ -203,7 +219,6 @@ impl UserConfig {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn ship_profile(&self) -> Result<ShipProfile> {
         profile_from_str(&self.ship.profile)
     }

@@ -443,12 +443,13 @@ pub async fn listen_for_auth_code(
         .map_err(|_| anyhow::anyhow!("SSO authorization timed out waiting for browser callback."))?
 }
 
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: i64,
-    refresh_token: String,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: i64,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 /// Exchanges the PKCE authorization code for an access token and refresh token.
@@ -503,9 +504,14 @@ pub async fn exchange_code_for_token(
     let (character_id, character_name) = parse_jwt_character_claims(&token_data.access_token)
         .context("Failed to extract valid character claims from SSO access token")?;
 
+    let refresh_token = token_data
+        .refresh_token
+        .filter(|s| !s.trim().is_empty())
+        .context("Missing refresh token in authorization response from CCP SSO")?;
+
     let sso_token = SsoToken {
         access_token: token_data.access_token,
-        refresh_token: token_data.refresh_token,
+        refresh_token,
         token_type: token_data.token_type,
         expires_at,
         character_id,
@@ -517,13 +523,23 @@ pub async fn exchange_code_for_token(
     Ok(sso_token)
 }
 
-/// Refreshes the access token using the refresh token if expired.
+/// Refreshes the access token using the refresh token if expired or nearing expiration.
 pub async fn ensure_fresh_token(
     client: &reqwest::Client,
     client_id: &str,
     token: &mut SsoToken,
 ) -> Result<()> {
-    if !token.is_expired() {
+    ensure_fresh_token_at_url(client, SSO_TOKEN_URL, client_id, token).await
+}
+
+/// Refreshes the access token using the refresh token against the specified token endpoint URL.
+pub async fn ensure_fresh_token_at_url(
+    client: &reqwest::Client,
+    token_url: &str,
+    client_id: &str,
+    token: &mut SsoToken,
+) -> Result<()> {
+    if !token.needs_refresh() {
         return Ok(());
     }
 
@@ -542,7 +558,7 @@ pub async fn ensure_fresh_token(
     ];
 
     let resp = client
-        .post(SSO_TOKEN_URL)
+        .post(token_url)
         .header("User-Agent", USER_AGENT_VAL)
         .form(&params)
         .send()
@@ -579,11 +595,16 @@ pub async fn ensure_fresh_token(
         .unwrap_or(0);
 
     token.access_token = token_data.access_token;
-    token.refresh_token = token_data.refresh_token;
+    token.token_type = token_data.token_type;
+    // Under RFC 6749 and CCP SSO v2, refresh_token is omitted on refresh unless rotation is active.
+    // If a new refresh token is provided, adopt it; otherwise preserve the existing valid refresh token.
+    if let Some(new_rt) = token_data.refresh_token.filter(|s| !s.trim().is_empty()) {
+        token.refresh_token = new_rt;
+    }
     token.expires_at = now + token_data.expires_in;
     token.client_id = Some(effective_client_id);
 
-    let _ = save_token(token);
+    save_token(token)?;
     Ok(())
 }
 
@@ -601,63 +622,7 @@ pub async fn refresh_saved_token_if_needed(
         return Ok(Some(token));
     }
 
-    let effective_client_id: String = if !client_id.trim().is_empty() {
-        client_id.trim().to_string()
-    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
-        cid.to_string()
-    } else {
-        resolve_client_id(client_id)?
-    };
-
-    let params = [
-        ("grant_type", "refresh_token"),
-        ("refresh_token", &token.refresh_token),
-        ("client_id", &effective_client_id),
-    ];
-
-    let resp = client
-        .post(SSO_TOKEN_URL)
-        .header("User-Agent", USER_AGENT_VAL)
-        .form(&params)
-        .send()
-        .await
-        .context("Failed to refresh SSO access token")?;
-
-    if !resp.status().is_success() {
-        let err_text = resp.text().await.unwrap_or_default();
-        if err_text.contains("invalid_grant") {
-            let _ = delete_saved_token();
-            tracing::error!(
-                error_code = %ErrorCode::ErrSsoTokenRefresh,
-                "EVE SSO session has expired or was revoked"
-            );
-            bail!("EVE SSO session has expired or was revoked. Please log in again.");
-        }
-        let sanitized = sanitize_sso_error(&err_text);
-        tracing::error!(
-            error_code = %ErrorCode::ErrSsoTokenRefresh,
-            error = %sanitized,
-            "CCP SSO token refresh failed"
-        );
-        bail!("CCP SSO token refresh failed: {}", sanitized);
-    }
-
-    let token_data: TokenResponse = resp
-        .json()
-        .await
-        .context("Failed to parse refreshed SSO token response")?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    token.access_token = token_data.access_token;
-    token.refresh_token = token_data.refresh_token;
-    token.expires_at = now + token_data.expires_in;
-    token.client_id = Some(effective_client_id);
-
-    save_token(&token)?;
+    ensure_fresh_token(client, client_id, &mut token).await?;
     Ok(Some(token))
 }
 

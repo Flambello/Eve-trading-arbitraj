@@ -715,3 +715,198 @@ async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
         "Refreshing expired token with invalid credentials must return Err"
     );
 }
+
+#[test]
+fn test_token_response_deserialization_standard_ccp_refresh_omits_refresh_token() {
+    use eve_trade_scout::esi::sso::TokenResponse;
+
+    // Standard CCP EVE SSO v2 response when refreshing (refresh_token omitted by CCP server)
+    let json_payload = r#"{
+        "access_token": "renewed_access_token_12345",
+        "token_type": "Bearer",
+        "expires_in": 1199
+    }"#;
+
+    let token_resp: TokenResponse = serde_json::from_str(json_payload)
+        .expect("CCP standard refresh response must deserialize cleanly even without refresh_token");
+
+    assert_eq!(token_resp.access_token, "renewed_access_token_12345");
+    assert_eq!(token_resp.token_type, "Bearer");
+    assert_eq!(token_resp.expires_in, 1199);
+    assert_eq!(token_resp.refresh_token, None);
+}
+
+#[test]
+fn test_token_response_deserialization_rotating_refresh_includes_refresh_token() {
+    use eve_trade_scout::esi::sso::TokenResponse;
+
+    // Future-proof CCP EVE SSO response with rotated refresh token
+    let json_payload = r#"{
+        "access_token": "renewed_access_token_67890",
+        "token_type": "Bearer",
+        "expires_in": 1200,
+        "refresh_token": "rotated_refresh_secret_abcde"
+    }"#;
+
+    let token_resp: TokenResponse = serde_json::from_str(json_payload)
+        .expect("Rotating refresh response must deserialize with new refresh_token");
+
+    assert_eq!(token_resp.access_token, "renewed_access_token_67890");
+    assert_eq!(token_resp.token_type, "Bearer");
+    assert_eq!(token_resp.expires_in, 1200);
+    assert_eq!(
+        token_resp.refresh_token,
+        Some("rotated_refresh_secret_abcde".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_response() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        // Verify request method and form payload
+        assert!(request_str.starts_with("POST /v2/oauth/token"));
+        assert!(request_str.contains("grant_type=refresh_token"));
+        assert!(request_str.contains("refresh_token=my_secret_refresh_token_123"));
+        assert!(request_str.contains("client_id=test_client_id_val"));
+
+        // Respond with standard CCP refresh payload (omitting refresh_token)
+        let body = r#"{"access_token":"brand_new_access_jwt","token_type":"Bearer","expires_in":1199}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.expect("Write failed");
+    });
+
+    let client = reqwest::Client::new();
+    let mut token = SsoToken {
+        access_token: "old_expired_access".to_string(),
+        refresh_token: "my_secret_refresh_token_123".to_string(),
+        expires_at: now_secs() - 50, // Expired
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+
+    let res = ensure_fresh_token_at_url(&client, &mock_url, "test_client_id_val", &mut token).await;
+    assert!(res.is_ok(), "Token refresh against mock CCP endpoint must succeed: {:?}", res.err());
+
+    // Verify token was renewed and existing refresh token was preserved!
+    assert_eq!(token.access_token, "brand_new_access_jwt");
+    assert_eq!(token.refresh_token, "my_secret_refresh_token_123");
+    assert!(token.expires_at > now_secs() + 1100);
+
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(request_str.starts_with("POST /v2/oauth/token"));
+        assert!(request_str.contains("grant_type=refresh_token"));
+        assert!(request_str.contains("refresh_token=old_refresh_secret"));
+
+        // Respond with rotated refresh payload
+        let body = r#"{"access_token":"rotated_access_jwt","token_type":"Bearer","expires_in":1200,"refresh_token":"new_rotated_refresh_secret"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.expect("Write failed");
+    });
+
+    let client = reqwest::Client::new();
+    let mut token = SsoToken {
+        access_token: "old_access".to_string(),
+        refresh_token: "old_refresh_secret".to_string(),
+        expires_at: now_secs() - 10,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+
+    let res = ensure_fresh_token_at_url(&client, &mock_url, "test_client_id_val", &mut token).await;
+    assert!(res.is_ok(), "Token refresh with rotation must succeed");
+
+    assert_eq!(token.access_token, "rotated_access_jwt");
+    assert_eq!(token.refresh_token, "new_rotated_refresh_secret");
+    assert!(token.expires_at > now_secs() + 1100);
+
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let _ = socket.read(&mut buf).await;
+
+        let body = r#"{"error":"invalid_grant","error_description":"Token has been revoked or expired"}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.expect("Write failed");
+    });
+
+    let client = reqwest::Client::new();
+    let mut token = SsoToken {
+        access_token: "old_access".to_string(),
+        refresh_token: "revoked_secret".to_string(),
+        expires_at: now_secs() - 10,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+
+    let res = ensure_fresh_token_at_url(&client, &mock_url, "test_client_id_val", &mut token).await;
+    assert!(res.is_err(), "Must return error on invalid_grant");
+    let err_msg = res.unwrap_err().to_string();
+    assert!(err_msg.contains("EVE SSO session has expired or was revoked"));
+
+    let _ = server_task.await;
+}

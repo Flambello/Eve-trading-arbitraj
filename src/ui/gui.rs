@@ -900,6 +900,15 @@ impl DesktopApp {
         }
     }
 
+    /// Syncs in-memory SSO token state (character name, ID, and expiration) with the stored token on disk.
+    pub fn sync_sso_token_from_disk(&mut self) {
+        if let Some(tok) = crate::esi::sso::load_saved_token() {
+            self.sso_character_name = Some(tok.character_name);
+            self.sso_character_id = Some(tok.character_id);
+            self.sso_token_expires_at = Some(tok.expires_at);
+        }
+    }
+
     pub fn start_sso_authentication(&mut self) {
         if self.sso_is_authenticating {
             return;
@@ -1426,6 +1435,7 @@ impl eframe::App for DesktopApp {
                 self.sso_is_pushing = false;
                 match res {
                     Ok(stops) => {
+                        self.sync_sso_token_from_disk();
                         self.set_toast(format!(
                             "Injected {} waypoint(s) into live EVE client HUD!",
                             stops
@@ -1454,6 +1464,7 @@ impl eframe::App for DesktopApp {
                 self.sso_location_scan_after = false;
                 match res {
                     Ok(loc) => {
+                        self.sync_sso_token_from_disk();
                         let sys_name_opt = self
                             .sde
                             .as_ref()
@@ -1515,6 +1526,9 @@ impl eframe::App for DesktopApp {
             || self.sso_is_refreshing_token
         {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else if self.sso_character_name.is_some() {
+            // Keep background token heartbeat and countdown timer alive even when window is idle/unfocused
+            ctx.request_repaint_after(Duration::from_secs(5));
         }
 
         // Auto-refresh timer check

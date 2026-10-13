@@ -444,33 +444,126 @@ fn test_config_auto_sync_location_roundtrip() {
     assert_eq!(loaded.sso.client_id, "test_client_id_xyz");
 }
 
+struct EnvGuard {
+    var: &'static str,
+    orig: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set(var: &'static str, val: &std::path::Path) -> Self {
+        let orig = std::env::var_os(var);
+        std::env::set_var(var, val);
+        Self { var, orig }
+    }
+
+    fn set_str(var: &'static str, val: &str) -> Self {
+        let orig = std::env::var_os(var);
+        std::env::set_var(var, val);
+        Self { var, orig }
+    }
+
+    fn remove(var: &'static str) -> Self {
+        let orig = std::env::var_os(var);
+        std::env::remove_var(var);
+        Self { var, orig }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(ref val) = self.orig {
+            std::env::set_var(self.var, val);
+        } else {
+            std::env::remove_var(self.var);
+        }
+    }
+}
+
 #[test]
 fn test_developer_client_id_resolution() {
     use eve_trade_scout::esi::sso::{get_developer_client_id, resolve_client_id};
 
-    // Explicit custom ID resolves directly
+    // 1. Explicit custom ID resolves directly
     let custom = resolve_client_id("explicit_custom_key_123").unwrap();
     assert_eq!(custom, "explicit_custom_key_123");
 
-    // Test environment variable resolution
-    std::env::set_var("EVE_CLIENT_ID", "env_injected_client_id_456");
-    let from_env = get_developer_client_id();
-    assert_eq!(from_env.as_deref(), Some("env_injected_client_id_456"));
+    // Create an isolated temporary config directory to avoid coupling to the host system
+    let temp_dir = std::env::temp_dir().join(format!("eve_test_sso_cfg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("Must create test temp dir");
 
-    let resolved_from_env = resolve_client_id("").unwrap();
-    assert_eq!(resolved_from_env, "env_injected_client_id_456");
+    // Guard XDG_CONFIG_HOME so it restores on drop
+    let _xdg_guard = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
 
-    // Clean up env
-    std::env::remove_var("EVE_CLIENT_ID");
+    // 2. Test environment variable resolution (takes precedence over config file)
+    {
+        let _env_guard = EnvGuard::set_str("EVE_CLIENT_ID", "env_injected_client_id_456");
+        let from_env = get_developer_client_id();
+        assert_eq!(from_env.as_deref(), Some("env_injected_client_id_456"));
 
-    // Test private config file resolution (~/.config/eve-trade-scout/developer_client_id)
+        let resolved_from_env = resolve_client_id("").unwrap();
+        assert_eq!(resolved_from_env, "env_injected_client_id_456");
+    }
+
+    // Ensure EVE_CLIENT_ID is unset for the file resolution tests
+    let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
+
+    // 3. Test private config file resolution in isolated config dir (~/.config/eve-traveling-merchant/developer_client_id)
+    let app_config_dir = temp_dir.join("eve-traveling-merchant");
+    std::fs::create_dir_all(&app_config_dir).expect("Must create app config dir");
+    let file_path = app_config_dir.join("developer_client_id");
+    std::fs::write(&file_path, "mock_file_client_id_789\n")
+        .expect("Must write mock client id file");
+
     let from_file = get_developer_client_id();
-    assert!(
-        from_file.is_some(),
-        "Must load client ID from private local config file"
-    );
     assert_eq!(
         from_file.as_deref(),
-        Some("5793fc7aa2cb49e385d3cfb5d52061c7")
+        Some("mock_file_client_id_789"),
+        "Must load client ID from isolated mock config file"
     );
+
+    let resolved_from_file = resolve_client_id("").unwrap();
+    assert_eq!(resolved_from_file, "mock_file_client_id_789");
+
+    // 4. Test legacy path fallback (~/.config/eve-trade-scout/developer_client_id)
+    std::fs::remove_file(&file_path).expect("Must remove primary config file");
+    let legacy_config_dir = temp_dir.join("eve-trade-scout");
+    std::fs::create_dir_all(&legacy_config_dir).expect("Must create legacy config dir");
+    let legacy_file_path = legacy_config_dir.join("developer_client_id");
+    std::fs::write(&legacy_file_path, "legacy_file_client_id_000\n")
+        .expect("Must write legacy mock file");
+
+    let from_legacy = get_developer_client_id();
+    assert_eq!(
+        from_legacy.as_deref(),
+        Some("legacy_file_client_id_000"),
+        "Must load client ID from legacy mock config file"
+    );
+
+    let resolved_from_legacy = resolve_client_id("").unwrap();
+    assert_eq!(resolved_from_legacy, "legacy_file_client_id_000");
+
+    // 5. Test unconfigured state when no credentials exist
+    std::fs::remove_file(&legacy_file_path).expect("Must remove legacy config file");
+
+    let unconfigured = get_developer_client_id();
+    assert!(
+        unconfigured.is_none(),
+        "Must return None when neither env var nor config file exists"
+    );
+
+    let err = resolve_client_id("");
+    assert!(
+        err.is_err(),
+        "Must fail when no client ID is provided and no developer ID is configured"
+    );
+    let err_msg = err.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("No EVE Application Client ID configured"),
+        "Error message should explain missing client ID: {}",
+        err_msg
+    );
+
+    // Clean up temporary directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }

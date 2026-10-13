@@ -45,9 +45,28 @@ impl SystemGraph {
 
     /// Loads all solar systems and stargate jump connections from the SQLite SDE database.
     pub fn from_sde(sde: &SdeLoader) -> Result<Self> {
-        let systems = sde.all_systems()?;
-        let jumps = sde.all_jumps()?;
-        Ok(Self::from_nodes_and_jumps(systems, jumps))
+        let systems = sde.all_systems().map_err(|e| {
+            tracing::error!(
+                error_code = %crate::error::ErrorCode::ErrGraphBuildFailed,
+                error = %e,
+                "Failed to load solar systems from SDE for graph construction"
+            );
+            e
+        })?;
+        let jumps = sde.all_jumps().map_err(|e| {
+            tracing::error!(
+                error_code = %crate::error::ErrorCode::ErrGraphBuildFailed,
+                error = %e,
+                "Failed to load stargate jumps from SDE for graph construction"
+            );
+            e
+        })?;
+        let graph = Self::from_nodes_and_jumps(systems, jumps);
+        tracing::info!(
+            node_count = graph.graph.node_count(),
+            "Compiled New Eden stargate topology network"
+        );
+        Ok(graph)
     }
 
     /// Returns the true security status (-1.0 to 1.0) of a solar system if present in the graph.
@@ -148,11 +167,9 @@ impl SystemGraph {
                 }
                 for neighbor in self.graph.neighbors(curr) {
                     let n_idx = neighbor.index();
-                    if !visited[n_idx] {
-                        if self.graph[neighbor].security_status >= 0.45 {
-                            visited[n_idx] = true;
-                            queue.push_back((neighbor, dist + 1));
-                        }
+                    if !visited[n_idx] && self.graph[neighbor].security_status >= 0.45 {
+                        visited[n_idx] = true;
+                        queue.push_back((neighbor, dist + 1));
                     }
                 }
             }

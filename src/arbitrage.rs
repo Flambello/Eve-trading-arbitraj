@@ -774,5 +774,3 @@ pub fn filter_deals_by_npc_status(
         .filter(|d| include_npc || !d.is_npc_trade)
         .collect()
 }
-
-

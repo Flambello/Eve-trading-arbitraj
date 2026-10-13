@@ -198,12 +198,18 @@ fn test_disconnected_components_and_unknown_systems() {
     // Within component 1: reachable
     assert_eq!(graph.jump_count(jita, perimeter, false), 1);
     assert_eq!(graph.jump_count(jita, perimeter, true), 1);
-    assert_eq!(graph.shortest_path(jita, perimeter, true), vec![jita, perimeter]);
+    assert_eq!(
+        graph.shortest_path(jita, perimeter, true),
+        vec![jita, perimeter]
+    );
 
     // Within component 2: reachable
     assert_eq!(graph.jump_count(kisogo, maurasi, false), 1);
     assert_eq!(graph.jump_count(kisogo, maurasi, true), 1);
-    assert_eq!(graph.shortest_path(kisogo, maurasi, true), vec![kisogo, maurasi]);
+    assert_eq!(
+        graph.shortest_path(kisogo, maurasi, true),
+        vec![kisogo, maurasi]
+    );
 
     // Across disconnected components: must return 9999 jumps and empty shortest path
     assert_eq!(graph.jump_count(jita, kisogo, false), 9999);

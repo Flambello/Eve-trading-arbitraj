@@ -1,3 +1,4 @@
+use crate::error::ErrorCode;
 use anyhow::{bail, Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Client, Response, StatusCode};
@@ -104,7 +105,6 @@ impl EsiClient {
         Ok(())
     }
 
-
     /// Fetches all paginated items from an ESI endpoint.
     /// Checks `x-pages` header on page 1 and fetches subsequent pages concurrently.
     /// Respects the ESI `Expires` header (300s TTL). When fresh, returns cached data.
@@ -184,42 +184,96 @@ impl EsiClient {
                     let status = r.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
                         if attempts > MAX_NETWORK_RETRIES {
+                            tracing::error!(
+                                error_code = %ErrorCode::ErrEsiRateLimited,
+                                url = %url,
+                                status = %status,
+                                attempts = attempts,
+                                "ESI page 1 rate limited; aborted after maximum retry attempts"
+                            );
                             bail!(
                                 "ESI page 1 rate limited; aborted after {} attempts",
                                 attempts
                             );
                         }
-                        eprintln!(
-                            " [ESI] Page 1 rate limited ({}). Backing off for {:?}...",
-                            status, backoff
+                        tracing::warn!(
+                            error_code = %ErrorCode::ErrEsiRateLimited,
+                            url = %url,
+                            status = %status,
+                            attempts = attempts,
+                            backoff = ?backoff,
+                            "ESI page 1 rate limited ({}). Backing off for {:?}...",
+                            status,
+                            backoff
                         );
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(10));
                         continue;
                     } else if status.is_server_error() {
                         if attempts > MAX_NETWORK_RETRIES {
+                            tracing::error!(
+                                error_code = %ErrorCode::ErrEsiServerError,
+                                url = %url,
+                                status = %status,
+                                attempts = attempts,
+                                "ESI page 1 server error ({}); aborted after maximum retry attempts",
+                                status
+                            );
                             bail!(
                                 "ESI page 1 server error ({}); aborted after {} attempts",
                                 status,
                                 attempts
                             );
                         }
+                        tracing::warn!(
+                            error_code = %ErrorCode::ErrEsiServerError,
+                            url = %url,
+                            status = %status,
+                            attempts = attempts,
+                            backoff = ?backoff,
+                            "ESI page 1 server error ({}). Retrying...",
+                            status
+                        );
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(10));
                         continue;
                     } else if !status.is_success() {
+                        tracing::error!(
+                            error_code = %ErrorCode::ErrEsiClientError,
+                            url = %url,
+                            status = %status,
+                            "ESI page 1 request failed with HTTP error status: {}",
+                            status
+                        );
                         bail!("Failed to fetch page 1: status {}", status);
                     }
                     break r;
                 }
                 Err(e) => {
                     if attempts > MAX_NETWORK_RETRIES {
+                        tracing::error!(
+                            error_code = %ErrorCode::ErrEsiNetworkFailed,
+                            url = %url,
+                            attempts = attempts,
+                            error = %e,
+                            "ESI page 1 request failed permanently after {} retries: {}",
+                            attempts,
+                            e
+                        );
                         bail!(
                             "ESI page 1 request failed after {} retries: {}",
                             attempts,
                             e
                         );
                     }
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiNetworkFailed,
+                        url = %url,
+                        attempts = attempts,
+                        error = %e,
+                        "ESI page 1 network error, retrying in {:?}...",
+                        backoff
+                    );
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(10));
                 }
@@ -254,6 +308,12 @@ impl EsiClient {
             .unwrap_or(1);
 
         if raw_pages > MAX_PAGES_LIMIT {
+            tracing::error!(
+                error_code = %ErrorCode::ErrEsiParseFailed,
+                url = %url,
+                raw_pages = raw_pages,
+                "ESI response exceeded maximum safe pagination limit"
+            );
             bail!(
                 "ESI response exceeded maximum safe pagination limit ({} pages; limit is {})",
                 raw_pages,
@@ -264,6 +324,15 @@ impl EsiClient {
 
         let body_text = resp.text().await?;
         let mut all_items: Vec<T> = serde_json::from_str(&body_text)
+            .map_err(|e| {
+                tracing::error!(
+                    error_code = %ErrorCode::ErrEsiParseFailed,
+                    url = %url,
+                    error = %e,
+                    "Failed to parse JSON array from ESI page 1"
+                );
+                e
+            })
             .with_context(|| format!("Failed to parse JSON array from {}", url))?;
 
         if total_pages > 1 {
@@ -296,21 +365,39 @@ impl EsiClient {
                                 if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420
                                 {
                                     if attempts > MAX_NETWORK_RETRIES {
+                                        tracing::error!(
+                                            error_code = %ErrorCode::ErrEsiRateLimited,
+                                            page = page,
+                                            url = %u,
+                                            attempts = attempts,
+                                            "ESI page rate limit aborted after maximum attempts"
+                                        );
                                         bail!(
                                             "Page {} rate limited; aborted after {} attempts",
                                             page,
                                             attempts
                                         );
                                     }
-                                    eprintln!(
-                                        " [ESI] Page {} rate limited ({}). Retrying in {:?}...",
-                                        page, status, page_backoff
+                                    tracing::warn!(
+                                        error_code = %ErrorCode::ErrEsiRateLimited,
+                                        page = page,
+                                        status = %status,
+                                        backoff = ?page_backoff,
+                                        "ESI page rate limited, backing off"
                                     );
                                     tokio::time::sleep(page_backoff).await;
                                     page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
                                     continue;
                                 } else if status.is_server_error() {
                                     if attempts > MAX_NETWORK_RETRIES {
+                                        tracing::error!(
+                                            error_code = %ErrorCode::ErrEsiServerError,
+                                            page = page,
+                                            url = %u,
+                                            status = %status,
+                                            attempts = attempts,
+                                            "ESI page server error aborted after maximum attempts"
+                                        );
                                         bail!(
                                             "Page {} server error ({}); aborted after {} attempts",
                                             page,
@@ -318,16 +405,36 @@ impl EsiClient {
                                             attempts
                                         );
                                     }
+                                    tracing::warn!(
+                                        error_code = %ErrorCode::ErrEsiServerError,
+                                        page = page,
+                                        status = %status,
+                                        "ESI page server error, retrying"
+                                    );
                                     tokio::time::sleep(page_backoff).await;
                                     page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
                                     continue;
                                 } else if !status.is_success() {
+                                    tracing::error!(
+                                        error_code = %ErrorCode::ErrEsiClientError,
+                                        page = page,
+                                        status = %status,
+                                        "ESI page failed with HTTP error"
+                                    );
                                     bail!("Page {} failed with status {}", page, status);
                                 }
                                 break r.text().await?;
                             }
                             Err(e) => {
                                 if attempts > MAX_NETWORK_RETRIES {
+                                    tracing::error!(
+                                        error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                        page = page,
+                                        url = %u,
+                                        attempts = attempts,
+                                        error = %e,
+                                        "ESI page request failed permanently after retries"
+                                    );
                                     bail!(
                                         "Page {} request failed after {} retries: {}",
                                         page,
@@ -335,12 +442,26 @@ impl EsiClient {
                                         e
                                     );
                                 }
+                                tracing::warn!(
+                                    error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                    page = page,
+                                    error = %e,
+                                    "ESI page network error, retrying"
+                                );
                                 tokio::time::sleep(page_backoff).await;
                                 page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
                             }
                         }
                     };
-                    let page_items: Vec<T> = serde_json::from_str(&text)?;
+                    let page_items: Vec<T> = serde_json::from_str(&text).map_err(|e| {
+                        tracing::error!(
+                            error_code = %ErrorCode::ErrEsiParseFailed,
+                            page = page,
+                            error = %e,
+                            "Failed to parse JSON array from ESI page"
+                        );
+                        e
+                    })?;
                     Ok::<Vec<T>, anyhow::Error>(page_items)
                 }));
             }

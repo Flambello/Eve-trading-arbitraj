@@ -16,4 +16,3 @@ pub fn format_unit_price(val: f64) -> String {
         format!("{:.2}", val)
     }
 }
-

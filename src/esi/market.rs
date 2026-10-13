@@ -19,9 +19,21 @@ pub async fn fetch_region_market_opts(
     let endpoint = format!("/markets/{}/orders/", region_id);
     let query = vec![("order_type", "all".to_string())];
 
-    let raw_orders: Vec<MarketOrder> = client
+    let raw_orders: Vec<MarketOrder> = match client
         .get_all_pages_opts(&endpoint, &query, force_refresh)
-        .await?;
+        .await
+    {
+        Ok(orders) => orders,
+        Err(e) => {
+            tracing::error!(
+                error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
+                region_id = region_id,
+                error = %e,
+                "Failed to stream market orders for region"
+            );
+            return Err(e);
+        }
+    };
 
     let mut sell_orders: HashMap<u32, Vec<MarketOrder>> = HashMap::new();
     let mut buy_orders: HashMap<u32, Vec<MarketOrder>> = HashMap::new();
@@ -77,8 +89,27 @@ pub async fn fetch_markets_opts(
 
     let mut result = HashMap::new();
     while let Some(res) = tasks.join_next().await {
-        let (rid, market) = res??;
-        result.insert(rid, market);
+        match res {
+            Ok(Ok((rid, market))) => {
+                result.insert(rid, market);
+            }
+            Ok(Err(e)) => {
+                tracing::error!(
+                    error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
+                    error = %e,
+                    "Regional market fetch task returned error"
+                );
+                return Err(e);
+            }
+            Err(join_err) => {
+                tracing::error!(
+                    error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                    error = %join_err,
+                    "Regional market fetch task panicked or aborted"
+                );
+                return Err(join_err.into());
+            }
+        }
     }
 
     Ok(result)

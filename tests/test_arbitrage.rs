@@ -269,8 +269,16 @@ mod tests {
             ..dst_sub10.clone()
         };
         assert!(
-            calculate_deal(34, &item, &src_boundary, &dst_9_99, &zero_fee_cfg, &sde, &graph)
-                .is_none(),
+            calculate_deal(
+                34,
+                &item,
+                &src_boundary,
+                &dst_9_99,
+                &zero_fee_cfg,
+                &sde,
+                &graph
+            )
+            .is_none(),
             "Deal with 9.99% net ROI must be rejected by 10.0% invariant"
         );
 
@@ -279,9 +287,16 @@ mod tests {
             price: 110.00,
             ..dst_sub10.clone()
         };
-        let deal_10_00 =
-            calculate_deal(34, &item, &src_boundary, &dst_10_00, &zero_fee_cfg, &sde, &graph)
-                .expect("Deal with exactly 10.00% net ROI must be accepted");
+        let deal_10_00 = calculate_deal(
+            34,
+            &item,
+            &src_boundary,
+            &dst_10_00,
+            &zero_fee_cfg,
+            &sde,
+            &graph,
+        )
+        .expect("Deal with exactly 10.00% net ROI must be accepted");
         assert!((deal_10_00.net_profit_pct - 10.0).abs() < 1e-4);
 
         // 10.01% ROI (110.01 sell price) -> must be accepted
@@ -290,8 +305,16 @@ mod tests {
             ..dst_sub10.clone()
         };
         assert!(
-            calculate_deal(34, &item, &src_boundary, &dst_10_01, &zero_fee_cfg, &sde, &graph)
-                .is_some(),
+            calculate_deal(
+                34,
+                &item,
+                &src_boundary,
+                &dst_10_01,
+                &zero_fee_cfg,
+                &sde,
+                &graph
+            )
+            .is_some(),
             "Deal with 10.01% net ROI must be accepted"
         );
     }
@@ -649,7 +672,10 @@ mod tests {
 
         // Negative, zero, and non-finite ROI edge cases:
         deal.net_profit_pct = -10.0;
-        assert!(!deal.is_high_roi(), "Negative ROI must NOT qualify as high ROI");
+        assert!(
+            !deal.is_high_roi(),
+            "Negative ROI must NOT qualify as high ROI"
+        );
 
         deal.net_profit_pct = 0.0;
         assert!(!deal.is_high_roi(), "0.0% ROI must NOT qualify as high ROI");
@@ -1570,12 +1596,24 @@ mod tests {
         // When include_npc is true, all deals must be retained
         let all_deals = filter_deals_by_npc_status(&deals, true);
         assert_eq!(all_deals.len(), 4);
-        assert_eq!(all_deals.iter().map(|d| d.source_order_id).collect::<Vec<_>>(), vec![1001, 1002, 1003, 1004]);
+        assert_eq!(
+            all_deals
+                .iter()
+                .map(|d| d.source_order_id)
+                .collect::<Vec<_>>(),
+            vec![1001, 1002, 1003, 1004]
+        );
 
         // When include_npc is false, NPC trades must be excluded
         let player_deals = filter_deals_by_npc_status(&deals, false);
         assert_eq!(player_deals.len(), 2);
-        assert_eq!(player_deals.iter().map(|d| d.source_order_id).collect::<Vec<_>>(), vec![1001, 1003]);
+        assert_eq!(
+            player_deals
+                .iter()
+                .map(|d| d.source_order_id)
+                .collect::<Vec<_>>(),
+            vec![1001, 1003]
+        );
         assert!(player_deals.iter().all(|d| !d.is_npc_trade));
 
         // Edge case: empty input slice
@@ -1584,4 +1622,3 @@ mod tests {
         assert!(filter_deals_by_npc_status(&empty_deals, false).is_empty());
     }
 }
-

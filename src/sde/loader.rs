@@ -1,3 +1,4 @@
+use crate::error::ErrorCode;
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -178,6 +179,15 @@ pub struct SdeLoader {
     item_cache: Mutex<HashMap<u32, Option<ItemInfo>>>,
 }
 
+type PreloadedStaticTables = (
+    HashMap<u64, String>,
+    HashMap<u64, u32>,
+    HashMap<u32, String>,
+    HashMap<u32, u32>,
+    HashMap<u32, f64>,
+    HashMap<u32, String>,
+);
+
 impl SdeLoader {
     pub async fn open(db_path: impl AsRef<Path>, max_age_days: u32) -> Result<Self> {
         let db_path = db_path.as_ref();
@@ -271,6 +281,12 @@ impl SdeLoader {
                 conn.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1")?;
             let count: i64 = stmt.query_row(params![table], |r| r.get(0)).unwrap_or(0);
             if count == 0 {
+                tracing::error!(
+                    error_code = %ErrorCode::ErrSdeSchemaInvalid,
+                    table = table,
+                    "SDE database missing essential universe table: {}",
+                    table
+                );
                 bail!("SDE database missing essential universe table: {}", table);
             }
         }
@@ -278,6 +294,10 @@ impl SdeLoader {
         let mut stmt = conn.prepare("SELECT count(*) FROM mapSolarSystems")?;
         let count: i64 = stmt.query_row([], |r| r.get(0)).unwrap_or(0);
         if count == 0 {
+            tracing::error!(
+                error_code = %ErrorCode::ErrSdeSchemaInvalid,
+                "SDE database contains 0 solar systems in mapSolarSystems"
+            );
             bail!("SDE database contains 0 solar systems in mapSolarSystems");
         }
 
@@ -392,7 +412,10 @@ impl SdeLoader {
     }
 
     /// Decompress a gzip stream to a destination path, enforcing maximum decompression safety limit and SQLite header validation.
-    pub fn decompress_and_validate_archive<R: Read>(mut reader: R, dest_path: &Path) -> Result<u64> {
+    pub fn decompress_and_validate_archive<R: Read>(
+        mut reader: R,
+        dest_path: &Path,
+    ) -> Result<u64> {
         let decoder = GzDecoder::new(&mut reader);
         let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
 
@@ -410,6 +433,12 @@ impl SdeLoader {
             total_decompressed += bytes_read as u64;
             if total_decompressed > MAX_DECOMPRESSED_SDE_BYTES {
                 let _ = std::fs::remove_file(&temp_db_path);
+                tracing::error!(
+                    error_code = %ErrorCode::ErrSdeDecompressionBomb,
+                    max_limit = MAX_DECOMPRESSED_SDE_BYTES,
+                    total_decompressed = total_decompressed,
+                    "SDE decompression bomb detected: exceeded safety ceiling"
+                );
                 bail!(
                     "SDE decompression aborted: exceeded maximum safety threshold of {} bytes (potential decompression bomb)",
                     MAX_DECOMPRESSED_SDE_BYTES
@@ -427,6 +456,10 @@ impl SdeLoader {
             check_file.read_exact(&mut header)?;
             if &header != b"SQLite format 3\0" {
                 let _ = std::fs::remove_file(&temp_db_path);
+                tracing::error!(
+                    error_code = %ErrorCode::ErrSdeDecompressionFailed,
+                    "Downloaded file does not contain a valid SQLite database header"
+                );
                 bail!("Downloaded file does not contain a valid SQLite database header");
             }
         }
@@ -505,7 +538,8 @@ impl SdeLoader {
 
         println!(" [SDE] Decompressing gzip archive into SQLite database...");
         let compressed_file = File::open(&temp_gz_path)?;
-        let decomp_res = Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
+        let decomp_res =
+            Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
         if let Err(e) = decomp_res {
             let _ = std::fs::remove_file(&temp_gz_path);
             return Err(e);
@@ -516,16 +550,7 @@ impl SdeLoader {
         Ok(())
     }
 
-    fn preload_static_tables(
-        conn: &Connection,
-    ) -> (
-        HashMap<u64, String>,
-        HashMap<u64, u32>,
-        HashMap<u32, String>,
-        HashMap<u32, u32>,
-        HashMap<u32, f64>,
-        HashMap<u32, String>,
-    ) {
+    fn preload_static_tables(conn: &Connection) -> PreloadedStaticTables {
         let mut station_names = HashMap::new();
         let mut station_systems = HashMap::new();
         let mut system_names = HashMap::new();
@@ -533,7 +558,9 @@ impl SdeLoader {
         let mut system_securities = HashMap::new();
         let mut region_names = HashMap::new();
 
-        if let Ok(mut stmt) = conn.prepare("SELECT stationID, stationName, solarSystemID FROM staStations") {
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT stationID, stationName, solarSystemID FROM staStations")
+        {
             if let Ok(mut rows) = stmt.query([]) {
                 while let Ok(Some(row)) = rows.next() {
                     if let (Ok(sta_id), Ok(raw_name), Ok(sys_id)) = (
@@ -548,7 +575,9 @@ impl SdeLoader {
             }
         }
 
-        if let Ok(mut stmt) = conn.prepare("SELECT solarSystemID, solarSystemName, security, regionID FROM mapSolarSystems") {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT solarSystemID, solarSystemName, security, regionID FROM mapSolarSystems",
+        ) {
             if let Ok(mut rows) = stmt.query([]) {
                 while let Ok(Some(row)) = rows.next() {
                     if let (Ok(sys_id), Ok(sys_name), Ok(sec), Ok(reg_id)) = (
@@ -568,10 +597,9 @@ impl SdeLoader {
         if let Ok(mut stmt) = conn.prepare("SELECT regionID, regionName FROM mapRegions") {
             if let Ok(mut rows) = stmt.query([]) {
                 while let Ok(Some(row)) = rows.next() {
-                    if let (Ok(reg_id), Ok(reg_name)) = (
-                        row.get::<_, u32>(0),
-                        row.get::<_, String>(1),
-                    ) {
+                    if let (Ok(reg_id), Ok(reg_name)) =
+                        (row.get::<_, u32>(0), row.get::<_, String>(1))
+                    {
                         region_names.insert(reg_id, reg_name);
                     }
                 }
@@ -612,19 +640,20 @@ impl SdeLoader {
         };
 
         let mut stmt = conn.prepare_cached(query).ok()?;
-        let info = stmt.query_row(params![type_id], |row| {
-            let vol: f64 = row.get(2)?;
-            let pub_flag: i64 = row.get(5)?;
-            Ok(ItemInfo {
-                type_id: row.get(0)?,
-                name: row.get(1)?,
-                packaged_volume: if vol <= 0.0 { 0.01 } else { vol },
-                group_id: row.get(3)?,
-                category_id: row.get(4)?,
-                published: pub_flag == 1,
+        let info = stmt
+            .query_row(params![type_id], |row| {
+                let vol: f64 = row.get(2)?;
+                let pub_flag: i64 = row.get(5)?;
+                Ok(ItemInfo {
+                    type_id: row.get(0)?,
+                    name: row.get(1)?,
+                    packaged_volume: if vol <= 0.0 { 0.01 } else { vol },
+                    group_id: row.get(3)?,
+                    category_id: row.get(4)?,
+                    published: pub_flag == 1,
+                })
             })
-        })
-        .ok();
+            .ok();
 
         if let Ok(mut cache) = self.item_cache.lock() {
             cache.insert(type_id, info.clone());
@@ -844,7 +873,6 @@ impl SdeLoader {
             .ok()?;
         stmt.query_row(params![region_id], |row| row.get(0)).ok()
     }
-
 
     /// Loads all solar systems from the `mapSolarSystems` SDE table into in-memory [`SystemNode`] structures.
     pub fn all_systems(&self) -> Result<Vec<SystemNode>> {

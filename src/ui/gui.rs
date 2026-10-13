@@ -246,8 +246,14 @@ pub const CORP_DONATION_RECIPIENT: &str = "Expandabliss";
 /// Format the official in-game donation instruction note for EVE Trade Scout players.
 pub fn format_donation_instructions(amount_millions: Option<u64>) -> String {
     match amount_millions {
-        Some(m) => format!("Send {}M ISK donation to corporation: {}", m, CORP_DONATION_RECIPIENT),
-        None => format!("Send ISK donation to corporation: {}", CORP_DONATION_RECIPIENT),
+        Some(m) => format!(
+            "Send {}M ISK donation to corporation: {}",
+            m, CORP_DONATION_RECIPIENT
+        ),
+        None => format!(
+            "Send ISK donation to corporation: {}",
+            CORP_DONATION_RECIPIENT
+        ),
     }
 }
 
@@ -868,6 +874,12 @@ impl DesktopApp {
                         }
                     }
                     Err(err) => {
+                        tracing::warn!(
+                            error_code = %crate::error::ErrorCode::ErrSsoTokenRefresh,
+                            error = %err,
+                            "EVE SSO background token refresh encountered error: {}",
+                            err
+                        );
                         if err.contains("invalid_grant") || err.contains("revoked") {
                             self.sso_character_name = None;
                             self.sso_character_id = None;
@@ -885,6 +897,15 @@ impl DesktopApp {
                 self.sso_refresh_rx = None;
                 ctx.request_repaint();
             }
+        }
+    }
+
+    /// Syncs in-memory SSO token state (character name, ID, and expiration) with the stored token on disk.
+    pub fn sync_sso_token_from_disk(&mut self) {
+        if let Some(tok) = crate::esi::sso::load_saved_token() {
+            self.sso_character_name = Some(tok.character_name);
+            self.sso_character_id = Some(tok.character_id);
+            self.sso_token_expires_at = Some(tok.expires_at);
         }
     }
 
@@ -1113,6 +1134,11 @@ impl DesktopApp {
             {
                 Ok(r) => r,
                 Err(e) => {
+                    tracing::error!(
+                        error_code = %crate::error::ErrorCode::ErrUiRuntimeInit,
+                        error = %e,
+                        "Failed to start Tokio runtime for market scanner"
+                    );
                     let _ = tx.send(ScanResult::Error(format!(
                         "Failed to start Tokio runtime: {}",
                         e
@@ -1125,6 +1151,11 @@ impl DesktopApp {
                 let home_id = match sde.get_system_id(&home_name) {
                     Some(id) => id,
                     None => {
+                        tracing::warn!(
+                            error_code = %crate::error::ErrorCode::ErrSdeSystemNotFound,
+                            system = %home_name,
+                            "Starting solar system not found in universe database"
+                        );
                         let _ = tx.send(ScanResult::Error(format!(
                             "Solar system '{}' not found in EVE universe database.",
                             home_name
@@ -1136,6 +1167,13 @@ impl DesktopApp {
                 let markets = match fetch_markets_fresh(&esi, &regions).await {
                     Ok(m) => m,
                     Err(e) => {
+                        tracing::error!(
+                            error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
+                            error = %e,
+                            regions = ?regions,
+                            "Market order stream failed across regions: {}",
+                            e
+                        );
                         let _ = tx.send(ScanResult::Error(format!("ESI API Error: {}", e)));
                         return;
                     }
@@ -1216,6 +1254,12 @@ impl eframe::App for DesktopApp {
                             break;
                         }
                         StartupMsg::Error(err) => {
+                            tracing::error!(
+                                error_code = %crate::error::ErrorCode::ErrUiRuntimeInit,
+                                error = %err,
+                                "Application startup sequence failed: {}",
+                                err
+                            );
                             self.startup_progress.error = Some(err);
                             ctx.request_repaint();
                         }
@@ -1323,6 +1367,12 @@ impl eframe::App for DesktopApp {
                     self.selected_deal_idx = None;
                 }
                 ScanResult::Error(err) => {
+                    tracing::error!(
+                        error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
+                        error = %err,
+                        "Market scan failed with error: {}",
+                        err
+                    );
                     self.status_text = format!("[!] {}", err);
                     self.set_toast(format!("Error: {}", err));
                 }
@@ -1340,10 +1390,7 @@ impl eframe::App for DesktopApp {
                 Some(0)
             };
             if count > 0 {
-                self.set_toast(format!(
-                    "Found {} optimized chained trade route(s)!",
-                    count
-                ));
+                self.set_toast(format!("Found {} optimized chained trade route(s)!", count));
             } else {
                 self.set_toast("No chain routes found with current parameters.");
             }
@@ -1369,6 +1416,12 @@ impl eframe::App for DesktopApp {
                         crate::audio::play_high_profit_alert();
                     }
                     Err(err) => {
+                        tracing::error!(
+                            target: "eve_trade_scout",
+                            error_code = %crate::error::ErrorCode::ErrSsoTokenExchange,
+                            error = %err,
+                            "SSO authentication worker reported failure: {err}"
+                        );
                         self.set_toast(format!("SSO Authentication Error: {}", err));
                     }
                 }
@@ -1382,6 +1435,7 @@ impl eframe::App for DesktopApp {
                 self.sso_is_pushing = false;
                 match res {
                     Ok(stops) => {
+                        self.sync_sso_token_from_disk();
                         self.set_toast(format!(
                             "Injected {} waypoint(s) into live EVE client HUD!",
                             stops
@@ -1389,6 +1443,12 @@ impl eframe::App for DesktopApp {
                         crate::audio::play_high_profit_alert();
                     }
                     Err(err) => {
+                        tracing::error!(
+                            target: "eve_trade_scout",
+                            error_code = %crate::error::ErrorCode::ErrSsoAutopilotFailed,
+                            error = %err,
+                            "SSO waypoint injection worker reported failure: {err}"
+                        );
                         self.set_toast(format!("Autopilot injection failed: {}", err));
                     }
                 }
@@ -1404,6 +1464,7 @@ impl eframe::App for DesktopApp {
                 self.sso_location_scan_after = false;
                 match res {
                     Ok(loc) => {
+                        self.sync_sso_token_from_disk();
                         let sys_name_opt = self
                             .sde
                             .as_ref()
@@ -1420,6 +1481,13 @@ impl eframe::App for DesktopApp {
                                 self.start_scan();
                             }
                         } else {
+                            tracing::warn!(
+                                target: "eve_trade_scout",
+                                error_code = %crate::error::ErrorCode::ErrSdeSystemNotFound,
+                                system_id = loc.solar_system_id,
+                                "In-game solar system ID {} detected, but not found in SDE",
+                                loc.solar_system_id
+                            );
                             self.set_toast(format!(
                                 "In-game solar system ID {} detected, but not found in SDE.",
                                 loc.solar_system_id
@@ -1427,6 +1495,12 @@ impl eframe::App for DesktopApp {
                         }
                     }
                     Err(err) => {
+                        tracing::error!(
+                            target: "eve_trade_scout",
+                            error_code = %crate::error::ErrorCode::ErrSsoLocationFailed,
+                            error = %err,
+                            "SSO character location sync worker reported failure: {err}"
+                        );
                         self.set_toast(format!("Location sync error: {}", err));
                     }
                 }
@@ -1452,6 +1526,9 @@ impl eframe::App for DesktopApp {
             || self.sso_is_refreshing_token
         {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else if self.sso_character_name.is_some() {
+            // Keep background token heartbeat and countdown timer alive even when window is idle/unfocused
+            ctx.request_repaint_after(Duration::from_secs(5));
         }
 
         // Auto-refresh timer check
@@ -2997,8 +3074,25 @@ impl DesktopApp {
                         let csv_str = export_deals_to_csv(&export_filtered);
                         copy_to_clipboard(ui, csv_str.clone());
                         let export_path = resolve_csv_export_path("deals_export.csv");
-                        let _ = safe_write_csv(&export_path, &csv_str);
-                        self.set_toast(format!("Exported {} deals to {} & copied to clipboard!", export_filtered.len(), export_path.display()));
+                        match safe_write_csv(&export_path, &csv_str) {
+                            Ok(()) => {
+                                self.set_toast(format!(
+                                    "Exported {} deals to {} & copied to clipboard!",
+                                    export_filtered.len(),
+                                    export_path.display()
+                                ));
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    target: "eve_trade_scout",
+                                    error_code = %crate::error::ErrorCode::ErrUiCsvExport,
+                                    path = %export_path.display(),
+                                    error = %e,
+                                    "Failed to write CSV deals export to disk: {e}"
+                                );
+                                self.set_toast(format!("Failed to export CSV: {e}"));
+                            }
+                        }
                     }
                 });
             });
@@ -4431,8 +4525,25 @@ impl DesktopApp {
                             let csv_str = export_manifests_to_csv(&self.manifests);
                             copy_to_clipboard(ui, csv_str.clone());
                             let export_path = resolve_csv_export_path("manifests_export.csv");
-                            let _ = safe_write_csv(&export_path, &csv_str);
-                            self.set_toast(format!("Exported {} manifests to {} & copied to clipboard!", self.manifests.len(), export_path.display()));
+                            match safe_write_csv(&export_path, &csv_str) {
+                                Ok(()) => {
+                                    self.set_toast(format!(
+                                        "Exported {} manifests to {} & copied to clipboard!",
+                                        self.manifests.len(),
+                                        export_path.display()
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        target: "eve_trade_scout",
+                                        error_code = %crate::error::ErrorCode::ErrUiCsvExport,
+                                        path = %export_path.display(),
+                                        error = %e,
+                                        "Failed to write CSV manifests export to disk: {e}"
+                                    );
+                                    self.set_toast(format!("Failed to export CSV: {e}"));
+                                }
+                            }
                         }
                     });
                 });
@@ -6524,13 +6635,26 @@ impl DesktopApp {
                 filtered_deals.iter().enumerate().collect();
             let csv_str = export_deals_to_csv(&deals_for_csv);
             let export_path = resolve_csv_export_path("hub_arbitrage_export.csv");
-            let _ = safe_write_csv(&export_path, &csv_str);
+            match safe_write_csv(&export_path, &csv_str) {
+                Ok(()) => {
+                    action_toast = Some(format!(
+                        "Exported {} hub deals to {} & copied to clipboard!",
+                        filtered_deals.len(),
+                        export_path.display()
+                    ));
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %crate::error::ErrorCode::ErrUiCsvExport,
+                        path = %export_path.display(),
+                        error = %e,
+                        "Failed to write hub CSV export to disk: {e}"
+                    );
+                    action_toast = Some(format!("Failed to export CSV: {e}"));
+                }
+            }
             copy_to_clipboard(ui, csv_str);
-            action_toast = Some(format!(
-                "Exported {} hub deals to {} & copied to clipboard!",
-                filtered_deals.len(),
-                export_path.display()
-            ));
         }
 
         // 2. Corridor Telemetry & KPI Banner

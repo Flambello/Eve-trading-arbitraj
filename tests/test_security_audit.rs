@@ -275,13 +275,22 @@ fn test_decompression_bomb_guard_stops_excessive_stream() {
     let mut compressed_invalid = Vec::new();
     encoder.read_to_end(&mut compressed_invalid).unwrap();
 
-    let err = SdeLoader::decompress_and_validate_archive(Cursor::new(compressed_invalid), &temp_out);
-    assert!(err.is_err(), "Decompressing invalid SQLite database must return Err");
+    let err =
+        SdeLoader::decompress_and_validate_archive(Cursor::new(compressed_invalid), &temp_out);
     assert!(
-        err.unwrap_err().to_string().contains("valid SQLite database header"),
+        err.is_err(),
+        "Decompressing invalid SQLite database must return Err"
+    );
+    assert!(
+        err.unwrap_err()
+            .to_string()
+            .contains("valid SQLite database header"),
         "Must detect invalid SQLite header"
     );
-    assert!(!temp_out.exists(), "Target database file must not exist on header failure");
+    assert!(
+        !temp_out.exists(),
+        "Target database file must not exist on header failure"
+    );
 
     // 2. Real production decompression bomb guard:
     // Compress a stream of zeros that exceeds MAX_DECOMPRESSED_SDE_BYTES (2 GB).
@@ -292,16 +301,26 @@ fn test_decompression_bomb_guard_stops_excessive_stream() {
     let mut compressed_bomb = Vec::new();
     bomb_encoder.read_to_end(&mut compressed_bomb).unwrap();
 
-    let bomb_err = SdeLoader::decompress_and_validate_archive(Cursor::new(compressed_bomb), &temp_out);
-    assert!(bomb_err.is_err(), "Decompressing oversized stream must return Err");
+    let bomb_err =
+        SdeLoader::decompress_and_validate_archive(Cursor::new(compressed_bomb), &temp_out);
+    assert!(
+        bomb_err.is_err(),
+        "Decompressing oversized stream must return Err"
+    );
     let bomb_msg = bomb_err.unwrap_err().to_string();
     assert!(
         bomb_msg.contains("potential decompression bomb"),
         "Error message must indicate decompression bomb abort: {}",
         bomb_msg
     );
-    assert!(!temp_out.exists(), "Database file must not be left behind after decompression bomb abort");
-    assert!(!temp_out.with_extension("sqlite.part").exists(), "Partial part file must be cleaned up");
+    assert!(
+        !temp_out.exists(),
+        "Database file must not be left behind after decompression bomb abort"
+    );
+    assert!(
+        !temp_out.with_extension("sqlite.part").exists(),
+        "Partial part file must be cleaned up"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -360,7 +379,10 @@ fn test_sanitize_sso_error() {
 
     // Replaces newlines and carriage returns
     let multiline_err = "Error line 1\r\nError line 2";
-    assert_eq!(sanitize_sso_error(multiline_err), "Error line 1  Error line 2");
+    assert_eq!(
+        sanitize_sso_error(multiline_err),
+        "Error line 1  Error line 2"
+    );
 
     // Truncates overly long strings
     let long_err = "a".repeat(500);

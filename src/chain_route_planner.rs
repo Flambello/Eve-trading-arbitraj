@@ -1037,7 +1037,14 @@ pub fn find_chain_routes(
                         if sys_id == src_sys || sys_id == dst_sys {
                             continue;
                         }
-                        let detour = detour_cost_with_direct(src_sys, sys_id, dst_sys, direct_jumps, graph, config.safe_only);
+                        let detour = detour_cost_with_direct(
+                            src_sys,
+                            sys_id,
+                            dst_sys,
+                            direct_jumps,
+                            graph,
+                            config.safe_only,
+                        );
                         if config.detour_enabled {
                             if detour <= config.max_detour_jumps {
                                 candidates_enroute.push((sys_id, detour, sys_deals));

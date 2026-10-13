@@ -239,6 +239,12 @@ async fn main() -> Result<()> {
             let sde = match SdeLoader::open(&sde_path_clone, sde_max_age_days).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %eve_trade_scout::error::ErrorCode::ErrSdeNotFound,
+                        error = %e,
+                        "Failed to load SDE database during startup: {e}"
+                    );
                     let _ = startup_tx.send(ui::StartupMsg::Error(format!(
                         "Failed to load SDE database: {}",
                         e
@@ -265,6 +271,12 @@ async fn main() -> Result<()> {
             let graph = match SystemGraph::from_sde(&sde) {
                 Ok(g) => Arc::new(g),
                 Err(e) => {
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %eve_trade_scout::error::ErrorCode::ErrGraphBuildFailed,
+                        error = %e,
+                        "Failed to construct stargate network during startup: {e}"
+                    );
                     let _ = startup_tx.send(ui::StartupMsg::Error(format!(
                         "Failed to construct stargate network: {}",
                         e
@@ -312,6 +324,12 @@ async fn main() -> Result<()> {
             let esi = match EsiClient::new(&cache_dir_clone) {
                 Ok(c) => Arc::new(c),
                 Err(e) => {
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %eve_trade_scout::error::ErrorCode::ErrEsiClientInit,
+                        error = %e,
+                        "Failed to initialize ESI API client during startup: {e}"
+                    );
                     let _ = startup_tx.send(ui::StartupMsg::Error(format!(
                         "Failed to initialize ESI API client: {}",
                         e
@@ -323,6 +341,12 @@ async fn main() -> Result<()> {
             let markets = match fetch_markets_fresh(&esi, &scan_regions).await {
                 Ok(m) => m,
                 Err(e) => {
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %eve_trade_scout::error::ErrorCode::ErrEsiNetworkFailed,
+                        error = %e,
+                        "Failed to fetch initial ESI regional market data during startup: {e}"
+                    );
                     let _ = startup_tx.send(ui::StartupMsg::Error(format!(
                         "Failed to fetch ESI market data: {}",
                         e
@@ -413,8 +437,15 @@ async fn main() -> Result<()> {
             startup_rx,
         );
 
-        ui::run_desktop_gui(app)
-            .map_err(|e| anyhow::anyhow!("Desktop GUI runtime error: {}", e))?;
+        if let Err(e) = ui::run_desktop_gui(app) {
+            tracing::error!(
+                target: "eve_trade_scout",
+                error_code = %eve_trade_scout::error::ErrorCode::ErrUiRuntimeInit,
+                error = %e,
+                "Desktop GUI runtime error: {e}"
+            );
+            return Err(anyhow::anyhow!("Desktop GUI runtime error: {}", e));
+        }
         return Ok(());
     }
 
@@ -581,7 +612,6 @@ async fn main() -> Result<()> {
 }
 
 use eve_trade_scout::ui::format_unit_price;
-
 
 fn print_cli_summary(
     deals: &[ArbitrageDeal],
@@ -772,8 +802,9 @@ fn export_to_csv(deals: &[ArbitrageDeal], path: &Path) -> Result<()> {
     }
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create parent export directory: {:?}", parent))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create parent export directory: {:?}", parent)
+            })?;
         }
     }
     let mut file = File::create(path)?;

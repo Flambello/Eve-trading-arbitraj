@@ -1,3 +1,4 @@
+use crate::error::ErrorCode;
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -113,38 +114,48 @@ pub fn load_saved_token() -> Option<SsoToken> {
 
 /// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
 pub fn save_token(token: &SsoToken) -> Result<()> {
-    let path = token_storage_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-        #[cfg(unix)]
-        {
-            if let Ok(meta) = std::fs::metadata(parent) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o700);
-                let _ = std::fs::set_permissions(parent, perms);
+    let res = (|| -> Result<()> {
+        let path = token_storage_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            #[cfg(unix)]
+            {
+                if let Ok(meta) = std::fs::metadata(parent) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o700);
+                    let _ = std::fs::set_permissions(parent, perms);
+                }
             }
         }
+        let data = serde_json::to_string_pretty(token)?;
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            let mut perms = file.metadata()?.permissions();
+            perms.set_mode(0o600);
+            let _ = file.set_permissions(perms);
+            file.write_all(data.as_bytes())?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, data)?;
+        }
+        Ok(())
+    })();
+    if let Err(ref e) = res {
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoTokenSave,
+            error = %e,
+            "Failed to securely save SSO token file"
+        );
     }
-    let data = serde_json::to_string_pretty(token)?;
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        let mut perms = file.metadata()?.permissions();
-        perms.set_mode(0o600);
-        let _ = file.set_permissions(perms);
-        file.write_all(data.as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&path, data)?;
-    }
-    Ok(())
+    res
 }
 
 /// Deletes the persisted SSO token from disk.
@@ -315,9 +326,20 @@ pub async fn listen_for_auth_code(
     expected_state: &str,
     timeout_duration: std::time::Duration,
 ) -> Result<String> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .await
-        .with_context(|| format!("Failed to bind local loopback listener on port {}", port))?;
+    let listener = match TcpListener::bind(("127.0.0.1", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(
+                error_code = %ErrorCode::ErrSsoAuthServerFailed,
+                port = port,
+                error = %e,
+                "Failed to bind local loopback listener for SSO OAuth callback"
+            );
+            return Err(e).with_context(|| {
+                format!("Failed to bind local loopback listener on port {}", port)
+            });
+        }
+    };
 
     let listen_fut = async {
         loop {
@@ -458,6 +480,11 @@ pub async fn exchange_code_for_token(
     if !resp.status().is_success() {
         let err_text = resp.text().await.unwrap_or_default();
         let sanitized = sanitize_sso_error(&err_text);
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoTokenExchange,
+            error = %sanitized,
+            "CCP SSO token exchange failed"
+        );
         bail!("CCP SSO token exchange failed: {}", sanitized);
     }
 
@@ -526,11 +553,18 @@ pub async fn ensure_fresh_token(
         let err_text = resp.text().await.unwrap_or_default();
         if err_text.contains("invalid_grant") {
             let _ = delete_saved_token();
-            bail!(
-                "EVE SSO session has expired or was revoked. Please log in again."
+            tracing::error!(
+                error_code = %ErrorCode::ErrSsoTokenRefresh,
+                "EVE SSO session has expired or was revoked"
             );
+            bail!("EVE SSO session has expired or was revoked. Please log in again.");
         }
         let sanitized = sanitize_sso_error(&err_text);
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoTokenRefresh,
+            error = %sanitized,
+            "CCP SSO token refresh failed"
+        );
         bail!("CCP SSO token refresh failed: {}", sanitized);
     }
 
@@ -593,11 +627,18 @@ pub async fn refresh_saved_token_if_needed(
         let err_text = resp.text().await.unwrap_or_default();
         if err_text.contains("invalid_grant") {
             let _ = delete_saved_token();
-            bail!(
-                "EVE SSO session has expired or was revoked. Please log in again."
+            tracing::error!(
+                error_code = %ErrorCode::ErrSsoTokenRefresh,
+                "EVE SSO session has expired or was revoked"
             );
+            bail!("EVE SSO session has expired or was revoked. Please log in again.");
         }
         let sanitized = sanitize_sso_error(&err_text);
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoTokenRefresh,
+            error = %sanitized,
+            "CCP SSO token refresh failed"
+        );
         bail!("CCP SSO token refresh failed: {}", sanitized);
     }
 
@@ -687,6 +728,12 @@ pub async fn push_waypoints_to_client(
 
         if !resp.status().is_success() && resp.status().as_u16() != 204 {
             let err = resp.text().await.unwrap_or_default();
+            tracing::error!(
+                error_code = %ErrorCode::ErrSsoAutopilotFailed,
+                destination_id = dest_id,
+                error = %err,
+                "ESI rejected waypoint injection into client HUD"
+            );
             bail!(
                 "ESI rejected waypoint {} (destination {}): {}",
                 idx + 1,
@@ -787,6 +834,13 @@ pub async fn fetch_character_location(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoLocationFailed,
+            status = %status,
+            character_id = token.character_id,
+            error = %body,
+            "Failed to query live character location from ESI"
+        );
         if status.as_u16() == 403 {
             bail!("Missing required scope 'esi-location.read_location.v1'. Please re-connect character in Settings.");
         }

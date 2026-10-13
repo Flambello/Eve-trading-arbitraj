@@ -193,20 +193,49 @@ impl UserConfig {
     }
 
     pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
+        let path = match Self::config_path() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    error_code = %crate::error::ErrorCode::ErrConfigLoadFailed,
+                    error = %e,
+                    "Failed to determine config directory, using defaults"
+                );
+                return Ok(Self::default());
+            }
+        };
+
         if !path.exists() {
             let default_cfg = Self::default();
-            default_cfg
-                .save()
-                .context("Failed to write default config file")?;
+            let _ = default_cfg.save();
             return Ok(default_cfg);
         }
 
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read config file at {:?}", path))?;
-        let cfg: Self = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse TOML config from {:?}", path))?;
-        Ok(cfg)
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(
+                    error_code = %crate::error::ErrorCode::ErrConfigLoadFailed,
+                    path = ?path,
+                    error = %e,
+                    "Failed to read config file, falling back to defaults"
+                );
+                return Ok(Self::default());
+            }
+        };
+
+        match toml::from_str(&content) {
+            Ok(cfg) => Ok(cfg),
+            Err(e) => {
+                tracing::error!(
+                    error_code = %crate::error::ErrorCode::ErrConfigLoadFailed,
+                    path = ?path,
+                    error = %e,
+                    "Failed to parse TOML configuration from disk, using defaults"
+                );
+                Ok(Self::default())
+            }
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -215,7 +244,15 @@ impl UserConfig {
             fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)?;
-        fs::write(&path, content)?;
+        if let Err(e) = fs::write(&path, content) {
+            tracing::error!(
+                error_code = %crate::error::ErrorCode::ErrConfigSaveFailed,
+                path = ?path,
+                error = %e,
+                "Failed to write configuration file to disk"
+            );
+            return Err(e.into());
+        }
         Ok(())
     }
 

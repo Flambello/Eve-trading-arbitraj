@@ -66,11 +66,14 @@ Eve trading arbitraj/
 │   ├── 07_SETUP_AND_DEPS.md
 │   ├── 08_PACKAGING_AND_PUBLISHING.md
 │   ├── 09_RUST_BEST_PRACTICES_AND_TESTING.md
+│   ├── 10_ERROR_CODES_AND_LOGGING.md
 │   └── rules/session_start.md
 │
 ├── src/
 │   ├── lib.rs                      ← library root (eve_trade_scout crate)
 │   ├── main.rs                     ← binary entry point (eve-merchant executable)
+│   ├── error.rs                    ← centralized ErrorCode enum & error taxonomy
+│   ├── logging.rs                  ← tracing subscriber, file rotation & panic hook
 │   ├── config.rs                   ← ship profiles, user settings (TOML)
 │   ├── esi/
 │   │   ├── mod.rs

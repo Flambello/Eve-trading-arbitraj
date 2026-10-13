@@ -251,18 +251,25 @@ async fn test_sde_search_systems_sql_wildcards_and_injection_resilience() {
     assert!(pct_results.len() <= 3, "Wildcard search must respect limit");
 
     let underscore_results = sde.search_systems("_", 3);
-    assert!(underscore_results.len() <= 3, "Wildcard search must respect limit");
+    assert!(
+        underscore_results.len() <= 3,
+        "Wildcard search must respect limit"
+    );
 
     // 3. SQL injection attempt strings must be sanitized safely via parameterized bindings
     let injection_quotes = sde.search_systems("Jita' OR '1'='1", 5);
     assert!(
-        injection_quotes.is_empty() || injection_quotes.iter().all(|r| r.system_name.contains("Jita")),
+        injection_quotes.is_empty()
+            || injection_quotes
+                .iter()
+                .all(|r| r.system_name.contains("Jita")),
         "SQL injection payload must not bypass query boundaries"
     );
 
     let semicolon_injection = sde.search_systems("Jita; DROP TABLE mapSolarSystems;--", 5);
     assert!(
-        semicolon_injection.is_empty() || semicolon_injection.iter().any(|r| r.system_name == "Jita"),
+        semicolon_injection.is_empty()
+            || semicolon_injection.iter().any(|r| r.system_name == "Jita"),
         "Semicolon SQL payload must execute safely without database error"
     );
     // Verify database remains intact and table was not dropped

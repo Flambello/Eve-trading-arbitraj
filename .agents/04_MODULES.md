@@ -494,6 +494,89 @@ pub fn format_unit_price(val: f64) -> String;
 
 ---
 
+## `src/error.rs`
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCode {
+    // SDE (1001..1008)
+    ErrSdeNotFound,
+    ErrSdeDownloadFailed,
+    ErrSdeDecompressionFailed,
+    ErrSdeDecompressionBomb,
+    ErrSdeSchemaInvalid,
+    ErrSdeQueryFailed,
+    ErrSdeSystemNotFound,
+    ErrSdeStationNotFound,
+
+    // ESI (2001..2007)
+    ErrEsiClientInit,
+    ErrEsiNetworkFailed,
+    ErrEsiRateLimited,
+    ErrEsiServerError,
+    ErrEsiClientError,
+    ErrEsiParseFailed,
+    ErrEsiEtagCache,
+
+    // SSO (3001..3007)
+    ErrSsoConfigInvalid,
+    ErrSsoAuthServerFailed,
+    ErrSsoTokenExchange,
+    ErrSsoTokenRefresh,
+    ErrSsoTokenSave,
+    ErrSsoLocationFailed,
+    ErrSsoAutopilotFailed,
+
+    // Graph (4001..4002)
+    ErrGraphBuildFailed,
+    ErrGraphRouteUnreachable,
+
+    // Arbitrage (5001..5002)
+    ErrArbConfigInvalid,
+    ErrArbZeroCapacity,
+
+    // Config (6001..6002)
+    ErrConfigLoadFailed,
+    ErrConfigSaveFailed,
+
+    // UI (7001..7004)
+    ErrUiRuntimeInit,
+    ErrUiWorkerChannel,
+    ErrUiAudioPlayback,
+    ErrUiCsvExport,
+
+    // System (9001)
+    ErrSysPanic,
+}
+
+impl ErrorCode {
+    pub const fn as_str(&self) -> &'static str;
+    pub const fn code_num(&self) -> u16;
+    pub const fn description(&self) -> &'static str;
+}
+```
+
+---
+
+## `src/logging.rs`
+
+```rust
+use anyhow::Result;
+use std::path::Path;
+use tracing_appender::non_blocking::WorkerGuard;
+
+pub fn init_logging(log_dir: Option<&Path>, default_level: &str) -> Result<WorkerGuard>;
+// Initializes dual-sink tracing subscriber:
+// 1. Stdout ANSI terminal layer with EnvFilter.
+// 2. Daily rolling JSONL file appender in logs/app.log.YYYY-MM-DD.
+// 3. Global panic hook capturing backtraces with ErrorCode::ErrSysPanic.
+```
+
+---
+
 ## `src/main.rs`
 
 ```rust
@@ -538,7 +621,7 @@ async fn main() -> anyhow::Result<()>;
 
 ## Automated Test Suites (`tests/`)
 
-The repository contains 11 dedicated integration test suites providing rigorous test coverage over critical domain logic, invariants, security, and SSO:
+The repository contains 13 dedicated integration test suites providing rigorous test coverage over critical domain logic, invariants, security, SSO, and diagnostics:
 
 | Suite | File | Tests Covered |
 |---|---|---|
@@ -546,9 +629,11 @@ The repository contains 11 dedicated integration test suites providing rigorous 
 | **Chain Route Planner** | `tests/test_chain_route_planner.rs` | Multi-leg chained trade routes, knapsack cargo packing, detour tolerance, beam search candidate exploration, market load limits per destination station. |
 | **Config & Profiles** | `tests/test_config.rs` | Ship profile string parsing (case-insensitivity, aliases, invalid string rejection), `UserConfig` defaults and invariant checks, TOML roundtrip serialization & deserialization. |
 | **Donation Branding** | `tests/test_donation_branding.rs` | In-game ISK donation branding, developer character ID and name verification for tip jar. |
+| **Error Codes Taxonomy** | `tests/test_error_codes.rs` | Taxonomy verification: uniqueness of integer code numbers, valid code ranges (1000..9999), string identifier formatting, JSON serialization/deserialization. |
 | **ESI Models & Deserialization** | `tests/test_esi_models.rs` | JSON order array deserialization, buy vs sell discrimination, `cheapest_sell` and `best_buy` price matching across order books. |
 | **Graph & Pathfinding** | `tests/test_graph.rs` | Solar system security classification (`is_highsec`), Dijkstra jump counting, safe routing bypass around lowsec systems, lowsec destination rejection in safe mode, adjacent region discovery. |
 | **Hub Arbitrage** | `tests/test_hub_arbitrage.rs` | Multi-hub arbitrage matrix across 5 major trade hubs (Jita, Amarr, Dodixie, Rens, Hek), capital allocation, ROI filtering. |
+| **Logging & Diagnostics** | `tests/test_logging.rs` | Initialization of dual-sink logging, file output generation, panic hook interceptor, JSON line schema validation, log retention. |
 | **Route Planner** | `tests/test_route_planner.rs` | Empty deal handling, greedy sequential multi-stop deal chaining, cargo volume and budget accumulation, maximum stop constraint enforcement. |
 | **SDE Search** | `tests/test_sde_search.rs` | Solar system substring and fuzzy search, station name resolution, item type lookup from SQLite. |
 | **Security Audit** | `tests/test_security_audit.rs` | Untrusted input validation, path traversal prevention, CSV injection sanitization, numeric edge cases (NaN/Inf pricing). |

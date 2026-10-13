@@ -3,9 +3,7 @@
 use std::backtrace::Backtrace;
 use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{
-    filter::EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::{filter::EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// RAII Guard that keeps the background log writer thread active.
 /// Ensures all buffered log entries are flushed to disk on shutdown.
@@ -20,8 +18,8 @@ pub fn init_logging(
     log_dir: Option<&Path>,
     default_level: &str,
 ) -> Result<LoggingGuard, Box<dyn std::error::Error + Send + Sync>> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
     // Target 1: Formatted stdout for terminal/developer output
     let stdout_layer = fmt::layer()
@@ -87,6 +85,7 @@ pub fn init_panic_hook() {
         let backtrace = Backtrace::capture();
 
         tracing::error!(
+            error_code = %crate::error::ErrorCode::ErrSysPanic,
             panic_payload = %payload,
             panic_location = %location,
             backtrace = %backtrace,

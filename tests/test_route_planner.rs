@@ -326,21 +326,22 @@ fn test_route_planner_zero_max_stops_and_unreachable_deals() {
     );
 
     // 1. max_stops = 0 returns 0 stops without panicking
-    let route_zero = plan_route(std::slice::from_ref(&d_valid), BIG_HAULER, home, &graph, true, 0);
+    let route_zero = plan_route(
+        std::slice::from_ref(&d_valid),
+        BIG_HAULER,
+        home,
+        &graph,
+        true,
+        0,
+    );
     assert_eq!(route_zero.stops.len(), 0);
     assert_eq!(route_zero.total_profit, 0.0);
     assert_eq!(route_zero.total_jumps, 0);
     assert_eq!(route_zero.waypoints, vec![home]);
 
     // 2. Unreachable deal is pruned; only valid deal is scheduled
-    let route_unreachable = plan_route(
-        &[d_unreachable, d_valid],
-        BIG_HAULER,
-        home,
-        &graph,
-        true,
-        5,
-    );
+    let route_unreachable =
+        plan_route(&[d_unreachable, d_valid], BIG_HAULER, home, &graph, true, 5);
     assert_eq!(route_unreachable.stops.len(), 1);
     assert_eq!(route_unreachable.stops[0].deal.item_name, "Tritanium");
     assert_eq!(route_unreachable.total_profit, 10_000_000.0);

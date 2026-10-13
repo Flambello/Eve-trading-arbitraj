@@ -97,10 +97,7 @@ fn play_sound_internal(sound_theme_id: &str) {
     #[cfg(not(test))]
     {
         // 1. Canberra GTK play (Freedesktop system sound event)
-        if let Ok(status) = Command::new("canberra-gtk-play")
-            .args(&args)
-            .status()
-        {
+        if let Ok(status) = Command::new("canberra-gtk-play").args(&args).status() {
             if status.success() {
                 return;
             }
@@ -127,6 +124,11 @@ fn play_sound_internal(sound_theme_id: &str) {
         }
 
         // 4. Terminal ASCII Bell fallback
+        tracing::warn!(
+            error_code = %crate::error::ErrorCode::ErrUiAudioPlayback,
+            sound_theme_id = sound_theme_id,
+            "System audio player commands failed; fell back to terminal bell"
+        );
         eprint!("\x07");
     }
 }

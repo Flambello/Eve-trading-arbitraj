@@ -98,12 +98,14 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        );
+        if let Err(e) = disable_raw_mode() {
+            tracing::warn!(
+                target: "eve_trade_scout",
+                error = %e,
+                "Failed to disable raw mode on TUI teardown"
+            );
+        }
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
         let _ = execute!(io::stdout(), crossterm::cursor::Show);
     }
 }
@@ -116,6 +118,16 @@ pub fn run_tui(
     safe_only: bool,
     npc_stations_only: bool,
 ) -> Result<()> {
+    tracing::info!(
+        target: "eve_trade_scout",
+        deals_count = deals.len(),
+        ship = %ship.name,
+        home_system = %home_system,
+        safe_only = safe_only,
+        npc_stations_only = npc_stations_only,
+        "Launching TUI interactive terminal session"
+    );
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -137,6 +149,20 @@ pub fn run_tui(
 
     drop(_guard);
     let _ = terminal.show_cursor();
+
+    if let Err(ref e) = res {
+        tracing::error!(
+            target: "eve_trade_scout",
+            error_code = %crate::error::ErrorCode::ErrUiRuntimeInit,
+            error = %e,
+            "TUI terminal session exited with error: {e}"
+        );
+    } else {
+        tracing::info!(
+            target: "eve_trade_scout",
+            "TUI terminal session terminated cleanly"
+        );
+    }
 
     res
 }
@@ -243,7 +269,6 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState) {
 }
 
 use super::format_unit_price;
-
 
 fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
     let header_cells = [

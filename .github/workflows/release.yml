@@ -4,50 +4,131 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build_release_linux:
-    name: Build & Package Linux x86_64 Release
-    runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
-
+  build_linux:
+    name: Build Linux x86_64 Standalone
+    runs-on: ubuntu-22.04
     steps:
-    - name: Install Fedora Build Dependencies
-      run: |
-        dnf install -y git gcc pkg-config rust cargo tar gzip sha256sum
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libxkbcommon-dev desktop-file-utils tar gzip
 
-    - name: Build Optimized Release Binary
-      run: cargo build --release --bin eve-merchant
+      - name: Setup Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
 
-    - name: Package Release Distribution
-      run: |
-        DIST_DIR="eve-traveling-merchant"
-        mkdir -p "$DIST_DIR"
-        cp target/release/eve-merchant "$DIST_DIR/"
-        cp README.md LICENSE CHANGELOG.md "$DIST_DIR/"
-        cp packaging/flatpak/io.github.flambello.eve_merchant.desktop "$DIST_DIR/"
-        cp assets/icons/io.github.flambello.eve_merchant.svg "$DIST_DIR/"
-        cp assets/icons/io.github.flambello.eve_merchant.png "$DIST_DIR/"
-        cp start-gui.sh "$DIST_DIR/"
-        chmod +x "$DIST_DIR/eve-merchant" "$DIST_DIR/start-gui.sh"
+      - name: Validate Desktop Entry File
+        run: desktop-file-validate eve-trade.desktop
 
-        ARCHIVE_NAME="eve-traveling-merchant-linux-x86_64.tar.gz"
-        tar -czf "$ARCHIVE_NAME" "$DIST_DIR"
-        sha256sum "$ARCHIVE_NAME" > SHA256SUMS
+      - name: Build Optimized Release Binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu --bin eve-merchant
 
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          eve-traveling-merchant-linux-x86_64.tar.gz
-          SHA256SUMS
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package Linux Standalone Distribution
+        run: |
+          DIST_DIR="eve-traveling-merchant-linux-x86_64"
+          mkdir -p "$DIST_DIR"
+          cp target/x86_64-unknown-linux-gnu/release/eve-merchant "$DIST_DIR/"
+          cp README.md LICENSE CHANGELOG.md "$DIST_DIR/"
+          cp eve-trade.desktop "$DIST_DIR/"
+          cp assets/icons/io.github.flambello.eve_merchant.svg "$DIST_DIR/"
+          cp assets/icons/io.github.flambello.eve_merchant.png "$DIST_DIR/"
+          cp start-gui.sh "$DIST_DIR/"
+          chmod +x "$DIST_DIR/eve-merchant" "$DIST_DIR/start-gui.sh"
+
+          ARCHIVE_NAME="eve-traveling-merchant-linux-x86_64.tar.gz"
+          tar -czf "$ARCHIVE_NAME" "$DIST_DIR"
+          sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-package
+          path: |
+            eve-traveling-merchant-linux-x86_64.tar.gz
+            eve-traveling-merchant-linux-x86_64.tar.gz.sha256
+          retention-days: 1
+
+  build_windows:
+    name: Build Windows x86_64 Standalone
+    runs-on: windows-2022
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Stable Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Optimized Release Binary
+        run: cargo build --release --target x86_64-pc-windows-msvc --bin eve-merchant
+
+      - name: Package Windows Standalone Distribution
+        shell: pwsh
+        run: |
+          $DistDir = "eve-traveling-merchant-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+          Copy-Item "target\x86_64-pc-windows-msvc\release\eve-merchant.exe" -Destination "$DistDir\"
+          Copy-Item "README.md", "LICENSE", "CHANGELOG.md" -Destination "$DistDir\"
+          Copy-Item "assets\icons\io.github.flambello.eve_merchant.png" -Destination "$DistDir\"
+          Copy-Item "assets\icons\io.github.flambello.eve_merchant.svg" -Destination "$DistDir\"
+
+          $ArchiveName = "eve-traveling-merchant-windows-x86_64.zip"
+          Compress-Archive -Path "$DistDir\*" -DestinationPath $ArchiveName -Force
+
+          $Hash = (Get-FileHash -Path $ArchiveName -Algorithm SHA256).Hash.ToLower()
+          "$Hash  $ArchiveName" | Out-File -Encoding ascii "${ArchiveName}.sha256"
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-package
+          path: |
+            eve-traveling-merchant-windows-x86_64.zip
+            eve-traveling-merchant-windows-x86_64.zip.sha256
+          retention-days: 1
+
+  publish_release:
+    name: Publish Multi-Platform GitHub Release
+    needs: [build_linux, build_windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Download Linux Package Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-package
+
+      - name: Download Windows Package Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64-package
+
+      - name: Aggregate Checksums
+        run: |
+          cat *.sha256 > SHA256SUMS
+          rm -f *.sha256
+          cat SHA256SUMS
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            eve-traveling-merchant-linux-x86_64.tar.gz
+            eve-traveling-merchant-windows-x86_64.zip
+            SHA256SUMS
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -70,9 +70,8 @@ cargo clippy -- -D warnings
 # 4. Formatter
 cargo fmt --check
 
-# 5. Packaging Verification
-desktop-file-validate packaging/flatpak/io.github.flambello.eve_merchant.desktop
-appstreamcli validate --no-net packaging/flatpak/io.github.flambello.eve_merchant.metainfo.xml
+# 5. Desktop Entry Verification
+desktop-file-validate eve-trade.desktop
 ```
 
 ### Writing New Tests

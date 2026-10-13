@@ -10,9 +10,8 @@ as a polished open-source application ready for others to install and use.
 | Method | Who installs it | Command to install | Notes |
 |---|---|---|---|
 | **crates.io** | Any Rust user | `cargo install eve-trade-scout` | Easiest, builds from source |
-| **GitHub Releases** (binary) | Any Linux user | Download & run | Pre-compiled, zero deps |
-| **AppImage** | Any Linux user | `chmod +x && ./EVETradeScout.AppImage` | Universal Linux bundle |
-| **Flatpak** | Fedora / freedesktop users | `flatpak install eve-trade-scout` | Sandboxed, GUI-store friendly |
+| **GitHub Releases** (Linux) | Any Linux user | Download `.tar.gz` & extract | Standalone binary + launcher |
+| **GitHub Releases** (Windows) | Any Windows user | Download `.zip` & extract | Standalone `.exe` binary |
 | **AUR** (Arch) | Arch / Manjaro users | `yay -S eve-trade-scout` | Community maintained |
 | **RPM / DNF** | Fedora users | `dnf install eve-trade-scout` | Native Fedora package |
 
@@ -200,39 +199,20 @@ Add the AppImage build to the GitHub Actions release workflow to attach it to ev
 
 ---
 
-## 4. Flatpak (Flathub & Fedora)
+## 4. Multi-Platform Standalone Bundles (Linux & Windows)
 
-Flatpak is the standard way to distribute GUI apps on Fedora, Flathub, and other
-freedesktop-compatible distros (GNOME Software, KDE Discover).
+The project ships zero-dependency standalone release archives for Linux and Windows:
 
-### Flatpak manifest: `packaging/flatpak/io.github.flambello.eve_merchant.yml`
+### Linux Bundle (`eve-traveling-merchant-linux-x86_64.tar.gz`)
+- Pre-compiled optimized release binary (`eve-merchant`)
+- Native desktop entry (`eve-trade.desktop`) and Freedesktop icons
+- Shell launcher script (`start-gui.sh`)
+- Full documentation and license files
 
-```yaml
-app-id: io.github.flambello.eve_merchant
-runtime: org.freedesktop.Platform
-runtime-version: "24.08"
-sdk: org.freedesktop.Sdk
-sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
-command: eve-merchant
-
-finish-args:
-  - --share=network              # ESI API access
-  - --share=ipc                  # X11 / Wayland IPC
-  - --socket=fallback-x11        # X11 display fallback
-  - --socket=wayland             # Wayland native display
-  - --device=dri                 # Hardware acceleration (glow/egui)
-  - --filesystem=xdg-config/eve-traveling-merchant:create
-  - --filesystem=xdg-cache/eve-traveling-merchant:create
-  - --filesystem=xdg-data/eve-traveling-merchant:create
-
-modules:
-  - name: eve-merchant
-    buildsystem: simple
-    build-commands:
-      - cargo --offline build --release --verbose
-      - install -Dm755 target/release/eve-merchant /app/bin/eve-merchant
-```
+### Windows Bundle (`eve-traveling-merchant-windows-x86_64.zip`)
+- Pre-compiled optimized release executable (`eve-merchant.exe`)
+- Embedded assets, application icons, and documentation
+- Portable zero-install execution directly on Windows 10/11
 
 ---
 

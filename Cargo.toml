@@ -8,7 +8,7 @@ license = "GPL-3.0-or-later"
 readme = "README.md"
 repository = "https://github.com/Flambello/eve-traveling-merchant"
 homepage = "https://github.com/Flambello/eve-traveling-merchant"
-keywords = ["eve-online", "trading", "arbitrage", "route-planner", "flathub"]
+keywords = ["eve-online", "trading", "arbitrage", "route-planner", "cross-platform"]
 categories = ["games", "gui", "command-line-utilities"]
 exclude = [".agents/", "data/", "cache/", "*.sqlite*", "*.bz2", ".github/"]
 

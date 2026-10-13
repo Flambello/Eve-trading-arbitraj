@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests {
     use eve_trade_scout::arbitrage::{
-        calculate_deal, filter_deals_by_order_limit, is_npc_station, prune_redundant_order_deals,
-        ArbitrageConfig, ArbitrageDeal,
+        calculate_deal, filter_deals_by_npc_status, filter_deals_by_order_limit, is_npc_station,
+        prune_redundant_order_deals, ArbitrageConfig, ArbitrageDeal,
     };
     use eve_trade_scout::config::{BIG_HAULER, SMALL_HAULER};
     use eve_trade_scout::esi::models::MarketOrder;
@@ -77,6 +77,55 @@ mod tests {
         assert_eq!(SMALL_HAULER.name, "Small Hauler");
         assert_eq!(SMALL_HAULER.max_volume, 30_000.0);
         assert_eq!(SMALL_HAULER.max_budget, 50_000_000.0);
+
+        // Verify behavioral capacity constraints in calculate_deal
+        let (sde, graph, mut cfg, mut item) = create_test_env();
+        item.packaged_volume = 100.0; // 100 m3 per unit
+
+        let src = MarketOrder {
+            order_id: 1,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 1_000.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+        let dst = MarketOrder {
+            order_id: 2,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 2_000.0,
+            volume_total: 10_000,
+            volume_remain: 10_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+
+        // Big Hauler: 60,000 m3 / 100 m3 = 600 units max
+        cfg.ship = BIG_HAULER;
+        let big_deal = calculate_deal(34, &item, &src, &dst, &cfg, &sde, &graph)
+            .expect("Big hauler deal should calculate");
+        assert_eq!(big_deal.quantity, 600);
+        assert_eq!(big_deal.volume_used, 60_000.0);
+        assert!(big_deal.capital_required <= BIG_HAULER.max_budget);
+
+        // Small Hauler: 30,000 m3 / 100 m3 = 300 units max
+        cfg.ship = SMALL_HAULER;
+        let small_deal = calculate_deal(34, &item, &src, &dst, &cfg, &sde, &graph)
+            .expect("Small hauler deal should calculate");
+        assert_eq!(small_deal.quantity, 300);
+        assert_eq!(small_deal.volume_used, 30_000.0);
+        assert!(small_deal.capital_required <= SMALL_HAULER.max_budget);
     }
 
     #[test]
@@ -202,6 +251,49 @@ mod tests {
         );
         let deal = res_b.unwrap();
         assert_eq!(deal.net_profit_pct, 12.0);
+
+        // Exact 10.0% boundary tests (with zero fees for exact arithmetic precision):
+        let mut zero_fee_cfg = cfg.clone();
+        zero_fee_cfg.broker_fee = 0.0;
+        zero_fee_cfg.sales_tax = 0.0;
+        zero_fee_cfg.min_spread = 0.0;
+
+        let src_boundary = MarketOrder {
+            price: 100.0,
+            ..src.clone()
+        };
+
+        // 9.99% ROI (109.99 sell price) -> must be strictly rejected
+        let dst_9_99 = MarketOrder {
+            price: 109.99,
+            ..dst_sub10.clone()
+        };
+        assert!(
+            calculate_deal(34, &item, &src_boundary, &dst_9_99, &zero_fee_cfg, &sde, &graph)
+                .is_none(),
+            "Deal with 9.99% net ROI must be rejected by 10.0% invariant"
+        );
+
+        // 10.00% ROI (110.00 sell price) -> must be accepted
+        let dst_10_00 = MarketOrder {
+            price: 110.00,
+            ..dst_sub10.clone()
+        };
+        let deal_10_00 =
+            calculate_deal(34, &item, &src_boundary, &dst_10_00, &zero_fee_cfg, &sde, &graph)
+                .expect("Deal with exactly 10.00% net ROI must be accepted");
+        assert!((deal_10_00.net_profit_pct - 10.0).abs() < 1e-4);
+
+        // 10.01% ROI (110.01 sell price) -> must be accepted
+        let dst_10_01 = MarketOrder {
+            price: 110.01,
+            ..dst_sub10.clone()
+        };
+        assert!(
+            calculate_deal(34, &item, &src_boundary, &dst_10_01, &zero_fee_cfg, &sde, &graph)
+                .is_some(),
+            "Deal with 10.01% net ROI must be accepted"
+        );
     }
 
     #[test]
@@ -212,6 +304,20 @@ mod tests {
         assert!(
             is_npc_station(60_011_866),
             "Dodixie IX-20 is an NPC station"
+        );
+
+        // Exact boundary checks:
+        assert!(
+            is_npc_station(999_999_999_999),
+            "999_999_999_999 must be classified as an NPC station"
+        );
+        assert!(
+            !is_npc_station(1_000_000_000_000),
+            "1_000_000_000_000 (Upwell Citadel boundary) must NOT be an NPC station"
+        );
+        assert!(
+            !is_npc_station(0),
+            "Station ID 0 must NOT be classified as an NPC station"
         );
 
         // Player-owned Citadels / Upwell Structures have IDs >= 1_000_000_000_000
@@ -528,11 +634,28 @@ mod tests {
 
         assert!(!deal.is_high_roi(), "35% should not be high ROI");
 
+        // Exact boundary conditions:
+        deal.net_profit_pct = 39.999;
+        assert!(!deal.is_high_roi(), "39.999% must NOT qualify as high ROI");
+
         deal.net_profit_pct = 40.0;
-        assert!(deal.is_high_roi(), "40% should qualify as high ROI");
+        assert!(deal.is_high_roi(), "Exactly 40.0% must qualify as high ROI");
+
+        deal.net_profit_pct = 40.001;
+        assert!(deal.is_high_roi(), "40.001% must qualify as high ROI");
 
         deal.net_profit_pct = 85.5;
         assert!(deal.is_high_roi(), "85.5% should qualify as high ROI");
+
+        // Negative, zero, and non-finite ROI edge cases:
+        deal.net_profit_pct = -10.0;
+        assert!(!deal.is_high_roi(), "Negative ROI must NOT qualify as high ROI");
+
+        deal.net_profit_pct = 0.0;
+        assert!(!deal.is_high_roi(), "0.0% ROI must NOT qualify as high ROI");
+
+        deal.net_profit_pct = f64::NAN;
+        assert!(!deal.is_high_roi(), "NaN ROI must NOT qualify as high ROI");
     }
 
     #[test]
@@ -762,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_npc_trade_deal_detection_and_filtering() {
-        use eve_trade_scout::arbitrage::{calculate_deal, ArbitrageConfig, ArbitrageDeal};
+        use eve_trade_scout::arbitrage::{calculate_deal, ArbitrageConfig};
         use eve_trade_scout::config::BIG_HAULER;
         use eve_trade_scout::esi::models::MarketOrder;
         use eve_trade_scout::graph::SystemGraph;
@@ -810,34 +933,34 @@ mod tests {
 
         // Verify that items in Category 17 that are NOT trade goods (insignias, tags, datacores)
         // and Category 43 (PI) are NOT flagged as NPC trade commodities
-        if let Some(insignia_info) = sde.get_item_info(15587) {
-            // Federation Navy Midshipman Insignia I (Group 409, Category 17)
-            assert_eq!(insignia_info.group_id, 409);
-            assert_eq!(insignia_info.category_id, 17);
-            assert!(
-                !insignia_info.is_npc_trade_commodity(),
-                "Insignias must NOT be flagged as NPC trade commodities"
-            );
-        }
+        let insignia_info = sde
+            .get_item_info(15587)
+            .expect("Federation Navy Midshipman Insignia I must exist in SDE fixtures");
+        assert_eq!(insignia_info.group_id, 409);
+        assert_eq!(insignia_info.category_id, 17);
+        assert!(
+            !insignia_info.is_npc_trade_commodity(),
+            "Insignias must NOT be flagged as NPC trade commodities"
+        );
 
-        if let Some(tag_info) = sde.get_item_info(12304) {
-            // Angel Copper Tag (Group 370, Category 17)
-            assert_eq!(tag_info.group_id, 370);
-            assert_eq!(tag_info.category_id, 17);
-            assert!(
-                !tag_info.is_npc_trade_commodity(),
-                "Pirate criminal tags must NOT be flagged as NPC trade commodities"
-            );
-        }
+        let tag_info = sde
+            .get_item_info(12304)
+            .expect("Angel Copper Tag must exist in SDE fixtures");
+        assert_eq!(tag_info.group_id, 370);
+        assert_eq!(tag_info.category_id, 17);
+        assert!(
+            !tag_info.is_npc_trade_commodity(),
+            "Pirate criminal tags must NOT be flagged as NPC trade commodities"
+        );
 
-        if let Some(pi_info) = sde.get_item_info(9832) {
-            // Coolant (Group 1034, Category 43)
-            assert_eq!(pi_info.category_id, 43);
-            assert!(
-                !pi_info.is_npc_trade_commodity(),
-                "Planetary interaction commodities must NOT be flagged as NPC trade commodities"
-            );
-        }
+        let pi_info = sde
+            .get_item_info(9832)
+            .expect("Coolant must exist in SDE fixtures");
+        assert_eq!(pi_info.category_id, 43);
+        assert!(
+            !pi_info.is_npc_trade_commodity(),
+            "Planetary interaction commodities must NOT be flagged as NPC trade commodities"
+        );
 
         let src_spirits = MarketOrder {
             order_id: 501,
@@ -1070,11 +1193,8 @@ mod tests {
             deal_npc_seeded,
             deal_player,
         ];
-        let hide_npc_trades = true;
-        let filtered: Vec<&ArbitrageDeal> = all_deals
-            .iter()
-            .filter(|d| !hide_npc_trades || !d.is_npc_trade)
-            .collect();
+        // Call production filter function:
+        let filtered = filter_deals_by_npc_status(&all_deals, false);
 
         assert_eq!(
             filtered.len(),
@@ -1401,4 +1521,67 @@ mod tests {
         assert_eq!(filtered[1].0, 11);
         assert_eq!(filtered[2].0, 13);
     }
+
+    #[test]
+    fn test_filter_deals_by_npc_status() {
+        let make_deal_with_npc = |id: u64, is_npc: bool| ArbitrageDeal {
+            type_id: 34,
+            item_name: "Tritanium".to_string(),
+            source_order_id: 1000 + id,
+            dest_order_id: 2000 + id,
+            source_order_volume_remain: 100,
+            dest_order_volume_remain: 100,
+            dest_order_min_volume: 1,
+            is_npc_trade: is_npc,
+            buy_price: 5.0,
+            sell_price: 10.0,
+            spread_pct: 100.0,
+            source_station_id: 101,
+            source_system_id: 30000142,
+            source_system_name: "Jita".to_string(),
+            source_station_name: "Station".to_string(),
+            source_security: 0.95,
+            dest_station_id: 201,
+            dest_system_id: 30000144,
+            dest_system_name: "Perimeter".to_string(),
+            dest_station_name: "Station".to_string(),
+            dest_security: 0.90,
+            quantity: 100,
+            volume_used: 1.0,
+            capital_required: 500.0,
+            gross_profit: 500.0,
+            taxes_and_fees: 50.0,
+            net_profit: 450.0,
+            net_profit_pct: 90.0,
+            jumps_from_home: 0,
+            jumps_source_dest: 1,
+            total_jumps: 1,
+            profit_per_jump: 450.0,
+            profit_per_m3: 450.0,
+        };
+
+        let deals = vec![
+            make_deal_with_npc(1, false),
+            make_deal_with_npc(2, true),
+            make_deal_with_npc(3, false),
+            make_deal_with_npc(4, true),
+        ];
+
+        // When include_npc is true, all deals must be retained
+        let all_deals = filter_deals_by_npc_status(&deals, true);
+        assert_eq!(all_deals.len(), 4);
+        assert_eq!(all_deals.iter().map(|d| d.source_order_id).collect::<Vec<_>>(), vec![1001, 1002, 1003, 1004]);
+
+        // When include_npc is false, NPC trades must be excluded
+        let player_deals = filter_deals_by_npc_status(&deals, false);
+        assert_eq!(player_deals.len(), 2);
+        assert_eq!(player_deals.iter().map(|d| d.source_order_id).collect::<Vec<_>>(), vec![1001, 1003]);
+        assert!(player_deals.iter().all(|d| !d.is_npc_trade));
+
+        // Edge case: empty input slice
+        let empty_deals: Vec<ArbitrageDeal> = Vec::new();
+        assert!(filter_deals_by_npc_status(&empty_deals, true).is_empty());
+        assert!(filter_deals_by_npc_status(&empty_deals, false).is_empty());
+    }
 }
+

@@ -3,7 +3,7 @@ use clap::Parser;
 use eve_trade_scout::arbitrage::{
     bundle_route_cargo, find_deals, sanitize_csv_cell, ArbitrageConfig, ArbitrageDeal,
 };
-use eve_trade_scout::config::{profile_from_str, UserConfig};
+use eve_trade_scout::config::UserConfig;
 use eve_trade_scout::esi::{fetch_markets_fresh, EsiClient};
 use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::route_planner::{plan_route, TradeRoute};
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
         cfg.scan.auto_refresh = true;
     }
 
-    let ship_profile = profile_from_str(&cfg.ship.profile)?;
+    let ship_profile = cfg.ship_profile()?;
 
     println!("╔═══════════════════════════════════════════════════════════════╗");
     println!("║                 EVE TRAVELING MERCHANT                        ║");
@@ -524,15 +524,10 @@ async fn main() -> Result<()> {
     println!(" Found {} profitable trade deals!", deals.len());
     println!();
 
-    let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
-    let launch_gui = (args.gui || (has_display && !args.tui))
-        && !args.no_tui
-        && !args.no_ui
-        && args.export.is_none();
     let is_interactive =
         stdout().is_terminal() && !args.no_tui && !args.no_ui && args.export.is_none();
 
-    if deals.is_empty() && !launch_gui {
+    if deals.is_empty() {
         println!(" No profitable deals met your current filters.");
         println!(" Suggestions:");
         println!(
@@ -581,17 +576,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn format_unit_price(val: f64) -> String {
-    if val >= 1_000_000_000.0 {
-        format!("{:.2}B", val / 1_000_000_000.0)
-    } else if val >= 1_000_000.0 {
-        format!("{:.2}M", val / 1_000_000.0)
-    } else if val >= 1_000.0 {
-        format!("{:.2}k", val / 1_000.0)
-    } else {
-        format!("{:.2}", val)
-    }
-}
+use eve_trade_scout::ui::format_unit_price;
+
 
 fn print_cli_summary(
     deals: &[ArbitrageDeal],

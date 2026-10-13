@@ -109,3 +109,27 @@ fn test_user_config_toml_roundtrip() {
     assert_eq!(parsed.scan.sound_min_roi_pct, 150.0);
     assert_eq!(parsed.filters.min_net_profit_pct, 20.0);
 }
+
+#[test]
+fn test_user_config_toml_rejects_corrupted_syntax_and_types() {
+    // 1. Broken TOML syntax
+    let broken_syntax = "[ship\nprofile = 'big'";
+    assert!(
+        toml::from_str::<UserConfig>(broken_syntax).is_err(),
+        "Must fail deserialization on syntax error"
+    );
+
+    // 2. Type mismatch (number instead of string for ship profile)
+    let type_mismatch = "[ship]\nprofile = 12345";
+    assert!(
+        toml::from_str::<UserConfig>(type_mismatch).is_err(),
+        "Must fail when profile is not a string"
+    );
+
+    // 3. Invalid boolean type
+    let invalid_bool = "[scan]\nsafe_route_only = 'yes'";
+    assert!(
+        toml::from_str::<UserConfig>(invalid_bool).is_err(),
+        "Must fail when boolean field is given as string"
+    );
+}

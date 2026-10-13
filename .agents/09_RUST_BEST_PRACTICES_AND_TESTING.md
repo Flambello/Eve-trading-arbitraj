@@ -62,7 +62,30 @@ If `cargo check` or `cargo test` produces ANY failure or compiler warning:
 
 ---
 
-## 3. Testing Necessities & Test Suites Catalog
+## 3. Testing Integrity Protocol: Zero Fake Tests & Mandatory Root Cause Investigation
+
+The integrity of the automated test suite is paramount. Tests are not merely a verification metric; they are the ironclad barrier preventing logic errors, financial calculation mistakes, and navigation routing hazards for players.
+
+### Rules of Testing Rigor:
+1. **Never Write Fake or Superficial Tests**:
+   - **No Tautological Assertions**: Never assert constants against themselves (`assert_eq!(CONSTANT, "literal")`), assert trivial truth (`assert!(true)`), or discard return values (`let _ = result;`).
+   - **No Testing Mocks Instead of Production Logic**: Never write hand-rolled testing loops or mock copies of functions when the actual production implementation should be invoked. If production code is not directly testable, refactor production code into clean, modular, testable functions.
+   - **No Vacuous Conditional Assertions**: Never wrap assertions inside `if let Some(...)` or conditional guards that can evaluate to false and silently skip execution. If a fixture or record is required, ensure it exists in the test fixture and assert its presence (`.expect(...)`).
+   - **No Test-Bypass Shortcuts in Production Code**: Never insert `#[cfg(test)] return;` or mock early exits in production logic to simulate passing execution without actually executing the code.
+
+2. **Never Weaken or Modify Failing Tests Just to Force a Pass**:
+   - When a test fails or encounters an assertion error, **NEVER**:
+     - Modify the test assertions to lower acceptable thresholds.
+     - Comment out, delete, or bypass failing test cases.
+     - Tamper with expected values to match buggy or broken output.
+
+3. **Mandatory Root Cause Investigation**:
+   - Every test failure represents a real defect in production logic, data modeling, database fixtures, or environment setup.
+   - Contributors and AI agents must investigate the failure down to its root cause, formulate a fix for the underlying production code or database schema, and verify that the original strict assertions pass cleanly.
+
+---
+
+## 4. Testing Necessities & Test Suites Catalog
 
 The codebase enforces full automated test suites across all domain components and invariants. All tests are located in `tests/` and run via `cargo test --verbose` or `make test`.
 
@@ -118,7 +141,7 @@ Whenever adding a new trading filter, formula, or routing mode:
 
 ---
 
-## 4. Release Build Standard
+## 5. Release Build Standard
 
 Production binaries must be built using the release profile:
 ```bash

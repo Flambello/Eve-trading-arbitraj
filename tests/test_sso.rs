@@ -659,3 +659,58 @@ async fn test_ensure_fresh_token_unexpired_skips_network() {
     assert!(res.is_ok(), "Unexpired token must not trigger network call");
     assert_eq!(token.access_token, "active_token");
 }
+
+#[tokio::test]
+async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token;
+
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!("eve_test_token_err_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
+
+    let client = reqwest::Client::new();
+    let mut expired_token = SsoToken {
+        access_token: "expired_access".to_string(),
+        refresh_token: "refresh_secret".to_string(),
+        expires_at: now_secs() - 60, // Expired
+        token_type: "Bearer".to_string(),
+        character_id: 12345,
+        character_name: "Pilot Alpha".to_string(),
+        client_id: None,
+    };
+
+    let res = ensure_fresh_token(&client, "", &mut expired_token).await;
+    assert!(
+        res.is_err(),
+        "Must fail when token is expired and no client ID can be resolved"
+    );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(err_msg.contains("No EVE Application Client ID configured"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
+    use eve_trade_scout::esi::sso::ensure_fresh_token;
+
+    let client = reqwest::Client::new();
+    let mut expired_token = SsoToken {
+        access_token: "expired_access".to_string(),
+        refresh_token: "invalid_refresh_token_payload".to_string(),
+        expires_at: now_secs() - 100, // Expired
+        token_type: "Bearer".to_string(),
+        character_id: 12345,
+        character_name: "Pilot Alpha".to_string(),
+        client_id: Some("mock_client_id".to_string()),
+    };
+
+    let res = ensure_fresh_token(&client, "mock_client_id", &mut expired_token).await;
+    assert!(
+        res.is_err(),
+        "Refreshing expired token with invalid credentials must return Err"
+    );
+}

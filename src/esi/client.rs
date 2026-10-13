@@ -1,7 +1,5 @@
-#![allow(dead_code)]
-
 use anyhow::{bail, Context, Result};
-use reqwest::header::{HeaderMap, HeaderValue, IF_NONE_MATCH, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -53,6 +51,7 @@ pub fn parse_http_expires(resp: &Response, default_ttl_secs: i64) -> chrono::Dat
     parse_http_expires_str(header_val, default_ttl_secs)
 }
 
+#[derive(Clone)]
 pub struct EsiClient {
     client: Client,
     cache_dir: PathBuf,
@@ -104,157 +103,6 @@ impl EsiClient {
         Ok(())
     }
 
-    /// Clears all cached market orders, forcing subsequent market queries to fetch live data from ESI.
-    pub async fn clear_market_cache(&self) {
-        let mut map = self.etags.lock().await;
-        map.retain(|k, _| !k.contains("/markets/"));
-    }
-
-    pub async fn get_json<T: DeserializeOwned>(
-        &self,
-        endpoint: &str,
-        query: &[(&str, String)],
-    ) -> Result<T> {
-        let url = if endpoint.starts_with("http") {
-            endpoint.to_string()
-        } else {
-            format!("{}{}", ESI_BASE, endpoint)
-        };
-
-        // Cache key includes URL and query string
-        let cache_key = if query.is_empty() {
-            url.clone()
-        } else {
-            let q_str = query
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join("&");
-            format!("{}?{}", url, q_str)
-        };
-
-        let cached_entry = {
-            let mut map = self.etags.lock().await;
-            if let Some(entry) = map.get(&cache_key) {
-                if entry.is_fresh() {
-                    Some(entry.clone())
-                } else {
-                    map.remove(&cache_key);
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        let _permit = self.concurrency_sem.acquire().await?;
-
-        let mut req = self.client.get(&url);
-        for (k, v) in query {
-            req = req.query(&[(*k, v)]);
-        }
-
-        if let Some(ref entry) = cached_entry {
-            req = req.header(IF_NONE_MATCH, entry.etag.as_str());
-        }
-
-        let mut backoff = Duration::from_millis(500);
-        let mut attempts = 0u32;
-        let resp: Response = loop {
-            attempts += 1;
-            let req_clone = req.try_clone().context("Failed to clone request")?;
-            match req_clone.send().await {
-                Ok(r) => {
-                    let status = r.status();
-                    if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
-                        if attempts > MAX_NETWORK_RETRIES {
-                            bail!("ESI rate limit hit; aborted after {} attempts", attempts);
-                        }
-                        eprintln!(
-                            " [ESI] Rate limit hit ({}). Backing off for {:?}...",
-                            status, backoff
-                        );
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(60));
-                        continue;
-                    } else if status.is_server_error() {
-                        if attempts > MAX_NETWORK_RETRIES {
-                            bail!(
-                                "ESI server error ({}); aborted after {} attempts",
-                                status,
-                                attempts
-                            );
-                        }
-                        eprintln!(
-                            " [ESI] Server error ({}). Retrying in {:?}...",
-                            status, backoff
-                        );
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(10));
-                        continue;
-                    }
-                    break r;
-                }
-                Err(e) => {
-                    if attempts > MAX_NETWORK_RETRIES {
-                        bail!(
-                            "ESI network request to {} failed after {} retries: {}",
-                            url,
-                            attempts,
-                            e
-                        );
-                    }
-                    eprintln!(" [ESI] Network error: {}. Retrying in {:?}...", e, backoff);
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(10));
-                }
-            }
-        };
-
-        if resp.status() == StatusCode::NOT_MODIFIED {
-            if let Some(entry) = cached_entry {
-                let parsed: T = serde_json::from_str(&entry.body_json)
-                    .context("Failed to deserialize cached ESI response")?;
-                return Ok(parsed);
-            }
-        }
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            let sanitized: String = body
-                .chars()
-                .take(256)
-                .filter(|c| !c.is_control() || *c == ' ')
-                .collect();
-            bail!("ESI error {}: {}", status, sanitized);
-        }
-
-        let expires_at = parse_http_expires(&resp, 300);
-        let etag_hdr = resp
-            .headers()
-            .get("etag")
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string());
-
-        let text = resp.text().await?;
-        let parsed: T = serde_json::from_str(&text)
-            .with_context(|| format!("Failed to parse ESI JSON from {}", url))?;
-
-        if let Some(etag) = etag_hdr {
-            let mut map = self.etags.lock().await;
-            map.insert(
-                cache_key,
-                StoredEtag {
-                    etag,
-                    expires: Some(expires_at),
-                    body_json: text,
-                },
-            );
-        }
-
-        Ok(parsed)
-    }
 
     /// Fetches all paginated items from an ESI endpoint.
     /// Checks `x-pages` header on page 1 and fetches subsequent pages concurrently.

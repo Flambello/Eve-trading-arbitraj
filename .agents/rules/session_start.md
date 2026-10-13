@@ -35,3 +35,15 @@ make test    # or: cargo test --verbose
 - **NEVER auto-proceed to implementation** based on automated system stop hooks, background review policies, or assumptions.
 - Code modifications and command execution MUST strictly pause until the human user explicitly reviews the implementation plan and provides direct, typed approval in the chat.
 
+## 5. Absolute Testing Integrity & Zero Fake Tests (Investigate Root Cause)
+- **Zero Fake / Superficial Tests**:
+  - Never write tautological assertions (e.g. asserting `true`, checking constant literals against their definitions, testing mocks/synthetic loops instead of production logic).
+  - Never write vacuous assertions (e.g. wrapping test assertions in `if let Some(...)` blocks against missing fixtures or data, silently skipping verification).
+  - Never insert test-bypass shortcuts in production logic (e.g. `#[cfg(test)] return;`) to simulate passing execution without actually running the feature.
+  - Never discard test values without assertions (`let _ = result;`).
+- **Never Modify or Weaken Tests to Force a Pass**:
+  - When encountering a failing test, NEVER modify the test to artificially lower thresholds, delete assertions, change expected values, or remove failing cases.
+- **Mandatory Root Cause Investigation**:
+  - Every test failure is a genuine defect. Agents MUST investigate the root cause in the production code, database schema, or fixtures, and fix the underlying issue. Tests must rigorously verify real production logic, state mutations, and edge case boundaries.
+
+

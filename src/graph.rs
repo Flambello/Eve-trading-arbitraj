@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::sde::{SdeLoader, SystemNode};
 use anyhow::Result;
 use lru::LruCache;
@@ -61,10 +59,6 @@ impl SystemGraph {
         Some(self.graph[*idx].name.as_str())
     }
 
-    pub fn region_id(&self, system_id: u32) -> Option<u32> {
-        let idx = self.id_to_idx.get(&system_id)?;
-        Some(self.graph[*idx].region_id)
-    }
 
     pub fn adjacent_regions(&self, region_id: u32, safe_only: bool) -> Vec<u32> {
         let mut adj = std::collections::HashSet::new();

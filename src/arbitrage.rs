@@ -91,8 +91,8 @@ pub struct ArbitrageConfig {
 }
 
 pub fn is_npc_station(location_id: u64) -> bool {
-    // Upwell structures have IDs > 1_000_000_000_000
-    location_id < 1_000_000_000_000
+    // NPC stations have positive IDs below the Upwell Structure threshold (1_000_000_000_000)
+    location_id > 0 && location_id < 1_000_000_000_000
 }
 
 pub fn find_deals(
@@ -729,3 +729,18 @@ impl TradeCorridorManifest {
         s
     }
 }
+
+/// Filters deals based on NPC trade status.
+/// When `include_npc` is true, all deals are retained.
+/// When `include_npc` is false, deals flagged with `is_npc_trade == true` are excluded.
+pub fn filter_deals_by_npc_status(
+    deals: &[ArbitrageDeal],
+    include_npc: bool,
+) -> Vec<&ArbitrageDeal> {
+    deals
+        .iter()
+        .filter(|d| include_npc || !d.is_npc_trade)
+        .collect()
+}
+
+

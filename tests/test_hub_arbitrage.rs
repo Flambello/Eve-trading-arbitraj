@@ -491,3 +491,37 @@ fn test_compute_corridor_summary() {
     assert_eq!(summary.max_single_deal_profit, 7_000.0);
     assert_eq!(summary.top_item_name.as_deref(), Some("Deal 2"));
 }
+
+#[test]
+fn test_hub_corridor_zero_capacity_and_empty_deals() {
+    let graph = create_hub_test_graph();
+
+    // 1. Empty slice in pack_hub_corridor_manifest
+    let empty_pack = pack_hub_corridor_manifest(&[], 100.0, 50_000.0);
+    assert!(empty_pack.packed.is_empty());
+    assert_eq!(empty_pack.total_volume, 0.0);
+    assert_eq!(empty_pack.total_capital, 0.0);
+    assert_eq!(empty_pack.total_profit, 0.0);
+
+    // 2. Zero volume limit packs nothing
+    let d1 = make_hub_deal(
+        1, "Deal 1", 30000142, "Jita", 60003760, 30002187, "Amarr", 60008494, 10, 10.0, 10_000.0,
+        5_000.0, false,
+    );
+    let zero_vol_pack = pack_hub_corridor_manifest(&[&d1], 0.0, 50_000.0);
+    assert!(zero_vol_pack.packed.is_empty());
+    assert_eq!(zero_vol_pack.total_profit, 0.0);
+
+    // 3. Zero budget limit packs nothing
+    let zero_budget_pack = pack_hub_corridor_manifest(&[&d1], 100.0, 0.0);
+    assert!(zero_budget_pack.packed.is_empty());
+    assert_eq!(zero_budget_pack.total_profit, 0.0);
+
+    // 4. Empty slice in compute_corridor_summary
+    let empty_summary = compute_corridor_summary(&[], &graph, CoreHub::Jita, CoreHub::Amarr, true);
+    assert_eq!(empty_summary.safe_jumps, 2);
+    assert_eq!(empty_summary.deal_count, 0);
+    assert_eq!(empty_summary.total_potential_profit, 0.0);
+    assert_eq!(empty_summary.max_single_deal_profit, 0.0);
+    assert_eq!(empty_summary.top_item_name, None);
+}

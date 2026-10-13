@@ -83,14 +83,20 @@ fn test_sound_theme_id_validation() {
 fn test_security_constants_bounds() {
     // ESI pagination upper bound prevents OOM task flood
     assert_eq!(MAX_PAGES_LIMIT, 500);
+    assert!(MAX_PAGES_LIMIT > 0 && MAX_PAGES_LIMIT <= 1000);
 
     // Maximum bounded network retry attempts to avoid infinite hang on disconnects
     assert_eq!(MAX_NETWORK_RETRIES, 5);
+    assert!(MAX_NETWORK_RETRIES >= 3 && MAX_NETWORK_RETRIES <= 10);
 
     // SDE decompression bomb guard thresholds
     assert_eq!(MAX_DECOMPRESSED_SDE_BYTES, 2 * 1024 * 1024 * 1024);
     assert_eq!(MIN_SDE_COMPRESSED_BYTES, 20 * 1024 * 1024);
     assert_eq!(MAX_SDE_COMPRESSED_BYTES, 400 * 1024 * 1024);
+
+    // Mathematical ordering and safety invariant enforcement
+    assert!(MIN_SDE_COMPRESSED_BYTES < MAX_SDE_COMPRESSED_BYTES);
+    assert!(MAX_SDE_COMPRESSED_BYTES < MAX_DECOMPRESSED_SDE_BYTES);
 }
 
 #[test]
@@ -257,38 +263,46 @@ fn test_sso_token_save_unix_permissions() {
 
 #[test]
 fn test_decompression_bomb_guard_stops_excessive_stream() {
-    // Generate a highly compressible gzip stream (zeros)
-    let raw_data = vec![0u8; 100_000];
-    let mut encoder = GzEncoder::new(Cursor::new(raw_data), Compression::best());
-    let mut compressed = Vec::new();
-    encoder.read_to_end(&mut compressed).unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("eve_bomb_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let temp_out = temp_dir.join("test_sde.sqlite");
 
-    // Use a small safety threshold (e.g. 10 KB) to simulate the guard behavior
-    let safety_limit = 10_000u64;
-    let decoder = flate2::read::GzDecoder::new(Cursor::new(compressed));
-    let mut bounded_reader = decoder.take(safety_limit + 1);
+    // 1. Invalid SQLite header test on real production decompress_and_validate_archive
+    let fake_data = b"NOT_A_SQLITE_DATABASE_HEADER_DATA_HERE";
+    let mut encoder = GzEncoder::new(Cursor::new(fake_data), Compression::fast());
+    let mut compressed_invalid = Vec::new();
+    encoder.read_to_end(&mut compressed_invalid).unwrap();
 
-    let mut buffer = [0u8; 1024];
-    let mut total = 0u64;
-    let mut exceeded = false;
-
-    while let Ok(n) = bounded_reader.read(&mut buffer) {
-        if n == 0 {
-            break;
-        }
-        total += n as u64;
-        if total > safety_limit {
-            exceeded = true;
-            break;
-        }
-    }
-
-    // Must detect stream exceeding limit and break immediately
+    let err = SdeLoader::decompress_and_validate_archive(Cursor::new(compressed_invalid), &temp_out);
+    assert!(err.is_err(), "Decompressing invalid SQLite database must return Err");
     assert!(
-        exceeded,
-        "Decompression guard should catch oversized stream"
+        err.unwrap_err().to_string().contains("valid SQLite database header"),
+        "Must detect invalid SQLite header"
     );
-    assert!(total > safety_limit);
+    assert!(!temp_out.exists(), "Target database file must not exist on header failure");
+
+    // 2. Real production decompression bomb guard:
+    // Compress a stream of zeros that exceeds MAX_DECOMPRESSED_SDE_BYTES (2 GB).
+    // Because zeros compress at ~1000:1 ratio, 2.1 GB of zeros takes only ~2 MB compressed.
+    let oversized_len = MAX_DECOMPRESSED_SDE_BYTES + 64 * 1024;
+    let zero_source = std::io::repeat(0u8).take(oversized_len);
+    let mut bomb_encoder = GzEncoder::new(zero_source, Compression::fast());
+    let mut compressed_bomb = Vec::new();
+    bomb_encoder.read_to_end(&mut compressed_bomb).unwrap();
+
+    let bomb_err = SdeLoader::decompress_and_validate_archive(Cursor::new(compressed_bomb), &temp_out);
+    assert!(bomb_err.is_err(), "Decompressing oversized stream must return Err");
+    let bomb_msg = bomb_err.unwrap_err().to_string();
+    assert!(
+        bomb_msg.contains("potential decompression bomb"),
+        "Error message must indicate decompression bomb abort: {}",
+        bomb_msg
+    );
+    assert!(!temp_out.exists(), "Database file must not be left behind after decompression bomb abort");
+    assert!(!temp_out.with_extension("sqlite.part").exists(), "Partial part file must be cleaned up");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

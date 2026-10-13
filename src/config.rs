@@ -110,7 +110,7 @@ pub struct SsoConfig {
 }
 
 fn default_callback_port() -> u16 {
-    37373
+    crate::esi::sso::DEFAULT_CALLBACK_PORT
 }
 
 impl SsoConfig {
@@ -214,7 +214,6 @@ impl UserConfig {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn ship_profile(&self) -> Result<ShipProfile> {
         profile_from_str(&self.ship.profile)
     }

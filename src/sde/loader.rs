@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -327,12 +325,18 @@ impl SdeLoader {
             INSERT INTO invGroups VALUES
                 (4, 4),    -- Material
                 (18, 4),   -- Minerals (Category 4: Material)
-                (280, 17); -- Spirits / General Commodities (Category 17: Commodity)
+                (280, 17), -- Spirits / General Commodities (Category 17: Commodity)
+                (409, 17), -- Insignia (Category 17: Commodity)
+                (370, 17), -- Pirate Criminal Tags (Category 17: Commodity)
+                (1034, 43); -- Planetary Commodities (Category 43: Planetary Commodities)
 
             INSERT INTO invTypes VALUES
                 (34, 'Tritanium', 0.01, 0.01, 18, 1),
                 (35, 'Pyerite', 0.01, 0.01, 18, 1),
-                (9850, 'Spirits', 0.50, 0.50, 280, 1);
+                (9850, 'Spirits', 0.50, 0.50, 280, 1),
+                (15587, 'Federation Navy Midshipman Insignia I', 0.10, 0.10, 409, 1),
+                (12304, 'Angel Copper Tag', 0.10, 0.10, 370, 1),
+                (9832, 'Coolant', 0.38, 0.38, 1034, 1);
 
             INSERT INTO mapSolarSystemJumps VALUES
                 (30000142, 30000144),
@@ -345,6 +349,50 @@ impl SdeLoader {
             has_inv_volumes: false,
             has_packaged_col: true,
         })
+    }
+
+    /// Decompress a gzip stream to a destination path, enforcing maximum decompression safety limit and SQLite header validation.
+    pub fn decompress_and_validate_archive<R: Read>(mut reader: R, dest_path: &Path) -> Result<u64> {
+        let decoder = GzDecoder::new(&mut reader);
+        let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
+
+        let temp_db_path = dest_path.with_extension("sqlite.part");
+        let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
+
+        let mut buffer = [0u8; 64 * 1024];
+        let mut total_decompressed = 0u64;
+
+        loop {
+            let bytes_read = bounded_reader.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            total_decompressed += bytes_read as u64;
+            if total_decompressed > MAX_DECOMPRESSED_SDE_BYTES {
+                let _ = std::fs::remove_file(&temp_db_path);
+                bail!(
+                    "SDE decompression aborted: exceeded maximum safety threshold of {} bytes (potential decompression bomb)",
+                    MAX_DECOMPRESSED_SDE_BYTES
+                );
+            }
+            out_file.write_all(&buffer[..bytes_read])?;
+        }
+        out_file.flush()?;
+        drop(out_file);
+
+        // Verify SQLite database magic header bytes
+        {
+            let mut header = [0u8; 16];
+            let mut check_file = File::open(&temp_db_path)?;
+            check_file.read_exact(&mut header)?;
+            if &header != b"SQLite format 3\0" {
+                let _ = std::fs::remove_file(&temp_db_path);
+                bail!("Downloaded file does not contain a valid SQLite database header");
+            }
+        }
+
+        std::fs::rename(&temp_db_path, dest_path)?;
+        Ok(total_decompressed)
     }
 
     pub async fn download(dest_path: &Path) -> Result<()> {
@@ -366,7 +414,7 @@ impl SdeLoader {
             .timeout(Duration::from_secs(600))
             .build()?;
 
-        let resp = client
+        let mut resp = client
             .get(FUZZWORK_SDE_URL)
             .send()
             .await
@@ -399,11 +447,8 @@ impl SdeLoader {
         let temp_gz_path = dest_path.with_extension("sqlite.gz.part");
         let mut file = File::create(&temp_gz_path)?;
 
-        let mut stream = resp.bytes_stream();
         let mut downloaded_bytes = 0u64;
-        use futures_util::StreamExt;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = resp.chunk().await? {
             downloaded_bytes += chunk.len() as u64;
             if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
                 let _ = std::fs::remove_file(&temp_gz_path);
@@ -420,51 +465,11 @@ impl SdeLoader {
 
         println!(" [SDE] Decompressing gzip archive into SQLite database...");
         let compressed_file = File::open(&temp_gz_path)?;
-        let decoder = GzDecoder::new(BufReader::new(compressed_file));
-        let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
-
-        let temp_db_path = dest_path.with_extension("sqlite.part");
-        let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
-
-        let mut buffer = [0u8; 64 * 1024];
-        let decomp_pb = ProgressBar::new_spinner();
-        decomp_pb.set_message("Decompressing database...");
-        let mut total_decompressed = 0u64;
-
-        loop {
-            let bytes_read = bounded_reader.read(&mut buffer)?;
-            if bytes_read == 0 {
-                break;
-            }
-            total_decompressed += bytes_read as u64;
-            if total_decompressed > MAX_DECOMPRESSED_SDE_BYTES {
-                let _ = std::fs::remove_file(&temp_db_path);
-                let _ = std::fs::remove_file(&temp_gz_path);
-                bail!(
-                    "SDE decompression aborted: exceeded maximum safety threshold of {} bytes (potential decompression bomb)",
-                    MAX_DECOMPRESSED_SDE_BYTES
-                );
-            }
-            out_file.write_all(&buffer[..bytes_read])?;
-            decomp_pb.inc(bytes_read as u64);
+        let decomp_res = Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
+        if let Err(e) = decomp_res {
+            let _ = std::fs::remove_file(&temp_gz_path);
+            return Err(e);
         }
-        out_file.flush()?;
-        drop(out_file);
-        decomp_pb.finish_with_message("Decompression complete!");
-
-        // Verify SQLite database magic header bytes
-        {
-            let mut header = [0u8; 16];
-            let mut check_file = File::open(&temp_db_path)?;
-            check_file.read_exact(&mut header)?;
-            if &header != b"SQLite format 3\0" {
-                let _ = std::fs::remove_file(&temp_db_path);
-                let _ = std::fs::remove_file(&temp_gz_path);
-                bail!("Downloaded file does not contain a valid SQLite database header");
-            }
-        }
-
-        std::fs::rename(&temp_db_path, dest_path)?;
         let _ = std::fs::remove_file(&temp_gz_path);
 
         println!(" [SDE] Ready: {:?}", dest_path);
@@ -687,17 +692,6 @@ impl SdeLoader {
         stmt.query_row(params![region_id], |row| row.get(0)).ok()
     }
 
-    pub fn all_regions(&self) -> Result<Vec<(u32, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-        let mut stmt =
-            conn.prepare("SELECT regionID, regionName FROM mapRegions ORDER BY regionName")?;
-        let mut rows = stmt.query([])?;
-        let mut list = Vec::new();
-        while let Some(row) = rows.next()? {
-            list.push((row.get(0)?, row.get(1)?));
-        }
-        Ok(list)
-    }
 
     pub fn all_systems(&self) -> Result<Vec<SystemNode>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;

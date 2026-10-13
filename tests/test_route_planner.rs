@@ -300,3 +300,48 @@ fn test_route_planner_dest_station_load_cap() {
         );
     }
 }
+
+#[test]
+fn test_route_planner_zero_max_stops_and_unreachable_deals() {
+    let graph = create_route_test_graph();
+    let home = 30000142; // Jita
+
+    let d_valid = make_test_deal(
+        34,
+        "Tritanium",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        10_000_000.0,
+        1,
+    );
+
+    // Deal in an unreachable/disconnected system (ID 99999999)
+    let d_unreachable = make_test_deal(
+        35,
+        "Unreachable Mineral",
+        (99999999, "Deep Void"),
+        (30000144, "Perimeter"),
+        50_000_000.0,
+        1,
+    );
+
+    // 1. max_stops = 0 returns 0 stops without panicking
+    let route_zero = plan_route(&[d_valid.clone()], BIG_HAULER, home, &graph, true, 0);
+    assert_eq!(route_zero.stops.len(), 0);
+    assert_eq!(route_zero.total_profit, 0.0);
+    assert_eq!(route_zero.total_jumps, 0);
+    assert_eq!(route_zero.waypoints, vec![home]);
+
+    // 2. Unreachable deal is pruned; only valid deal is scheduled
+    let route_unreachable = plan_route(
+        &[d_unreachable, d_valid],
+        BIG_HAULER,
+        home,
+        &graph,
+        true,
+        5,
+    );
+    assert_eq!(route_unreachable.stops.len(), 1);
+    assert_eq!(route_unreachable.stops[0].deal.item_name, "Tritanium");
+    assert_eq!(route_unreachable.total_profit, 10_000_000.0);
+}

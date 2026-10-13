@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::client::EsiClient;
 use super::models::MarketOrder;
 use anyhow::Result;
@@ -11,14 +9,6 @@ pub struct RegionMarket {
     pub fetched_at: DateTime<Utc>,
     pub sell_orders: HashMap<u32, Vec<MarketOrder>>,
     pub buy_orders: HashMap<u32, Vec<MarketOrder>>,
-}
-
-pub async fn fetch_region_market(client: &EsiClient, region_id: u32) -> Result<RegionMarket> {
-    fetch_region_market_opts(client, region_id, false).await
-}
-
-pub async fn fetch_region_market_fresh(client: &EsiClient, region_id: u32) -> Result<RegionMarket> {
-    fetch_region_market_opts(client, region_id, true).await
 }
 
 pub async fn fetch_region_market_opts(
@@ -75,20 +65,19 @@ pub async fn fetch_markets_opts(
     region_ids: &[u32],
     force_refresh: bool,
 ) -> Result<HashMap<u32, RegionMarket>> {
-    let mut tasks = Vec::new();
+    let mut tasks = tokio::task::JoinSet::new();
 
     for &rid in region_ids {
-        let client_ref = client;
-        tasks.push(async move {
-            let market = fetch_region_market_opts(client_ref, rid, force_refresh).await?;
+        let client_clone = client.clone();
+        tasks.spawn(async move {
+            let market = fetch_region_market_opts(&client_clone, rid, force_refresh).await?;
             Ok::<(u32, RegionMarket), anyhow::Error>((rid, market))
         });
     }
 
     let mut result = HashMap::new();
-    let outcomes = futures_util::future::join_all(tasks).await;
-    for out in outcomes {
-        let (rid, market) = out?;
+    while let Some(res) = tasks.join_next().await {
+        let (rid, market) = res??;
         result.insert(rid, market);
     }
 

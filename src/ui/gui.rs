@@ -149,12 +149,6 @@ const TIPS: &[&str] = &[
     "Tip: Deepest order book liquidity is found across the 5 trade hubs: Jita, Amarr, Dodixie, Rens, and Hek.",
 ];
 
-#[allow(dead_code)]
-enum ChainSearchResult {
-    Success(Vec<crate::chain_route_planner::ChainRoute>),
-    Error(String),
-}
-
 /// Helper to ensure clipboard contents are copied both via context and output_mut across all Linux windowing backends
 fn copy_to_clipboard(ui: &mut egui::Ui, text: impl Into<String>) {
     let s = text.into();
@@ -249,6 +243,14 @@ fn safe_write_csv(export_path: &std::path::Path, csv_str: &str) -> anyhow::Resul
 /// Target corporation for in-game ISK donations.
 pub const CORP_DONATION_RECIPIENT: &str = "Expandabliss";
 
+/// Format the official in-game donation instruction note for EVE Trade Scout players.
+pub fn format_donation_instructions(amount_millions: Option<u64>) -> String {
+    match amount_millions {
+        Some(m) => format!("Send {}M ISK donation to corporation: {}", m, CORP_DONATION_RECIPIENT),
+        None => format!("Send ISK donation to corporation: {}", CORP_DONATION_RECIPIENT),
+    }
+}
+
 /// Embedded Expandabliss corporation crest PNG bytes (124x124 RGBA).
 pub const CORP_ICON_PNG_BYTES: &[u8] = include_bytes!("../../assets/icons/expandabliss.png");
 
@@ -321,8 +323,8 @@ pub struct DesktopApp {
     chain_is_running: bool,
     chain_results: Vec<crate::chain_route_planner::ChainRoute>,
     chain_selected_idx: Option<usize>,
-    chain_rx: Receiver<ChainSearchResult>,
-    chain_tx: Sender<ChainSearchResult>,
+    chain_rx: Receiver<Vec<crate::chain_route_planner::ChainRoute>>,
+    chain_tx: Sender<Vec<crate::chain_route_planner::ChainRoute>>,
     chain_flowchart_split: bool,
 
     // ── Core Hub Arbitrage tab ────────────────────────────────────
@@ -1262,29 +1264,22 @@ impl eframe::App for DesktopApp {
         }
 
         // Poll chain route worker thread
-        if let Ok(res) = self.chain_rx.try_recv() {
+        if let Ok(results) = self.chain_rx.try_recv() {
             self.chain_is_running = false;
-            match res {
-                ChainSearchResult::Success(results) => {
-                    let count = results.len();
-                    self.chain_results = results;
-                    self.chain_selected_idx = if self.chain_results.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    };
-                    if count > 0 {
-                        self.set_toast(format!(
-                            "Found {} optimized chained trade route(s)!",
-                            count
-                        ));
-                    } else {
-                        self.set_toast("No chain routes found with current parameters.");
-                    }
-                }
-                ChainSearchResult::Error(err) => {
-                    self.set_toast(format!("Chain search error: {}", err));
-                }
+            let count = results.len();
+            self.chain_results = results;
+            self.chain_selected_idx = if self.chain_results.is_empty() {
+                None
+            } else {
+                Some(0)
+            };
+            if count > 0 {
+                self.set_toast(format!(
+                    "Found {} optimized chained trade route(s)!",
+                    count
+                ));
+            } else {
+                self.set_toast("No chain routes found with current parameters.");
             }
         }
 
@@ -1658,17 +1653,7 @@ fn format_rate_isk(val: f64) -> String {
     }
 }
 
-fn format_unit_price_isk(val: f64) -> String {
-    if val >= 1_000_000_000.0 {
-        format!("{:.2}B", val / 1_000_000_000.0)
-    } else if val >= 1_000_000.0 {
-        format!("{:.2}M", val / 1_000_000.0)
-    } else if val >= 1_000.0 {
-        format!("{:.2}k", val / 1_000.0)
-    } else {
-        format!("{:.2}", val)
-    }
-}
+use super::format_unit_price as format_unit_price_isk;
 
 /// Two stacked mini progress bars: cyan for cargo volume, gold for ISK budget.
 fn render_ship_util_bars(ui: &mut egui::Ui, vol_frac: f32, budget_frac: f32) -> egui::Response {
@@ -4809,7 +4794,7 @@ impl DesktopApp {
 
         thread::spawn(move || {
             let results = crate::chain_route_planner::find_chain_routes(&deals, &graph, &cfg);
-            let _ = tx.send(ChainSearchResult::Success(results));
+            let _ = tx.send(results);
         });
     }
 

@@ -1759,3 +1759,43 @@ fn test_chain_multi_leg_whole_trip_ppj_maximization() {
     assert_eq!(routes[0].legs.len(), 2);
     assert!((routes[0].profit_per_jump - 20_000.0).abs() < 1e-4);
 }
+
+#[test]
+fn test_chain_zero_max_legs_and_zero_budget() {
+    let graph = create_chain_test_graph();
+    let d1 = make_chain_deal(
+        34,
+        "Tritanium",
+        (30000142, "Jita"),
+        (30000144, "Perimeter"),
+        1000,
+        100.0,
+        10_000.0,
+        2_500.0,
+    );
+
+    // 1. max_legs = 0 returns empty route list without panicking or looping
+    let cfg_zero_legs = ChainConfig {
+        home_system: 30000142,
+        max_legs: 0,
+        ..Default::default()
+    };
+    let routes_zero_legs = find_chain_routes(&[d1.clone()], &graph, &cfg_zero_legs);
+    assert!(
+        routes_zero_legs.is_empty(),
+        "max_legs = 0 must return 0 routes"
+    );
+
+    // 2. ship_max_budget = 0.0 cannot purchase deals, returns empty route list
+    let cfg_zero_budget = ChainConfig {
+        home_system: 30000142,
+        max_legs: 2,
+        ship_max_budget: 0.0,
+        ..Default::default()
+    };
+    let routes_zero_budget = find_chain_routes(&[d1], &graph, &cfg_zero_budget);
+    assert!(
+        routes_zero_budget.is_empty(),
+        "0.0 budget must return 0 routes"
+    );
+}

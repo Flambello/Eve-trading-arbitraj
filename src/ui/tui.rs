@@ -242,17 +242,8 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState) {
     f.render_widget(tabs, area);
 }
 
-fn format_unit_price(val: f64) -> String {
-    if val >= 1_000_000_000.0 {
-        format!("{:.2}B", val / 1_000_000_000.0)
-    } else if val >= 1_000_000.0 {
-        format!("{:.2}M", val / 1_000_000.0)
-    } else if val >= 1_000.0 {
-        format!("{:.2}k", val / 1_000.0)
-    } else {
-        format!("{:.2}", val)
-    }
-}
+use super::format_unit_price;
+
 
 fn render_deals_table(f: &mut Frame, area: Rect, state: &mut AppState) {
     let header_cells = [

@@ -14,7 +14,7 @@
                                        │ calls
 ┌──────────────────────────────────────▼──────────────────────────────────────┐
 │                    ORCHESTRATOR & BINARY ENTRY POINT                         │
-│  src/main.rs (eve-trade bin) ── parses CLI args, initializes runtime        │
+│  src/main.rs (eve-merchant bin) ── parses CLI args, initializes runtime     │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ invokes
 ┌──────────────────────────────────────▼──────────────────────────────────────┐
@@ -38,15 +38,16 @@
                                                        ┌─────────▼─────────┐
                                                        │   arbitrage.rs    │
                                                        │ Quantity solver   │
-                                                       │ 15% ROI invariant │
+                                                       │ 10% ROI invariant │
                                                        │ Highsec/NPC filter│
                                                        │ PPJ ranking       │
                                                        └─────────┬─────────┘
                                                                  │
                          ┌───────────────────────────────────────▼─────────┐
-                         │           graph.rs  +  route_planner.rs         │
+                         │ graph.rs, route_planner.rs, chain_route_planner │
                          │ graph.rs         — petgraph Dijkstra, LRU cache │
                          │ route_planner.rs — greedy multi-stop builder    │
+                         │ chain_planner.rs — multi-leg beam route search  │
                          └─────────────────────────────────────────────────┘
 ```
 
@@ -56,22 +57,22 @@
 
 ### `src/lib.rs`
 - Root of the `eve_trade_scout` library crate.
-- Re-exports `arbitrage`, `config`, `esi`, `graph`, `route_planner`, `sde`, and `ui`.
+- Re-exports `arbitrage`, `chain_route_planner`, `config`, `esi`, `graph`, `hub_arbitrage`, `audio`, `route_planner`, `sde`, and `ui`.
 - Enables complete integration test suites in `tests/` to run against clean crate interfaces without private coupling or SQLite mocking issues.
 
 ### `src/main.rs`
-- Executable binary (`eve-trade`).
-- Parse CLI arguments via `clap` (`--ship`, `--system`, `--regions`, `--safe`, `--unsafe-routes`, `--npc-only`, `--allow-structures`, `--min-roi`, `--gui`, `--tui`, `--no-ui`, `--export`).
+- Executable binary (`eve-merchant`).
+- Parse CLI arguments via `clap` (`--ship`, `--system`, `--regions`, `--safe`, `--unsafe-routes`, `--npc-only`, `--allow-structures`, `--min-roi`, `--gui`, `--tui`, `--no-ui`, `--no-tui`, `--auto-refresh`, `--route`, `--export`).
 - Detects environment (launches Desktop GUI by default when DISPLAY/WAYLAND_DISPLAY is present and stdout is a terminal, falls back to TUI or console).
 - Orchestrates SDE check, graph creation, market fetching, deal analysis, and UI launching.
 
 ### `src/config.rs`
 - `ShipProfile` constants: `BIG_HAULER` (60k m³ / 500M ISK) and `SMALL_HAULER` (30k m³ / 50M ISK).
-- `UserConfig` TOML persistence at `~/.config/eve-trade-scout/config.toml`.
-- Configures default parameters: 15.0% minimum ROI (`min_net_profit_pct`), safe highsec routing (`safe_route_only = true`), and NPC station filtering (`npc_stations_only = true`).
+- `UserConfig` TOML persistence at `~/.config/eve-traveling-merchant/config.toml` (with legacy fallback to `~/.config/eve-trade-scout/config.toml`).
+- Configures default parameters: 10.0% minimum ROI (`min_net_profit_pct`), safe highsec routing (`safe_route_only = true`), and NPC station filtering (`npc_stations_only = true`).
 
 ### `src/sde/loader.rs`
-- Automated download + decompression of Fuzzwork SDE SQLite (`eve_sde.sqlite`) via `bzip2`.
+- Automated download + decompression of Fuzzwork SDE SQLite (`eve_sde.sqlite`) via `gzip` (`flate2`).
 - Reads item volumes (`packaged_volume`), solar system details, security ratings, and stargate links.
 - Helper queries: `get_item_info`, `get_system_id`, `get_system_name`, `get_station_system`, `all_systems`, `all_jumps`.
 
@@ -84,13 +85,13 @@
 - Core arbitrage calculation engine (100% deterministic, memory-pure).
 - Quantity constraint solver (constrained by ship cargo volume, capital budget, sell volume remaining, buy volume remaining).
 - Strict invariant enforcement:
-  - Minimum 15.0% net profitability after taxes and broker fees (`min_net_profit_pct`).
+  - Minimum 10.0% net profitability after taxes and broker fees (`min_net_profit_pct`).
   - Highsec only filtering: source and dest must have security $\ge 0.45$.
   - Station pool toggle: `npc_stations_only` filters out stations with ID $\ge 10^{12}$ (Upwell structures).
   - Profit-per-jump: $\text{net\_profit} / (\text{jumps\_from\_home} + \text{jumps\_source\_dest})$.
 
 ### `src/graph.rs`
-- Wraps `petgraph::Graph<SystemNode, ()>`.
+- Wraps `petgraph::graph::UnGraph<SystemNode, f64>`.
 - In-memory graph constructor `SystemGraph::from_nodes_and_jumps` enabling fast zero-disk testing.
 - Dijkstra pathfinding with `LruCache<(u32, u32, bool), u32>` memoization.
 - Safe routing mode: lowsec/nullsec gates penalized with weight 1000, unreachable endpoints return 9999.

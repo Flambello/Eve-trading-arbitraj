@@ -174,6 +174,11 @@ impl Default for UserConfig {
 }
 
 impl UserConfig {
+    /// Resolves the filesystem path to the user's `config.toml`.
+    ///
+    /// Prefers `~/.config/eve-traveling-merchant/config.toml`. If that does not exist but
+    /// a legacy `~/.config/eve-trade-scout/config.toml` exists, returns the legacy path for backwards compatibility.
+    /// Otherwise returns the modern path.
     pub fn config_path() -> Result<PathBuf> {
         let base = dirs::config_dir().context("Could not determine user config directory")?;
         let new_path = base.join("eve-traveling-merchant").join("config.toml");

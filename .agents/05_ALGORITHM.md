@@ -40,7 +40,7 @@ For each `type_id`:
 
 ```python
 max_by_volume  = floor(ship.max_volume  / item.packaged_volume)
-max_by_budget  = floor(ship.max_budget  / sell_price)
+max_by_budget  = floor(ship.max_budget  / buy_price)
 max_by_supply  = sell_order.volume_remain
 max_by_demand  = buy_order.volume_remain
 
@@ -65,7 +65,7 @@ net_profit_pct (ROI) = (net_profit / capital_required) * 100.0
 ```
 
 - If `net_profit < min_profit`: skip.
-- **Enforced Rule:** If `net_profit_pct < 15.0%`: skip (deals must achieve at least 15% net profit after taxes).
+- **Enforced Rule:** If `net_profit_pct < 10.0%`: skip (deals must achieve at least 10.0% net profit after taxes).
 
 #### Step 5 — Calculate jumps
 
@@ -105,7 +105,7 @@ INPUTS:
   deals          ← all scored ArbitrageDeals (pre-sorted by PPJ)
   ship           ← ShipProfile
   home_system    ← starting system_id
-  max_stops      ← max deals to chain (default 10)
+  max_stops      ← max deals to chain (default 5)
 
 STATE:
   current_pos    = home_system
@@ -150,23 +150,23 @@ RETURN TradeRoute(selected)
 
 ## 3. Jump Count Algorithm
 
-Uses **NetworkX Dijkstra** on the stargate graph loaded from SDE.
+Uses **petgraph Dijkstra / A*** on the stargate graph loaded from SDE.
 
 ### Graph definition
 
 - **Nodes:** all solar system IDs
 - **Edges:** all stargates (`mapSolarSystemJumps` table)
 - **Edge weight:** 
-  - `1` for all edges in normal mode
-  - `1` for highsec edges, `1000` for lowsec/nullsec edges in safe-only mode
+  - `1.0` for all edges in normal mode
+  - `1.0` for highsec edges, `1000.0` for lowsec/nullsec edges in safe-only mode
 
 ### Safe-route mode
 
-If user enables `safe_route_only`, systems with security status < 0.45 get a prohibitively high edge weight (1000). This effectively routes around dangerous space while not making it truly impossible (avoids infinite-path errors).
+If user enables `safe_route_only`, systems with security status < 0.45 get a prohibitively high edge weight (1000.0). This effectively routes around dangerous space while not making it truly impossible (avoids infinite-path errors). Additionally, if origin or destination is in lowsec/nullsec, `jump_count` returns the sentinel `9999`.
 
 ### LRU Cache
 
-Jump counts are expensive to compute. The `Router.jump_count()` method is decorated with `@lru_cache(maxsize=10_000)`. The cache key is `(origin_id, dest_id, safe_only)`.
+Jump counts are expensive to compute. The `SystemGraph.jump_cache` uses a thread-safe `Mutex<LruCache<(u32, u32, bool), u32>>` with a capacity of 20,000 entries. The cache key is `(origin_id.min(dest_id), origin_id.max(dest_id), safe_only)`.
 
 On a typical run with ~500 candidate deals across 5 regions, expect ~2 500 unique path queries — all served from cache after the first computation.
 
@@ -207,7 +207,7 @@ Raw ESI orders
     ├── [F4] Remove items with packaged_volume == 0 or unpublished
     ├── [F5] Remove pairs with spread < min_spread_pct
     ├── [F6] Remove deals with net_profit < min_profit
-    ├── [F7] Enforce minimum net profitability: net_profit_pct >= 15.0% after taxes
+    ├── [F7] Enforce minimum net profitability: net_profit_pct >= 10.0% after taxes
     ├── [F8] Remove deals where quantity < 1 (don't fit in ship volume or budget)
     └── [F9] Pathfinding & Jumps: Stargate path must stay in highsec without entering lowsec/nullsec
 ```
@@ -218,13 +218,13 @@ Raw ESI orders
 
 | Operation | Estimated time | Notes |
 |---|---|---|
-| SDE load + graph build | ~5–10 s (first run) | Subsequent runs: <1 s |
-| Fetch 1 region market | ~3–8 s | Depends on page count |
-| Fetch 5 regions concurrently | ~8–15 s | Async, bounded by slowest region |
-| Arbitrage computation | <1 s | Pure Python dict operations |
-| Route planning | <0.1 s | Greedy, <50 iterations typically |
-| Total first run | ~20–30 s | Mostly network |
-| Total cached run | ~5–10 s | Only re-fetches if ESI cache expired |
+| SDE load + graph build | ~1–2 s (first run) | Subsequent runs: <0.5 s |
+| Fetch 1 region market | ~1–3 s | Depends on page count |
+| Fetch 5 regions concurrently | ~3–6 s | Async, bounded by slowest region |
+| Arbitrage computation | <0.1 s | Pure Rust in-memory hash map operations |
+| Route planning | <0.05 s | Greedy, <50 iterations typically |
+| Total first run | ~5–10 s | Mostly network |
+| Total cached run | ~1–3 s | Only re-fetches if ESI cache expired |
 
 ---
 
@@ -261,5 +261,5 @@ $$\text{detour} = \text{jumps}(P, W) + \text{jumps}(W, S) - \text{jumps}(P, S)$$
 ### Cargo Model & Invariants
 1. **Saturation Check**: En-route pickups are skipped if $\text{remaining\_volume} \le 0.001\text{ m}^3$ or budget is exhausted.
 2. **Volume Lifecycle**: Cargo volume is freed and capital recouped upon reaching each item's destination sell stop.
-3. **15.0% Net ROI**: Guaranteed across every individual item batch and whole route.
+3. **10.0% Net ROI**: Guaranteed across every individual item batch and whole route.
 

@@ -156,9 +156,11 @@ eve-merchant --ship big --system Jita --export deals.csv
 
 | Flag | Default | Description |
 |---|---|---|
-| `--gui` | `auto` | Force desktop GUI window mode (`egui` native window) |
+| `--gui` | `auto` | Force desktop GUI window mode (`egui` native window; default when display server is active) |
 | `--tui` | `false` | Force terminal TUI mode (`ratatui`) |
-| `--no-ui` | `false` | Disable interactive interfaces and output directly to console |
+| `--no-ui` | `false` | Disable interactive interfaces (GUI & TUI) and output directly to console |
+| `--no-tui` | `false` | Disable interactive TUI and output directly to console |
+| `--auto-refresh` | `false` | Automatically refresh market data every 5 minutes in GUI mode |
 | `-s, --ship <SHIP>` | `big` | Ship profile (`big`: 60k m³/500M or `small`: 30k m³/50M) |
 | `--system <SYSTEM>` | `Jita` | Starting solar system name |
 | `--adjacent-regions` | `true` | Automatically scan stargate-connected neighbor regions |
@@ -172,6 +174,7 @@ eve-merchant --ship big --system Jita --export deals.csv
 | `--min-roi <PCT>` | `10.0` | Enforced minimum net ROI % after taxes |
 | `-t, --top <N>` | `25` | Number of deals in CLI summary |
 | `--max-stops <N>` | `5` | Maximum stops in planned route |
+| `--route` | `false` | Print planned multi-stop route in CLI mode |
 | `--export <PATH>` | — | Export discovered deals to CSV file |
 | `--update-sde` | — | Force re-download / update of SDE SQLite database |
 

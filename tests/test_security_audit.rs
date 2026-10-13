@@ -80,6 +80,7 @@ fn test_sound_theme_id_validation() {
 }
 
 #[test]
+#[allow(clippy::assertions_on_constants)]
 fn test_security_constants_bounds() {
     // ESI pagination upper bound prevents OOM task flood
     assert_eq!(MAX_PAGES_LIMIT, 500);

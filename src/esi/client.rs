@@ -93,6 +93,7 @@ impl EsiClient {
         })
     }
 
+    /// Persists fresh ETag cache entries to `etags.json` on disk, pruning expired entries.
     pub async fn save_cache(&self) -> Result<()> {
         let etags_file = self.cache_dir.join("etags.json");
         let mut map = self.etags.lock().await;

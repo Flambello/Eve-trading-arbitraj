@@ -1780,7 +1780,7 @@ fn test_chain_zero_max_legs_and_zero_budget() {
         max_legs: 0,
         ..Default::default()
     };
-    let routes_zero_legs = find_chain_routes(&[d1.clone()], &graph, &cfg_zero_legs);
+    let routes_zero_legs = find_chain_routes(std::slice::from_ref(&d1), &graph, &cfg_zero_legs);
     assert!(
         routes_zero_legs.is_empty(),
         "max_legs = 0 must return 0 routes"

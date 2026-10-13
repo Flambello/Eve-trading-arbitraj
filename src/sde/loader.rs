@@ -603,6 +603,17 @@ impl SdeLoader {
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
+    /// Performs substring and token-aware fuzzy matching across all solar systems in the SDE.
+    ///
+    /// Automatically strips station suffixes (e.g. " - Moon 4 - Navy Assembly") and roman numerals
+    /// (e.g. "IV") to resolve the underlying solar system name.
+    ///
+    /// # Arguments
+    /// * `query` - User input string (e.g. "Jita", "jita 4", "Amarr VIII").
+    /// * `limit` - Maximum number of search results to return.
+    ///
+    /// # Returns
+    /// Vector of [`SystemSearchResult`] sorted with prefix matches prioritized over substring matches.
     pub fn search_systems(&self, query: &str, limit: usize) -> Vec<SystemSearchResult> {
         let cleaned = clean_location_input(query).to_lowercase();
         if cleaned.is_empty() {
@@ -693,6 +704,7 @@ impl SdeLoader {
     }
 
 
+    /// Loads all solar systems from the `mapSolarSystems` SDE table into in-memory [`SystemNode`] structures.
     pub fn all_systems(&self) -> Result<Vec<SystemNode>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut stmt = conn.prepare(
@@ -712,6 +724,7 @@ impl SdeLoader {
         Ok(list)
     }
 
+    /// Loads all stargate jump connections from the `mapSolarSystemJumps` SDE table as `(from, to)` pairs.
     pub fn all_jumps(&self) -> Result<Vec<(u32, u32)>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut stmt =

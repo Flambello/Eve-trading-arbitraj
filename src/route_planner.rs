@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
 
+/// A single trade step in a sequential multi-stop trade route.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteStop {
     pub step: usize,
@@ -14,6 +15,7 @@ pub struct RouteStop {
     pub prev_system_name: String,
 }
 
+/// A multi-stop trade itinerary chaining sequential pickup and delivery deals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeRoute {
     pub stops: Vec<RouteStop>,
@@ -100,6 +102,19 @@ impl TradeRoute {
     }
 }
 
+/// Greedy sequential route planner that chains top arbitrage deals into a multi-stop itinerary.
+///
+/// # Arguments
+/// * `deals` - Candidate deals, ranked by profit-per-jump descending.
+/// * `_ship` - Ship profile. Retained for interface uniformity; deal volumes and quantities
+///   are already pre-bounded to ship limits during arbitrage calculation.
+/// * `home_system` - Starting solar system ID where the route commences.
+/// * `graph` - Universe stargate graph for jump distance calculations.
+/// * `safe_only` - When true, enforces highsec-only transit ($\ge 0.45$ security status).
+/// * `max_stops` - Maximum number of stops to chain.
+///
+/// # Returns
+/// A [`TradeRoute`] containing ordered stops, waypoints, and aggregated telemetry.
 pub fn plan_route(
     deals: &[ArbitrageDeal],
     _ship: ShipProfile,

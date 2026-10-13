@@ -661,6 +661,7 @@ async fn test_ensure_fresh_token_unexpired_skips_network() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
     use eve_trade_scout::esi::sso::ensure_fresh_token;
 

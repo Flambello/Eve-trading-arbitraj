@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
+/// Stargate graph representation of the EVE Online universe with memoized jump distances.
 pub struct SystemGraph {
     graph: UnGraph<SystemNode, f64>,
     id_to_idx: HashMap<u32, NodeIndex>,
@@ -15,6 +16,7 @@ pub struct SystemGraph {
 }
 
 impl SystemGraph {
+    /// Constructs a graph directly from a vector of system nodes and undirected stargate jump pairs.
     pub fn from_nodes_and_jumps(systems: Vec<SystemNode>, jumps: Vec<(u32, u32)>) -> Self {
         let mut graph = UnGraph::new_undirected();
         let mut id_to_idx = HashMap::with_capacity(systems.len());
@@ -43,23 +45,28 @@ impl SystemGraph {
         }
     }
 
+    /// Loads all solar systems and stargate jump connections from the SQLite SDE database.
     pub fn from_sde(sde: &SdeLoader) -> Result<Self> {
         let systems = sde.all_systems()?;
         let jumps = sde.all_jumps()?;
         Ok(Self::from_nodes_and_jumps(systems, jumps))
     }
 
+    /// Returns the true security status (-1.0 to 1.0) of a solar system if present in the graph.
     pub fn security(&self, system_id: u32) -> Option<f64> {
         let idx = self.id_to_idx.get(&system_id)?;
         Some(self.graph[*idx].security_status)
     }
 
+    /// Returns the solar system name for a given system ID if present in the graph.
     pub fn system_name(&self, system_id: u32) -> Option<&str> {
         let idx = self.id_to_idx.get(&system_id)?;
         Some(self.graph[*idx].name.as_str())
     }
 
-
+    /// Discovers all region IDs connected via stargates to solar systems in `region_id`.
+    ///
+    /// If `safe_only` is true, only highsec ($\ge 0.45$) stargate connections are traversed.
     pub fn adjacent_regions(&self, region_id: u32, safe_only: bool) -> Vec<u32> {
         let mut adj = std::collections::HashSet::new();
 
@@ -86,10 +93,19 @@ impl SystemGraph {
         res
     }
 
+    /// Returns true if the system's security status is $\ge 0.45$ (highsec).
     pub fn is_highsec(&self, system_id: u32) -> bool {
         self.security(system_id).map(|s| s >= 0.45).unwrap_or(false)
     }
 
+    /// Calculates the number of stargate jumps between `origin` and `dest`.
+    ///
+    /// If `safe_only` is true:
+    /// - Rejects origin or destination if in lowsec/nullsec (returns 9999).
+    /// - Uses Dijkstra with edge weight 1000.0 on systems with security $< 0.45$.
+    /// - Returns the sentinel `9999` if no path exists or if reaching `dest` requires traversing lowsec.
+    ///
+    /// Results are cached in an LRU cache with capacity 20,000.
     pub fn jump_count(&self, origin: u32, dest: u32, safe_only: bool) -> u32 {
         if origin == dest {
             return 0;
@@ -150,6 +166,10 @@ impl SystemGraph {
         result
     }
 
+    /// Calculates the ordered list of solar system IDs along the shortest stargate path using A*.
+    ///
+    /// Returns an empty `Vec` as a sentinel if no path exists, or if `safe_only` is true and
+    /// any endpoint or connecting path enters lowsec/nullsec.
     pub fn shortest_path(&self, origin: u32, dest: u32, safe_only: bool) -> Vec<u32> {
         if origin == dest {
             return vec![origin];

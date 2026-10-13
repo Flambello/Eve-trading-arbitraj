@@ -159,7 +159,8 @@ Use this to resolve a user-typed system name → system ID.
 
 For bulk static data (all item volumes, all system positions, stargate connections) ESI individual calls would be impractical. Use the **Fuzzwork SDE SQLite dump**:
 
-- **Download URL:** `https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2`
+- **Download URL:** `https://www.fuzzwork.co.uk/dump/latest-sqlite.db.gz`
+- **Format:** Gzip compressed SQLite database (`.db.gz` decompressed via `flate2`)
 - **Size:** ~115 MB compressed, ~650 MB uncompressed
 - **Update frequency:** After each EVE patch (approx. every 6–8 weeks)
 

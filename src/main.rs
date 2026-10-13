@@ -109,6 +109,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let log_dir = std::path::Path::new("logs");
+    let _log_guard = eve_trade_scout::logging::init_logging(Some(log_dir), "info")
+        .expect("Failed to initialize logging subsystem");
+
     let args = Args::parse();
 
     let mut cfg = UserConfig::load().unwrap_or_default();

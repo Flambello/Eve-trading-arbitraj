@@ -5,6 +5,7 @@ pub mod config;
 pub mod esi;
 pub mod graph;
 pub mod hub_arbitrage;
+pub mod logging;
 pub mod route_planner;
 pub mod sde;
 pub mod ui;

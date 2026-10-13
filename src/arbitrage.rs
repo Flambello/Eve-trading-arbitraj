@@ -227,6 +227,11 @@ pub fn calculate_deal(
     let buy_price = src_order.price;
     let sell_price = dst_order.price;
 
+    // Validate prices are positive and finite (reject NaN, Infinity, zero, negative)
+    if !buy_price.is_finite() || !sell_price.is_finite() || buy_price <= 0.0 || sell_price <= 0.0 {
+        return None;
+    }
+
     let src_system_id = src_order.system_id;
     let dst_system_id = dst_order.system_id;
     let src_station = src_order.location_id;
@@ -525,4 +530,202 @@ pub fn sanitize_csv_cell(val: &str) -> String {
         val.to_string()
     };
     escaped.replace('"', "\"\"")
+}
+
+/// Prunes redundant order pairings by limiting the number of deals per unique sell order and buy order.
+///
+/// Input `deals` are evaluated in priority order (typically `profit_per_jump DESC`,
+/// with ties broken by fewest `total_jumps` and highest `net_profit`).
+///
+/// - For each unique sell order (`source_order_id`), retains at most `max_per_sell_order` destinations.
+/// - For each unique buy order (`dest_order_id`), retains at most `max_per_buy_order` sources.
+///
+/// If a limit is `0`, that side is unrestricted (unlimited).
+/// When both limits are `0`, the input deals are returned unmodified.
+pub fn filter_deals_by_order_limit<T, F>(
+    deals: impl IntoIterator<Item = T>,
+    max_per_sell_order: usize,
+    max_per_buy_order: usize,
+    get_deal: F,
+) -> Vec<T>
+where
+    F: Fn(&T) -> &ArbitrageDeal,
+{
+    if max_per_sell_order == 0 && max_per_buy_order == 0 {
+        return deals.into_iter().collect();
+    }
+
+    let mut sell_order_counts: HashMap<u64, usize> = HashMap::new();
+    let mut buy_order_counts: HashMap<u64, usize> = HashMap::new();
+    let mut retained = Vec::new();
+
+    for item in deals {
+        let deal = get_deal(&item);
+
+        // Unique identifier for sell order:
+        // Use source_order_id if present; fallback to composite (type_id, source_station_id) if order_id is 0
+        let sell_id = if deal.source_order_id > 0 {
+            deal.source_order_id
+        } else {
+            ((deal.type_id as u64) << 32) | (deal.source_station_id & 0xFFFF_FFFF)
+        };
+
+        // Unique identifier for buy order:
+        // Use dest_order_id if present; fallback to composite (type_id, dest_station_id) if order_id is 0
+        let buy_id = if deal.dest_order_id > 0 {
+            deal.dest_order_id
+        } else {
+            ((deal.type_id as u64) << 32) | (deal.dest_station_id & 0xFFFF_FFFF)
+        };
+
+        if max_per_sell_order > 0 {
+            let count = sell_order_counts.get(&sell_id).copied().unwrap_or(0);
+            if count >= max_per_sell_order {
+                continue;
+            }
+        }
+
+        if max_per_buy_order > 0 {
+            let count = buy_order_counts.get(&buy_id).copied().unwrap_or(0);
+            if count >= max_per_buy_order {
+                continue;
+            }
+        }
+
+        *sell_order_counts.entry(sell_id).or_default() += 1;
+        *buy_order_counts.entry(buy_id).or_default() += 1;
+        retained.push(item);
+    }
+
+    retained
+}
+
+/// Convenience function for slicing and filtering ArbitrageDeal vectors directly.
+pub fn prune_redundant_order_deals(
+    deals: &[ArbitrageDeal],
+    max_per_sell: usize,
+    max_per_buy: usize,
+) -> Vec<ArbitrageDeal> {
+    filter_deals_by_order_limit(deals.iter().cloned(), max_per_sell, max_per_buy, |d| d)
+}
+
+impl ArbitrageDeal {
+    /// Returns the station destination IDs for pushing to EVE Autopilot HUD.
+    pub fn ordered_destination_ids(&self) -> Vec<u64> {
+        if self.source_station_id == self.dest_station_id {
+            vec![self.source_station_id]
+        } else {
+            vec![self.source_station_id, self.dest_station_id]
+        }
+    }
+
+    /// Formats a clean flight sheet for EVE Notepad (Alt+N).
+    pub fn format_eve_flight_sheet(&self) -> String {
+        let mut s = String::new();
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s.push_str(&format!("🚀 EVE TRADE FLIGHT SHEET: {}\n", self.item_name));
+        s.push_str(&format!(
+            "Net Profit: +{:.2}M ISK | Net ROI: +{:.1}% | Distance: {} Jumps\n",
+            self.net_profit / 1_000_000.0,
+            self.net_profit_pct,
+            self.total_jumps
+        ));
+        s.push_str("═══════════════════════════════════════════════════════════\n\n");
+        s.push_str(&format!(
+            "▶ 1. BUY AT: {} ({})\n",
+            self.source_station_name, self.source_system_name
+        ));
+        s.push_str(&format!(
+            "     Quantity: {} units | Buy Price: {:.2} ISK | Capital: {:.2}M ISK | Vol: {:.1} m³\n\n",
+            self.quantity,
+            self.buy_price,
+            self.capital_required / 1_000_000.0,
+            self.volume_used
+        ));
+        s.push_str(&format!(
+            "▶ 2. SELL AT: {} ({})\n",
+            self.dest_station_name, self.dest_system_name
+        ));
+        s.push_str(&format!(
+            "     Sell Price: {:.2} ISK | Revenue: {:.2}M ISK | Net Return: +{:.2}M ISK\n",
+            self.sell_price,
+            (self.sell_price * self.quantity as f64) / 1_000_000.0,
+            self.net_profit / 1_000_000.0
+        ));
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s
+    }
+}
+
+impl TradeCorridorManifest {
+    /// Returns the station destination IDs for pushing to EVE Autopilot HUD.
+    pub fn ordered_destination_ids(&self) -> Vec<u64> {
+        if let Some(first) = self.deals.first() {
+            let src = first.source_station_id;
+            let dst = first.dest_station_id;
+            if src == dst {
+                vec![src]
+            } else {
+                vec![src, dst]
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Formats a clean flight sheet for EVE Notepad (Alt+N).
+    pub fn format_eve_flight_sheet(&self, idx: usize) -> String {
+        let mut s = String::new();
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s.push_str(&format!(
+            "📦 EVE CORRIDOR MANIFEST #{}: {} ➔ {}\n",
+            idx, self.source_system_name, self.dest_system_name
+        ));
+        s.push_str(&format!(
+            "Total Profit: +{:.2}M ISK | Net ROI: +{:.1}% | Distance: {} Jumps\n",
+            self.total_net_profit / 1_000_000.0,
+            self.overall_roi_pct,
+            self.jumps
+        ));
+        s.push_str(&format!(
+            "Volume: {:.1} m³ | Capital: {:.2}M ISK | Items: {} distinct deals\n",
+            self.total_volume_used,
+            self.total_capital_required / 1_000_000.0,
+            self.deals.len()
+        ));
+        s.push_str("═══════════════════════════════════════════════════════════\n\n");
+        s.push_str(&format!(
+            "▶ 1. BUY AT: {} ({})\n",
+            self.source_station_name, self.source_system_name
+        ));
+        for (i, d) in self.deals.iter().enumerate() {
+            s.push_str(&format!(
+                "  [{}] {}x {} @ {:.2} ISK (Cost: {:.2}M ISK, {:.1} m³)\n",
+                i + 1,
+                d.quantity,
+                d.item_name,
+                d.buy_price,
+                d.capital_required / 1_000_000.0,
+                d.volume_used
+            ));
+        }
+        s.push('\n');
+        s.push_str(&format!(
+            "▶ 2. SELL AT: {} ({})\n",
+            self.dest_station_name, self.dest_system_name
+        ));
+        for (i, d) in self.deals.iter().enumerate() {
+            s.push_str(&format!(
+                "  [{}] SELL {}x {} @ {:.2} ISK (Profit: +{:.2}M ISK, {:.1}%)\n",
+                i + 1,
+                d.quantity,
+                d.item_name,
+                d.sell_price,
+                d.net_profit / 1_000_000.0,
+                d.net_profit_pct
+            ));
+        }
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s
+    }
 }

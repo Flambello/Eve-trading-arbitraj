@@ -26,6 +26,80 @@ pub struct TradeRoute {
     pub avg_profit_per_jump: f64,
 }
 
+impl TradeRoute {
+    /// Returns the ordered sequence of station IDs for ESI in-game autopilot.
+    pub fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for stop in &self.stops {
+            let src = stop.deal.source_station_id;
+            let dst = stop.deal.dest_station_id;
+            if ids.last().copied() != Some(src) {
+                ids.push(src);
+            }
+            if ids.last().copied() != Some(dst) {
+                ids.push(dst);
+            }
+        }
+        ids
+    }
+
+    /// Formats a complete in-game flight sheet suitable for EVE Notepad (Alt+N).
+    pub fn format_eve_flight_sheet(&self) -> String {
+        let mut s = String::new();
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s.push_str(&format!(
+            "🗺️ MULTI-STOP ROUTE | {} Stops | {} Jumps | Net Profit: +{:.2}M ISK\n",
+            self.stops.len(),
+            self.total_jumps,
+            self.total_profit / 1_000_000.0
+        ));
+        s.push_str(&format!(
+            "Capital Required: {:.2}M ISK | Max Volume: {:.1} m³ | Avg PPJ: {:.2}M/jump\n",
+            self.total_capital_required / 1_000_000.0,
+            self.max_volume_used,
+            self.avg_profit_per_jump / 1_000_000.0
+        ));
+        s.push_str("═══════════════════════════════════════════════════════════\n\n");
+
+        for stop in &self.stops {
+            s.push_str(&format!(
+                "▶ STOP #{} (Travel {} jumps to {}):\n",
+                stop.step, stop.jumps_from_prev, stop.deal.source_system_name
+            ));
+            s.push_str(&format!("  1. BUY at: {}\n", stop.deal.source_station_name));
+            s.push_str(&format!(
+                "     • BUY: {}x {} @ {:.2} ISK (Cost: {:.2}M ISK, {:.1} m³)\n",
+                stop.deal.quantity,
+                stop.deal.item_name,
+                stop.deal.buy_price,
+                stop.deal.capital_required / 1_000_000.0,
+                stop.deal.volume_used
+            ));
+            s.push_str(&format!(
+                "  2. WARP {} JUMPS & SELL at: {}\n",
+                stop.deal.jumps_source_dest, stop.deal.dest_station_name
+            ));
+            s.push_str(&format!(
+                "     • SELL: {}x {} @ {:.2} ISK (Gross: {:.2}M ISK, Profit: +{:.2}M ISK, {:.1}%)\n\n",
+                stop.deal.quantity,
+                stop.deal.item_name,
+                stop.deal.sell_price,
+                (stop.deal.sell_price * stop.deal.quantity as f64) / 1_000_000.0,
+                stop.deal.net_profit / 1_000_000.0,
+                stop.deal.net_profit_pct
+            ));
+        }
+
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s.push_str(&format!(
+            "Autopilot trail: {}\n",
+            self.waypoint_names.join(" ➔ ")
+        ));
+        s.push_str("═══════════════════════════════════════════════════════════\n");
+        s
+    }
+}
+
 pub fn plan_route(
     deals: &[ArbitrageDeal],
     _ship: ShipProfile,
@@ -86,7 +160,9 @@ pub fn plan_route(
         let chosen_dest_station = chosen_deal.dest_station_id;
         let chosen_type = chosen_deal.type_id;
 
-        let dcount = dest_loads.entry((chosen_type, chosen_dest_station)).or_insert(0);
+        let dcount = dest_loads
+            .entry((chosen_type, chosen_dest_station))
+            .or_insert(0);
         *dcount += 1;
         let dest_exhausted = *dcount >= 2;
 
@@ -98,7 +174,10 @@ pub fn plan_route(
             if d.type_id == chosen_type && d.source_station_id == chosen_src_station {
                 return false;
             }
-            if dest_exhausted && d.type_id == chosen_type && d.dest_station_id == chosen_dest_station {
+            if dest_exhausted
+                && d.type_id == chosen_type
+                && d.dest_station_id == chosen_dest_station
+            {
                 return false;
             }
             true

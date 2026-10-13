@@ -99,6 +99,20 @@ pub struct CacheConfig {
     pub sde_max_age_days: u32,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SsoConfig {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default = "default_callback_port")]
+    pub callback_port: u16,
+    #[serde(default)]
+    pub auto_sync_location: bool,
+}
+
+fn default_callback_port() -> u16 {
+    37373
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserConfig {
     pub ship: ShipConfig,
@@ -107,6 +121,8 @@ pub struct UserConfig {
     pub filters: FilterConfig,
     pub fees: FeeConfig,
     pub cache: CacheConfig,
+    #[serde(default)]
+    pub sso: SsoConfig,
 }
 
 impl Default for UserConfig {
@@ -141,6 +157,7 @@ impl Default for UserConfig {
                 directory: "cache".to_string(),
                 sde_max_age_days: 30,
             },
+            sso: SsoConfig::default(),
         }
     }
 }

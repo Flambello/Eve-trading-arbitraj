@@ -1,9 +1,11 @@
 use crate::arbitrage::{
-    bundle_route_cargo, find_deals, ArbitrageConfig, ArbitrageDeal, TradeCorridorManifest,
+    bundle_route_cargo, filter_deals_by_order_limit, find_deals, ArbitrageConfig, ArbitrageDeal,
+    TradeCorridorManifest,
 };
 use crate::config::{BIG_HAULER, SMALL_HAULER};
 use crate::esi::{fetch_markets, EsiClient};
 use crate::graph::SystemGraph;
+use crate::hub_arbitrage::{self, CoreHub};
 use crate::route_planner::{plan_route, RouteStop, TradeRoute};
 use crate::sde::SdeLoader;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
@@ -45,6 +47,7 @@ enum ActiveTab {
     Manifests,
     Route,
     ChainRoute,
+    HubArbitrage,
     Settings,
 }
 
@@ -212,6 +215,27 @@ fn export_manifests_to_csv(manifests: &[TradeCorridorManifest]) -> String {
     out
 }
 
+/// Resolves a safe user-writable path for CSV exports (e.g. ~/Downloads/filename or ./filename).
+fn resolve_csv_export_path(filename: &str) -> std::path::PathBuf {
+    if let Some(dl) = dirs::download_dir() {
+        if dl.exists() {
+            return dl.join(filename);
+        }
+    }
+    if let Some(doc) = dirs::document_dir() {
+        if doc.exists() {
+            return doc.join(filename);
+        }
+    }
+    std::path::PathBuf::from(filename)
+}
+
+/// Target corporation for in-game ISK donations.
+pub const CORP_DONATION_RECIPIENT: &str = "Expandabliss";
+
+/// Embedded Expandabliss corporation crest PNG bytes (124x124 RGBA).
+pub const CORP_ICON_PNG_BYTES: &[u8] = include_bytes!("../../assets/icons/expandabliss.png");
+
 pub struct DesktopApp {
     sde: Option<Arc<SdeLoader>>,
     graph: Option<Arc<SystemGraph>>,
@@ -256,6 +280,7 @@ pub struct DesktopApp {
     min_profit_filter_m: f64,
     max_jumps_filter: u32,
     pub hide_npc_trades: bool,
+    pub max_deals_per_order: usize,
 
     // Active state
     tab: ActiveTab,
@@ -274,6 +299,7 @@ pub struct DesktopApp {
     // ── Chain Route Planner tab ──────────────────────────────────
     chain_max_legs: usize,
     chain_max_dest_loads: usize,
+    chain_include_npc: bool,
     chain_detour_enabled: bool,
     chain_max_detour: u32,
     chain_is_running: bool,
@@ -282,6 +308,18 @@ pub struct DesktopApp {
     chain_rx: Receiver<ChainSearchResult>,
     chain_tx: Sender<ChainSearchResult>,
     chain_flowchart_split: bool,
+
+    // ── Core Hub Arbitrage tab ────────────────────────────────────
+    hub_source_filter: Option<crate::hub_arbitrage::CoreHub>,
+    hub_dest_filter: Option<crate::hub_arbitrage::CoreHub>,
+    hub_include_npc: bool,
+    hub_major_stations_only: bool,
+    hub_min_profit_m: f64,
+    hub_search_query: String,
+    hub_sort_by: DealSortBy,
+    hub_sort_descending: bool,
+    hub_packed_manifest: Option<crate::chain_route_planner::ConstrainedPackResult>,
+    hub_show_manifest_card: bool,
 
     // ── Responsive Layout & UI Scaling ───────────────────────────
     pub ui_scale: f32,
@@ -295,6 +333,27 @@ pub struct DesktopApp {
     pub startup_rx: Option<Receiver<StartupMsg>>,
     pub startup_tip_index: usize,
     pub startup_last_tip: Instant,
+
+    // ── EVE SSO & In-Game Autopilot Sync ──────────────────────────
+    pub sso_client_id: String,
+    pub sso_character_name: Option<String>,
+    pub sso_character_id: Option<u64>,
+    pub sso_is_authenticating: bool,
+    pub sso_is_pushing: bool,
+    pub sso_auto_sync_location: bool,
+    pub sso_is_fetching_location: bool,
+    sso_location_scan_after: bool,
+    sso_auth_rx: Option<Receiver<Result<crate::esi::sso::SsoToken, String>>>,
+    sso_push_rx: Option<Receiver<Result<usize, String>>>,
+    sso_location_rx: Option<Receiver<Result<crate::esi::sso::CharacterLocation, String>>>,
+
+    // ── EVE SSO Token Auto-Refresh ────────────────────────────────
+    pub sso_last_token_refresh_check: Instant,
+    pub sso_is_refreshing_token: bool,
+    sso_refresh_rx: Option<Receiver<Result<crate::esi::sso::SsoToken, String>>>,
+
+    // ── In-Game ISK Donations & Corp Crest ────────────────────────
+    corp_icon_texture: Option<egui::TextureHandle>,
 }
 
 impl DesktopApp {
@@ -390,6 +449,7 @@ impl DesktopApp {
             min_profit_filter_m: 0.0,
             max_jumps_filter: 0,
             hide_npc_trades: false,
+            max_deals_per_order: 2,
 
             tab: ActiveTab::Deals,
             is_scanning: false,
@@ -404,6 +464,7 @@ impl DesktopApp {
 
             chain_max_legs: 4,
             chain_max_dest_loads: 2,
+            chain_include_npc: true,
             chain_detour_enabled: true,
             chain_max_detour: 2,
             chain_is_running: false,
@@ -412,6 +473,17 @@ impl DesktopApp {
             chain_rx,
             chain_tx,
             chain_flowchart_split: true,
+
+            hub_source_filter: Some(crate::hub_arbitrage::CoreHub::Jita),
+            hub_dest_filter: Some(crate::hub_arbitrage::CoreHub::Amarr),
+            hub_include_npc: true,
+            hub_major_stations_only: false,
+            hub_min_profit_m: 0.5,
+            hub_search_query: String::new(),
+            hub_sort_by: DealSortBy::ProfitPerJump,
+            hub_sort_descending: true,
+            hub_packed_manifest: None,
+            hub_show_manifest_card: false,
 
             custom_cargo_vol: 60_000.0,
             custom_budget_isk: 500_000_000.0,
@@ -435,6 +507,26 @@ impl DesktopApp {
             startup_rx: None,
             startup_tip_index: 0,
             startup_last_tip: Instant::now(),
+
+            sso_client_id: crate::config::UserConfig::load()
+                .map(|c| c.sso.client_id)
+                .unwrap_or_default(),
+            sso_character_name: crate::esi::sso::load_saved_token().map(|t| t.character_name),
+            sso_character_id: crate::esi::sso::load_saved_token().map(|t| t.character_id),
+            sso_is_authenticating: false,
+            sso_is_pushing: false,
+            sso_auto_sync_location: crate::config::UserConfig::load()
+                .map(|c| c.sso.auto_sync_location)
+                .unwrap_or(false),
+            sso_is_fetching_location: false,
+            sso_location_scan_after: false,
+            sso_auth_rx: None,
+            sso_push_rx: None,
+            sso_location_rx: None,
+            sso_last_token_refresh_check: Instant::now() - Duration::from_secs(3600),
+            sso_is_refreshing_token: false,
+            sso_refresh_rx: None,
+            corp_icon_texture: None,
         }
     }
 
@@ -496,6 +588,7 @@ impl DesktopApp {
             min_profit_filter_m: 0.0,
             max_jumps_filter: 0,
             hide_npc_trades: false,
+            max_deals_per_order: 2,
 
             tab: ActiveTab::Deals,
             is_scanning: false,
@@ -510,6 +603,7 @@ impl DesktopApp {
 
             chain_max_legs: 4,
             chain_max_dest_loads: 2,
+            chain_include_npc: true,
             chain_detour_enabled: true,
             chain_max_detour: 2,
             chain_is_running: false,
@@ -518,6 +612,17 @@ impl DesktopApp {
             chain_rx,
             chain_tx,
             chain_flowchart_split: true,
+
+            hub_source_filter: Some(crate::hub_arbitrage::CoreHub::Jita),
+            hub_dest_filter: Some(crate::hub_arbitrage::CoreHub::Amarr),
+            hub_include_npc: true,
+            hub_major_stations_only: false,
+            hub_min_profit_m: 0.5,
+            hub_search_query: String::new(),
+            hub_sort_by: DealSortBy::ProfitPerJump,
+            hub_sort_descending: true,
+            hub_packed_manifest: None,
+            hub_show_manifest_card: false,
 
             custom_cargo_vol: 60_000.0,
             custom_budget_isk: 500_000_000.0,
@@ -533,6 +638,26 @@ impl DesktopApp {
             startup_rx: Some(startup_rx),
             startup_tip_index: 0,
             startup_last_tip: Instant::now(),
+
+            sso_client_id: crate::config::UserConfig::load()
+                .map(|c| c.sso.client_id)
+                .unwrap_or_default(),
+            sso_character_name: crate::esi::sso::load_saved_token().map(|t| t.character_name),
+            sso_character_id: crate::esi::sso::load_saved_token().map(|t| t.character_id),
+            sso_is_authenticating: false,
+            sso_is_pushing: false,
+            sso_auto_sync_location: crate::config::UserConfig::load()
+                .map(|c| c.sso.auto_sync_location)
+                .unwrap_or(false),
+            sso_is_fetching_location: false,
+            sso_location_scan_after: false,
+            sso_auth_rx: None,
+            sso_push_rx: None,
+            sso_location_rx: None,
+            sso_last_token_refresh_check: Instant::now() - Duration::from_secs(3600),
+            sso_is_refreshing_token: false,
+            sso_refresh_rx: None,
+            corp_icon_texture: None,
         }
     }
 
@@ -552,6 +677,227 @@ impl DesktopApp {
 
     fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    /// Lazily decodes and loads the embedded Expandabliss corporation crest PNG into an egui texture.
+    fn ensure_corp_icon(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
+        if self.corp_icon_texture.is_none() {
+            if let Ok(img) = image::load_from_memory(CORP_ICON_PNG_BYTES) {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    rgba.as_raw(),
+                );
+                self.corp_icon_texture = Some(ctx.load_texture(
+                    "expandabliss_corp_icon",
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                ));
+            }
+        }
+        self.corp_icon_texture.as_ref()
+    }
+
+    /// Checks if the saved EVE SSO token needs proactive refresh and initiates background renewal.
+    pub fn check_and_refresh_sso_token(&mut self, force: bool) {
+        if self.sso_is_refreshing_token {
+            return;
+        }
+        let token = match crate::esi::sso::load_saved_token() {
+            Some(t) => t,
+            None => return,
+        };
+
+        if !force && !token.needs_refresh() {
+            return;
+        }
+
+        let client_id = self.sso_client_id.clone();
+        self.sso_is_refreshing_token = true;
+        if force {
+            self.set_toast("🔄 Refreshing EVE SSO access token...");
+        }
+
+        let (tx, rx) = channel();
+        self.sso_refresh_rx = Some(rx);
+
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::refresh_saved_token_if_needed(
+                &http_client,
+                &client_id,
+            ));
+            match res {
+                Ok(Some(token)) => {
+                    let _ = tx.send(Ok(token));
+                }
+                Ok(None) => {
+                    let _ = tx.send(Err("No token found on disk to refresh".to_string()));
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                }
+            }
+        });
+    }
+
+    pub fn start_sso_authentication(&mut self) {
+        if self.sso_is_authenticating {
+            return;
+        }
+        let client_id = match crate::esi::sso::resolve_client_id(&self.sso_client_id) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_toast(format!("⚠️ SSO unavailable: {}", e));
+                return;
+            }
+        };
+
+        self.sso_is_authenticating = true;
+        self.set_toast("Opening browser for EVE SSO authentication...");
+
+        let (tx, rx) = channel();
+        self.sso_auth_rx = Some(rx);
+
+        let callback_port = crate::esi::sso::DEFAULT_CALLBACK_PORT;
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::authenticate_character_via_pkce(
+                &http_client,
+                &client_id,
+                callback_port,
+            ));
+            let _ = tx.send(res.map_err(|e| e.to_string()));
+        });
+    }
+
+    pub fn disconnect_sso(&mut self) {
+        let _ = crate::esi::sso::delete_saved_token();
+        self.sso_character_name = None;
+        self.sso_character_id = None;
+        self.set_toast("Disconnected EVE character and deleted saved token.");
+    }
+
+    pub fn push_to_eve_autopilot(&mut self, destination_ids: Vec<u64>, label: &str) {
+        if self.sso_is_pushing {
+            self.set_toast("Autopilot sync already in progress...");
+            return;
+        }
+        if destination_ids.is_empty() {
+            self.set_toast("No waypoints found to push to EVE client.");
+            return;
+        }
+        if self.sso_character_name.is_none() {
+            self.set_toast("⚠️ Please connect your EVE character in Settings first!");
+            self.tab = ActiveTab::Settings;
+            return;
+        }
+
+        let client_id = match crate::esi::sso::resolve_client_id(&self.sso_client_id) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_toast(format!("⚠️ Autopilot sync error: {}", e));
+                return;
+            }
+        };
+        self.sso_is_pushing = true;
+        self.set_toast(format!(
+            "Injecting {} waypoints into live EVE HUD for {}...",
+            destination_ids.len(),
+            label
+        ));
+
+        let (tx, rx) = channel();
+        self.sso_push_rx = Some(rx);
+
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::push_waypoints_with_token(
+                &http_client,
+                &client_id,
+                &destination_ids,
+            ));
+            let _ = tx.send(res.map_err(|e| e.to_string()));
+        });
+    }
+
+    pub fn fetch_live_character_location(&mut self, scan_after: bool) {
+        if self.sso_is_fetching_location {
+            return;
+        }
+        if self.sso_character_name.is_none() {
+            self.set_toast("⚠️ Please connect your EVE character in Settings first!");
+            self.tab = ActiveTab::Settings;
+            return;
+        }
+
+        let client_id = match crate::esi::sso::resolve_client_id(&self.sso_client_id) {
+            Ok(id) => id,
+            Err(e) => {
+                self.set_toast(format!("⚠️ Location sync error: {}", e));
+                return;
+            }
+        };
+        self.sso_is_fetching_location = true;
+        self.sso_location_scan_after = scan_after;
+        self.set_toast("🛰️ Querying live character location from CCP ESI...");
+
+        let (tx, rx) = channel();
+        self.sso_location_rx = Some(rx);
+
+        thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Runtime build error: {}", e)));
+                    return;
+                }
+            };
+
+            let http_client = reqwest::Client::new();
+            let res = rt.block_on(crate::esi::sso::get_character_location_with_token(
+                &http_client,
+                &client_id,
+            ));
+            let _ = tx.send(res.map_err(|e| e.to_string()));
+        });
     }
 
     fn selected_regions(&self) -> Vec<u32> {
@@ -875,6 +1221,119 @@ impl eframe::App for DesktopApp {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
 
+        // Poll SSO auth worker
+        if let Some(ref rx) = self.sso_auth_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_authenticating = false;
+                match res {
+                    Ok(tok) => {
+                        self.sso_character_name = Some(tok.character_name.clone());
+                        self.sso_character_id = Some(tok.character_id);
+                        self.set_toast(format!(
+                            "🚀 Connected to EVE character: {}",
+                            tok.character_name
+                        ));
+                        crate::audio::play_high_profit_alert();
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("SSO Authentication Error: {}", err));
+                    }
+                }
+                self.sso_auth_rx = None;
+            }
+        }
+
+        // Poll SSO autopilot push worker
+        if let Some(ref rx) = self.sso_push_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_pushing = false;
+                match res {
+                    Ok(stops) => {
+                        self.set_toast(format!(
+                            "🚀 Injected {} waypoint(s) into live EVE client HUD!",
+                            stops
+                        ));
+                        crate::audio::play_high_profit_alert();
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("Autopilot injection failed: {}", err));
+                    }
+                }
+                self.sso_push_rx = None;
+            }
+        }
+
+        // Poll SSO character location worker
+        if let Some(ref rx) = self.sso_location_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_fetching_location = false;
+                let scan_after = self.sso_location_scan_after;
+                self.sso_location_scan_after = false;
+                match res {
+                    Ok(loc) => {
+                        let sys_name_opt = self
+                            .sde
+                            .as_ref()
+                            .and_then(|s| s.get_system_name(loc.solar_system_id));
+                        if let Some(sys_name) = sys_name_opt {
+                            let old_system = self.home_system.clone();
+                            self.home_system = sys_name.clone();
+                            self.set_toast(format!(
+                                "🛰️ Detected in-game system: {} (ID: {})",
+                                sys_name, loc.solar_system_id
+                            ));
+                            crate::audio::play_high_profit_alert();
+                            if scan_after || old_system != sys_name {
+                                self.start_scan();
+                            }
+                        } else {
+                            self.set_toast(format!(
+                                "🛰️ In-game solar system ID {} detected, but not found in SDE.",
+                                loc.solar_system_id
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("Location sync error: {}", err));
+                    }
+                }
+                self.sso_location_rx = None;
+            }
+        }
+
+        // Periodic background SSO token refresh check (every 30 seconds)
+        if self.sso_last_token_refresh_check.elapsed() >= Duration::from_secs(30) {
+            self.sso_last_token_refresh_check = Instant::now();
+            self.check_and_refresh_sso_token(false);
+        }
+
+        // Poll SSO token refresh worker
+        if let Some(ref rx) = self.sso_refresh_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.sso_is_refreshing_token = false;
+                match res {
+                    Ok(token) => {
+                        self.sso_character_name = Some(token.character_name);
+                        self.sso_character_id = Some(token.character_id);
+                        self.set_toast("🔄 EVE SSO token auto-refreshed (valid for 20m)");
+                    }
+                    Err(err) => {
+                        self.set_toast(format!("SSO token refresh error: {}", err));
+                    }
+                }
+                self.sso_refresh_rx = None;
+            }
+        }
+
+        if self.chain_is_running
+            || self.sso_is_authenticating
+            || self.sso_is_pushing
+            || self.sso_is_fetching_location
+            || self.sso_is_refreshing_token
+        {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+
         // Auto-refresh timer check
         if self.auto_refresh && !self.is_scanning {
             let elapsed = self
@@ -1023,13 +1482,76 @@ impl eframe::App for DesktopApp {
                         }
                     }
 
+                    let corp_tex = self.ensure_corp_icon(ctx).cloned();
+                    let mut copy_corp_clicked = false;
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             RichText::new("EVE Traveling Merchant • Linux Fedora Native")
                                 .size(11.0)
                                 .color(Color32::from_rgb(120, 140, 170)),
                         );
+
+                        ui.separator();
+
+                        // In-Game ISK Donation Banner
+                        egui::Frame::none()
+                            .fill(Color32::from_rgba_unmultiplied(22, 28, 44, 220))
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(218, 165, 32)))
+                            .rounding(4.0)
+                            .inner_margin(egui::vec2(6.0, 2.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if let Some(ref tex) = corp_tex {
+                                        ui.image((tex.id(), egui::vec2(16.0, 16.0)));
+                                    }
+                                    ui.label(
+                                        RichText::new("Support: ISK to")
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(180, 205, 235)),
+                                    );
+                                    ui.label(
+                                        RichText::new(CORP_DONATION_RECIPIENT)
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(255, 215, 0))
+                                            .strong(),
+                                    );
+                                    if ui
+                                        .button(
+                                            RichText::new("📋 Copy Corp")
+                                                .size(10.5)
+                                                .color(Color32::from_rgb(255, 230, 120))
+                                                .strong(),
+                                        )
+                                        .on_hover_ui(|ui| {
+                                            ui.heading("🪙 In-Game ISK Donations");
+                                            ui.label("EVE Traveling Merchant is 100% free & open-source.");
+                                            ui.label("Send voluntary ISK donations in-game to support development:");
+                                            ui.label(
+                                                RichText::new("Corporation: Expandabliss")
+                                                    .color(Color32::from_rgb(255, 215, 0))
+                                                    .strong(),
+                                            );
+                                            ui.add_space(4.0);
+                                            ui.label("1. Press Alt+W in EVE to open Wallet");
+                                            ui.label("2. Click 'Transfer ISK'");
+                                            ui.label("3. Search recipient: Expandabliss (Corporation)");
+                                            ui.label("Fly safe o7!");
+                                        })
+                                        .clicked()
+                                    {
+                                        copy_corp_clicked = true;
+                                    }
+                                });
+                            });
                     });
+
+                    if copy_corp_clicked {
+                        ui.output_mut(|o| o.copied_text = CORP_DONATION_RECIPIENT.to_string());
+                        self.set_toast(
+                            "Copied 'Expandabliss' to clipboard! Send ISK in-game via Wallet > Transfer.",
+                        );
+                    }
                 });
             });
 
@@ -1045,6 +1567,7 @@ impl eframe::App for DesktopApp {
                 ActiveTab::Manifests => self.render_manifests_tab(ui),
                 ActiveTab::Route => self.render_route_tab(ui),
                 ActiveTab::ChainRoute => self.render_chain_route_tab(ui),
+                ActiveTab::HubArbitrage => self.render_hub_arbitrage_tab(ui),
                 ActiveTab::Settings => self.render_settings_tab(ui),
             });
     }
@@ -1142,6 +1665,14 @@ fn render_ship_util_bars(ui: &mut egui::Ui, vol_frac: f32, budget_frac: f32) -> 
         }
     }
     resp
+}
+
+#[derive(Default)]
+struct DealsGridAction {
+    pub toggle_select: Option<usize>,
+    pub action_toast: Option<String>,
+    pub change_sort: Option<(DealSortBy, bool)>,
+    pub direct_push: Option<Vec<u64>>,
 }
 
 impl DesktopApp {
@@ -1449,6 +1980,39 @@ impl DesktopApp {
                 self.start_scan();
             }
 
+            // Single dedicated "Check Location" button
+            let loc_btn_label = if self.sso_is_fetching_location {
+                "⏳ Checking..."
+            } else {
+                "🛰️ Check Location"
+            };
+            let loc_btn = egui::Button::new(
+                RichText::new(loc_btn_label)
+                    .size(11.5)
+                    .color(if self.sso_character_name.is_some() {
+                        Color32::from_rgb(0, 220, 255)
+                    } else {
+                        Color32::LIGHT_GRAY
+                    })
+                    .strong(),
+            );
+            if ui
+                .add_enabled(!self.sso_is_fetching_location, loc_btn)
+                .on_hover_text(if self.sso_character_name.is_some() {
+                    "Query CCP ESI right now for your pilot's live in-game solar system, update Deals origin, and scan"
+                } else {
+                    "Connect your EVE character in Settings to enable 1-click in-game location detection"
+                })
+                .clicked()
+            {
+                if self.sso_character_name.is_none() {
+                    self.set_toast("⚠️ Please connect your character via EVE SSO in Settings first!");
+                    self.tab = ActiveTab::Settings;
+                } else {
+                    self.fetch_live_character_location(true);
+                }
+            }
+
             // System detected status pill
             let home_id_opt = self.sde.as_ref().and_then(|s| s.get_system_id(&self.home_system));
             if let Some(hid) = home_id_opt {
@@ -1458,8 +2022,9 @@ impl DesktopApp {
                     .and_then(|r| self.sde.as_ref().and_then(|s| s.get_region_name(r)))
                     .unwrap_or_else(|| "Unknown".to_string());
                 let sys_name = self.sde.as_ref().and_then(|s| s.get_system_name(hid)).unwrap_or_default();
+                let sync_tag = "";
                 ui.label(
-                    RichText::new(format!("[{:.1}] {} · {}", sec, sys_name, reg_name))
+                    RichText::new(format!("[{:.1}] {} · {}{}", sec, sys_name, reg_name, sync_tag))
                         .size(11.0)
                         .color(sec_col)
                         .strong(),
@@ -1997,6 +2562,19 @@ impl DesktopApp {
     }
 
     fn render_tab_bar(&mut self, ui: &mut egui::Ui) {
+        let hub_count = crate::hub_arbitrage::filter_hub_deals(
+            &self.deals,
+            &crate::hub_arbitrage::HubFilterOptions {
+                source_hub: self.hub_source_filter,
+                dest_hub: self.hub_dest_filter,
+                include_npc: self.hub_include_npc,
+                major_stations_only: self.hub_major_stations_only,
+                min_profit: self.hub_min_profit_m * 1_000_000.0,
+                search_query: self.hub_search_query.clone(),
+            },
+        )
+        .len();
+
         ui.horizontal(|ui| {
             let tabs: &[(ActiveTab, String)] = &[
                 (ActiveTab::Deals, format!("📊 Deals ({})", self.deals.len())),
@@ -2014,6 +2592,10 @@ impl DesktopApp {
                 (
                     ActiveTab::ChainRoute,
                     format!("🔗 Chain Route ({})", self.chain_results.len()),
+                ),
+                (
+                    ActiveTab::HubArbitrage,
+                    format!("🏛️ Hub Arbitrage ({})", hub_count),
                 ),
                 (ActiveTab::Settings, "⚙️ Settings & Fees".to_string()),
             ];
@@ -2205,6 +2787,61 @@ impl DesktopApp {
                     }
 
                     ui.separator();
+
+                    // Max Deals Per Order Toggle (Order Diversity / Filler Pruning)
+                    let (cap_icon, cap_label, cap_fill, cap_stroke, cap_text_col) =
+                        if self.max_deals_per_order > 0 {
+                            (
+                                "🎯",
+                                format!("Top {}/Order: ON", self.max_deals_per_order),
+                                Color32::from_rgba_unmultiplied(16, 44, 60, 220),
+                                Color32::from_rgb(0, 200, 255),
+                                Color32::from_rgb(0, 220, 255),
+                            )
+                        } else {
+                            (
+                                "🌐",
+                                "Max/Order: ALL".to_string(),
+                                Color32::from_rgba_unmultiplied(25, 30, 45, 180),
+                                Color32::from_rgb(50, 70, 95),
+                                Color32::from_rgb(140, 160, 190),
+                            )
+                        };
+
+                    let cap_btn = egui::Button::new(
+                        RichText::new(format!("{} {}", cap_icon, cap_label))
+                            .size(12.0)
+                            .color(cap_text_col)
+                            .strong(),
+                    )
+                    .fill(cap_fill)
+                    .stroke(Stroke::new(1.0_f32, cap_stroke));
+
+                    if ui
+                        .add(cap_btn)
+                        .on_hover_text(
+                            "Toggle order diversity filter to prune redundant filler deals:\n• ON: Limits each sell order to top N destinations & each buy order to top N sources\n• Prioritizes fastest, closest, and highest profit-per-jump routes from starting location\n• ALL: Displays all raw order permutations",
+                        )
+                        .clicked()
+                    {
+                        if self.max_deals_per_order > 0 {
+                            self.max_deals_per_order = 0;
+                            self.set_toast("Order Diversity: Showing all order pairs (unlimited)");
+                        } else {
+                            self.max_deals_per_order = 2;
+                            self.set_toast("Order Diversity: Limiting to top 2 routes per order");
+                        }
+                    }
+
+                    ui.add(
+                        egui::DragValue::new(&mut self.max_deals_per_order)
+                            .speed(0.1)
+                            .range(0..=10)
+                            .suffix("/ord"),
+                    )
+                    .on_hover_text("Max destinations per sell order and sources per buy order (0 = unlimited / all pairs)");
+
+                    ui.separator();
                     let export_btn = egui::Button::new(
                         RichText::new("📥 Export Deals to CSV")
                             .color(Color32::from_rgb(0, 220, 255))
@@ -2238,10 +2875,22 @@ impl DesktopApp {
                             })
                             .collect();
 
+                        let export_filtered = if self.max_deals_per_order > 0 {
+                            filter_deals_by_order_limit(
+                                export_filtered,
+                                self.max_deals_per_order,
+                                self.max_deals_per_order,
+                                |(_, d)| d,
+                            )
+                        } else {
+                            export_filtered
+                        };
+
                         let csv_str = export_deals_to_csv(&export_filtered);
                         copy_to_clipboard(ui, csv_str.clone());
-                        let _ = std::fs::write("deals_export.csv", &csv_str);
-                        self.set_toast(format!("Exported {} deals to ./deals_export.csv & copied to clipboard!", export_filtered.len()));
+                        let export_path = resolve_csv_export_path("deals_export.csv");
+                        let _ = std::fs::write(&export_path, &csv_str);
+                        self.set_toast(format!("Exported {} deals to {} & copied to clipboard!", export_filtered.len(), export_path.display()));
                     }
                 });
             });
@@ -2275,6 +2924,31 @@ impl DesktopApp {
                     && (max_jumps == 0 || d.total_jumps <= max_jumps)
             })
             .collect();
+
+        if self.max_deals_per_order > 0 {
+            filtered = filter_deals_by_order_limit(
+                filtered,
+                self.max_deals_per_order,
+                self.max_deals_per_order,
+                |(_, d)| d,
+            );
+        }
+
+        if self.max_deals_per_order > 0 && filtered.len() < self.deals.len() {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "🎯 Showing {} high-priority deals (pruned from {} total; max {} routes/order)",
+                        filtered.len(),
+                        self.deals.len(),
+                        self.max_deals_per_order,
+                    ))
+                    .size(11.5)
+                    .color(Color32::from_rgb(0, 200, 255)),
+                );
+            });
+            ui.add_space(4.0);
+        }
 
         match self.sort_by {
             DealSortBy::ProfitPerJump => {
@@ -2436,6 +3110,110 @@ impl DesktopApp {
             }
         }
 
+        let mut top_bar_push: Option<(Vec<u64>, String)> = None;
+        let mut top_bar_toast: Option<String> = None;
+        let mut top_bar_switch_settings = false;
+
+        // EVE Autopilot Quick Action Bar
+        egui::Frame::none()
+            .fill(Color32::from_rgb(16, 24, 38))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 255)))
+            .rounding(6.0)
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(ref char_name) = self.sso_character_name {
+                        ui.label(
+                            RichText::new(format!("🟢 Connected: {}", char_name))
+                                .size(12.5)
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .strong(),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("⚪ Pilot: Disconnected")
+                                .size(12.5)
+                                .color(Color32::GRAY),
+                        );
+                        if ui.small_button("🔑 Connect in Settings").clicked() {
+                            top_bar_switch_settings = true;
+                        }
+                    }
+                    ui.separator();
+
+                    let target_deal = self.selected_deal_idx
+                        .and_then(|idx| self.deals.get(idx))
+                        .or_else(|| filtered.first().map(|(_, d)| *d));
+
+                    if let Some(deal) = target_deal {
+                        let btn_label = if self.selected_deal_idx.is_some() {
+                            format!("🚀 Push Selected Deal to EVE Autopilot ({})", deal.item_name)
+                        } else {
+                            format!("🚀 Push Top Deal to EVE Autopilot (#1 {})", deal.item_name)
+                        };
+                        let push_btn = egui::Button::new(
+                            RichText::new(btn_label)
+                                .size(12.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+
+                        if ui
+                            .add(push_btn)
+                            .on_hover_text(format!(
+                                "Inject this deal's buy & sell waypoints straight into your running EVE client HUD:\n1. Buy at: {}\n2. Sell at: {}",
+                                deal.source_station_name, deal.dest_station_name
+                            ))
+                            .clicked()
+                        {
+                            top_bar_push = Some((deal.ordered_destination_ids(), format!("Deal: {}", deal.item_name)));
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet (Alt+N)")
+                                .size(12.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted trade sheet for in-game Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = deal.format_eve_flight_sheet();
+                            copy_to_clipboard(ui, sheet);
+                            top_bar_toast = Some(format!("Copied flight sheet for '{}' to clipboard!", deal.item_name));
+                        }
+                    }
+
+                    if let Some(ref route) = self.route {
+                        if !route.stops.is_empty() {
+                            ui.separator();
+                            let route_btn = egui::Button::new(
+                                RichText::new(format!("🗺️ Push Planned Route ({} Stops) to EVE", route.stops.len()))
+                                    .size(12.0)
+                                    .color(Color32::BLACK)
+                                    .strong()
+                            )
+                            .fill(Color32::from_rgb(0, 255, 180));
+
+                            if ui
+                                .add(route_btn)
+                                .on_hover_text("Directly inject all planned multi-hop route waypoints into your live EVE client Autopilot HUD")
+                                .clicked()
+                            {
+                                top_bar_push = Some((route.ordered_destination_ids(), "Planned Route".to_string()));
+                            }
+                        }
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
         // Responsive Layout: Choose between Side Panel (on wide screens) and Bottom Drawer (compact screens)
         let avail_w = ui.available_width();
         let avail_h = ui.available_height();
@@ -2446,8 +3224,8 @@ impl DesktopApp {
             let side_w = (avail_w * 0.36).clamp(380.0, 680.0);
             let table_w = (avail_w - side_w - 10.0).max(300.0);
 
-            let mut grid_res = (None, None, None);
-            let mut dossier_res = (false, false, None);
+            let mut grid_res = DealsGridAction::default();
+            let mut dossier_res = (false, false, None, None);
 
             ui.horizontal(|ui| {
                 ui.allocate_ui(Vec2::new(table_w, avail_h), |ui| {
@@ -2462,7 +3240,7 @@ impl DesktopApp {
                 });
             });
 
-            let (close_req, toggle_dock, d_toast) = dossier_res;
+            let (close_req, toggle_dock, d_toast, push_dest_ids) = dossier_res;
             if close_req {
                 self.selected_deal_idx = None;
             }
@@ -2477,19 +3255,24 @@ impl DesktopApp {
             if let Some(msg) = d_toast {
                 self.set_toast(msg);
             }
+            if let Some(dest_ids) = push_dest_ids {
+                self.push_to_eve_autopilot(dest_ids, "Deal Route");
+            }
 
-            let (toggle_select, action_toast, change_sort) = grid_res;
-            if let Some(idx) = toggle_select {
+            if let Some(dest_ids) = grid_res.direct_push {
+                self.push_to_eve_autopilot(dest_ids, "Deal Route");
+            }
+            if let Some(idx) = grid_res.toggle_select {
                 if self.selected_deal_idx == Some(idx) {
                     self.selected_deal_idx = None;
                 } else {
                     self.selected_deal_idx = Some(idx);
                 }
             }
-            if let Some(msg) = action_toast {
+            if let Some(msg) = grid_res.action_toast {
                 self.set_toast(msg);
             }
-            if let Some((new_sort, new_desc)) = change_sort {
+            if let Some((new_sort, new_desc)) = grid_res.change_sort {
                 self.sort_by = new_sort;
                 self.sort_descending = new_desc;
             }
@@ -2500,23 +3283,25 @@ impl DesktopApp {
                 avail_h
             };
 
-            let mut grid_res = (None, None, None);
+            let mut grid_res = DealsGridAction::default();
             ui.allocate_ui(Vec2::new(avail_w, table_height), |ui| {
                 grid_res = self.render_deals_table_grid(ui, &filtered);
             });
 
-            let (toggle_select, action_toast, change_sort) = grid_res;
-            if let Some(idx) = toggle_select {
+            if let Some(dest_ids) = grid_res.direct_push {
+                self.push_to_eve_autopilot(dest_ids, "Deal Route");
+            }
+            if let Some(idx) = grid_res.toggle_select {
                 if self.selected_deal_idx == Some(idx) {
                     self.selected_deal_idx = None;
                 } else {
                     self.selected_deal_idx = Some(idx);
                 }
             }
-            if let Some(msg) = action_toast {
+            if let Some(msg) = grid_res.action_toast {
                 self.set_toast(msg);
             }
-            if let Some((new_sort, new_desc)) = change_sort {
+            if let Some((new_sort, new_desc)) = grid_res.change_sort {
                 self.sort_by = new_sort;
                 self.sort_descending = new_desc;
             }
@@ -2526,12 +3311,12 @@ impl DesktopApp {
                 if let Some(deal) = self.deals.get(idx) {
                     ui.add_space(6.0);
                     let dossier_h = ui.available_height();
-                    let mut dossier_res = (false, false, None);
+                    let mut dossier_res = (false, false, None, None);
                     ui.allocate_ui(Vec2::new(avail_w, dossier_h), |ui| {
                         dossier_res = self.render_deal_dossier(ui, deal, false);
                     });
 
-                    let (close_req, toggle_dock, d_toast) = dossier_res;
+                    let (close_req, toggle_dock, d_toast, push_dest_ids) = dossier_res;
                     if close_req {
                         self.selected_deal_idx = None;
                     }
@@ -2546,8 +3331,21 @@ impl DesktopApp {
                     if let Some(msg) = d_toast {
                         self.set_toast(msg);
                     }
+                    if let Some(dest_ids) = push_dest_ids {
+                        self.push_to_eve_autopilot(dest_ids, "Deal Route");
+                    }
                 }
             }
+        }
+
+        if top_bar_switch_settings {
+            self.tab = ActiveTab::Settings;
+        }
+        if let Some(msg) = top_bar_toast {
+            self.set_toast(msg);
+        }
+        if let Some((dests, label)) = top_bar_push {
+            self.push_to_eve_autopilot(dests, &label);
         }
     }
 
@@ -2555,10 +3353,11 @@ impl DesktopApp {
         &self,
         ui: &mut egui::Ui,
         filtered: &[(usize, &ArbitrageDeal)],
-    ) -> (Option<usize>, Option<String>, Option<(DealSortBy, bool)>) {
+    ) -> DealsGridAction {
         let mut toggle_select: Option<usize> = None;
         let mut action_toast: Option<String> = None;
         let mut change_sort: Option<(DealSortBy, bool)> = None;
+        let mut direct_push: Option<Vec<u64>> = None;
         let current_selected_idx = self.selected_deal_idx;
         let current_sort = self.sort_by;
         let is_desc = self.sort_descending;
@@ -2617,7 +3416,7 @@ impl DesktopApp {
         };
 
         // Responsive fluid column width distribution to fill 100% of window width
-        let actions_w = (avail_w * 0.09).clamp(125.0, 160.0);
+        let actions_w = (avail_w * 0.14).clamp(210.0, 260.0);
         let rank_w = 38.0;
         let pool = (avail_w - rank_w - actions_w - 24.0).max(550.0);
 
@@ -2921,6 +3720,28 @@ impl DesktopApp {
                         // 16: Quick Actions
                         row.col(|ui| {
                             ui.horizontal(|ui| {
+                                let auto_btn = egui::Button::new(
+                                    RichText::new("🚀 Autopilot")
+                                        .size(11.0)
+                                        .color(Color32::BLACK)
+                                        .strong(),
+                                )
+                                .fill(Color32::from_rgb(0, 220, 255));
+                                if ui
+                                    .add(auto_btn)
+                                    .on_hover_text(format!(
+                                        "Inject 2-stop trade route into live EVE Autopilot HUD:\n1. Buy at: {}\n2. Sell at: {}",
+                                        deal.source_station_name, deal.dest_station_name
+                                    ))
+                                    .clicked()
+                                {
+                                    direct_push = Some(deal.ordered_destination_ids());
+                                    action_toast = Some(format!(
+                                        "Injecting route for '{}' into EVE Autopilot HUD...",
+                                        deal.item_name
+                                    ));
+                                }
+
                                 if ui.small_button("📋 Item").on_hover_text("Copy item name to clipboard").clicked() {
                                     copy_to_clipboard(ui, deal.item_name.clone());
                                     action_toast = Some(format!("Copied item '{}' to clipboard!", deal.item_name));
@@ -2939,7 +3760,12 @@ impl DesktopApp {
                 }
             });
 
-        (toggle_select, action_toast, change_sort)
+        DealsGridAction {
+            toggle_select,
+            action_toast,
+            change_sort,
+            direct_push,
+        }
     }
 
     fn render_deal_dossier(
@@ -2947,10 +3773,11 @@ impl DesktopApp {
         ui: &mut egui::Ui,
         deal: &ArbitrageDeal,
         is_side_panel: bool,
-    ) -> (bool, bool, Option<String>) {
+    ) -> (bool, bool, Option<String>, Option<Vec<u64>>) {
         let mut close_requested = false;
         let mut toggle_dock_requested = false;
         let mut toast = None;
+        let mut push_dest_ids = None;
 
         egui::Frame::none()
             .fill(Color32::from_rgb(18, 25, 42))
@@ -2987,6 +3814,38 @@ impl DesktopApp {
                         }
                         if !can_dock_side && !is_side_panel {
                             resp.on_hover_text("Side docking requires >= 1150px window width");
+                        }
+
+                        let push_btn = egui::Button::new(
+                            RichText::new("🚀 Push Deal to EVE Autopilot")
+                                .size(11.5)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+                        if ui
+                            .add(push_btn)
+                            .on_hover_text("Inject this deal's buy & sell stations straight into your running EVE client Autopilot HUD")
+                            .clicked()
+                        {
+                            push_dest_ids = Some(deal.ordered_destination_ids());
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet (Alt+N)")
+                                .size(11.5)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted trade sheet for in-game Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = deal.format_eve_flight_sheet();
+                            copy_to_clipboard(ui, sheet);
+                            toast = Some("Copied deal flight sheet to clipboard! Paste in EVE Notepad (Alt+N).".to_string());
                         }
                     });
                 });
@@ -3223,7 +4082,7 @@ impl DesktopApp {
                     });
             });
 
-        (close_requested, toggle_dock_requested, toast)
+        (close_requested, toggle_dock_requested, toast, push_dest_ids)
     }
 
     fn render_manifest_card(
@@ -3233,8 +4092,9 @@ impl DesktopApp {
         m: &TradeCorridorManifest,
         max_vol: f64,
         max_budget: f64,
-    ) -> Option<String> {
+    ) -> (Option<String>, Option<Vec<u64>>) {
         let mut toast = None;
+        let mut push_dest_ids = None;
         let vol_pct = (m.total_volume_used / max_vol) * 100.0;
         let budget_pct = (m.total_capital_required / max_budget) * 100.0;
         let src_sec_col = security_color(m.source_security);
@@ -3298,6 +4158,38 @@ impl DesktopApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let push_btn = egui::Button::new(
+                            RichText::new("🚀 Push Autopilot")
+                                .size(11.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+                        if ui
+                            .add(push_btn)
+                            .on_hover_text("Inject corridor stations into live EVE Autopilot HUD")
+                            .clicked()
+                        {
+                            push_dest_ids = Some(m.ordered_destination_ids());
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet")
+                                .size(11.0)
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted corridor flight sheet for EVE Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = m.format_eve_flight_sheet(idx + 1);
+                            copy_to_clipboard(ui, sheet);
+                            toast = Some("Copied manifest flight sheet! Paste into in-game Notepad (Alt+N).".to_string());
+                        }
+
                         if ui.small_button("📋 Multi-Buy").on_hover_text("Copy in EVE Online Multi-Buy format: '<Item Name>\\t<Quantity>\\n' for in-game paste").clicked() {
                             let mb = m.deals.iter().map(|d| format!("{}\t{}", d.item_name, d.quantity)).collect::<Vec<_>>().join("\n");
                             copy_to_clipboard(ui, mb);
@@ -3358,7 +4250,7 @@ impl DesktopApp {
                     });
             });
 
-        toast
+        (toast, push_dest_ids)
     }
 
     fn render_manifests_tab(&mut self, ui: &mut egui::Ui) {
@@ -3424,8 +4316,9 @@ impl DesktopApp {
                         if ui.add(export_btn).on_hover_text("Export all packed manifests to ./manifests_export.csv and clipboard").clicked() {
                             let csv_str = export_manifests_to_csv(&self.manifests);
                             copy_to_clipboard(ui, csv_str.clone());
-                            let _ = std::fs::write("manifests_export.csv", &csv_str);
-                            self.set_toast(format!("Exported {} manifests to ./manifests_export.csv & copied to clipboard!", self.manifests.len()));
+                            let export_path = resolve_csv_export_path("manifests_export.csv");
+                            let _ = std::fs::write(&export_path, &csv_str);
+                            self.set_toast(format!("Exported {} manifests to {} & copied to clipboard!", self.manifests.len(), export_path.display()));
                         }
                     });
                 });
@@ -3448,6 +4341,7 @@ impl DesktopApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             if avail_w >= 1400.0 {
                 // Browser-grade 2-column responsive layout for wide displays
+                let mut push_manifest_dests: Option<Vec<u64>> = None;
                 for chunk in manifest_indices.chunks(2) {
                     if chunk.len() == 2 {
                         let idx0 = chunk[0];
@@ -3455,49 +4349,73 @@ impl DesktopApp {
                         let m0 = &self.manifests[idx0];
                         let m1 = &self.manifests[idx1];
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_manifest_card(
+                            let (msg0, dest0) = self.render_manifest_card(
                                 &mut cols[0],
                                 idx0,
                                 m0,
                                 max_vol,
                                 max_budget,
-                            ) {
+                            );
+                            if let Some(msg) = msg0 {
                                 manifest_toast = Some(msg);
                             }
-                            if let Some(msg) = self.render_manifest_card(
+                            if let Some(d) = dest0 {
+                                push_manifest_dests = Some(d);
+                            }
+
+                            let (msg1, dest1) = self.render_manifest_card(
                                 &mut cols[1],
                                 idx1,
                                 m1,
                                 max_vol,
                                 max_budget,
-                            ) {
+                            );
+                            if let Some(msg) = msg1 {
                                 manifest_toast = Some(msg);
+                            }
+                            if let Some(d) = dest1 {
+                                push_manifest_dests = Some(d);
                             }
                         });
                     } else {
                         let idx0 = chunk[0];
                         let m0 = &self.manifests[idx0];
                         ui.columns(2, |cols| {
-                            if let Some(msg) = self.render_manifest_card(
+                            let (msg0, dest0) = self.render_manifest_card(
                                 &mut cols[0],
                                 idx0,
                                 m0,
                                 max_vol,
                                 max_budget,
-                            ) {
+                            );
+                            if let Some(msg) = msg0 {
                                 manifest_toast = Some(msg);
+                            }
+                            if let Some(d) = dest0 {
+                                push_manifest_dests = Some(d);
                             }
                         });
                     }
                     ui.add_space(8.0);
                 }
+                if let Some(dests) = push_manifest_dests {
+                    self.push_to_eve_autopilot(dests, "Corridor Manifest");
+                }
             } else {
+                let mut push_manifest_dests: Option<Vec<u64>> = None;
                 // Fluid single-column layout for standard/compact displays
                 for (idx, m) in self.manifests.iter().enumerate() {
-                    if let Some(msg) = self.render_manifest_card(ui, idx, m, max_vol, max_budget) {
-                        manifest_toast = Some(msg);
+                    let (msg, dest) = self.render_manifest_card(ui, idx, m, max_vol, max_budget);
+                    if let Some(m_msg) = msg {
+                        manifest_toast = Some(m_msg);
+                    }
+                    if let Some(d) = dest {
+                        push_manifest_dests = Some(d);
                     }
                     ui.add_space(8.0);
+                }
+                if let Some(dests) = push_manifest_dests {
+                    self.push_to_eve_autopilot(dests, "Corridor Manifest");
                 }
             }
         });
@@ -3638,8 +4556,45 @@ impl DesktopApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let push_btn = egui::Button::new(
+                            RichText::new(if self.sso_is_pushing {
+                                "⏳ Pushing to EVE..."
+                            } else {
+                                "🚀 Push Route to EVE Autopilot"
+                            })
+                            .color(Color32::BLACK)
+                            .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+
+                        if ui
+                            .add_enabled(!self.sso_is_pushing, push_btn)
+                            .on_hover_text("Directly inject all planned waypoint stops into your live running EVE Online Autopilot HUD")
+                            .clicked()
+                        {
+                            let dest_ids = route.ordered_destination_ids();
+                            self.push_to_eve_autopilot(dest_ids, "Planned Route");
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy Flight Sheet (Alt+N)")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted Flight Sheet for EVE Notepad (Alt+N) with full buy/sell stops")
+                            .clicked()
+                        {
+                            let sheet = route.format_eve_flight_sheet();
+                            copy_to_clipboard(ui, sheet);
+                            self.set_toast("Copied EVE Flight Sheet! Paste into in-game Notepad (Alt+N).");
+                        }
+
                         let copy_btn = egui::Button::new(
-                            RichText::new("📋 Copy Autopilot Trail")
+                            RichText::new("📋 Copy Waypoints")
                                 .color(Color32::BLACK)
                                 .strong(),
                         )
@@ -3792,6 +4747,7 @@ impl DesktopApp {
                 ship.max_budget
             },
             safe_only: self.safe_only,
+            include_npc: self.chain_include_npc,
         };
 
         thread::spawn(move || {
@@ -3856,6 +4812,12 @@ impl DesktopApp {
                                 .clamp_to_range(true),
                         )
                         .on_hover_text("Max deliveries of the same commodity to a single destination station (EVE NPC dynamic pricing drops after 2 loads)");
+
+                        ui.separator();
+
+                        // NPC commodities toggle
+                        ui.checkbox(&mut self.chain_include_npc, RichText::new("NPC Commodities").strong())
+                            .on_hover_text("Include seeded NPC trade commodities (e.g. Spirits, Wheat, Toxic Waste). When unchecked, only player market orders are considered.");
 
                         ui.separator();
 
@@ -3944,6 +4906,8 @@ impl DesktopApp {
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut new_selected_idx: Option<usize> = None;
+
             // Discovered Chains Selector Strip
             ui.horizontal(|ui| {
                 ui.label(
@@ -3951,6 +4915,28 @@ impl DesktopApp {
                         .strong()
                         .color(Color32::from_rgb(200, 230, 255)),
                 );
+                ui.separator();
+
+                ui.label(RichText::new("Active Route:").strong());
+                let current_idx = self.chain_selected_idx.unwrap_or(0);
+                let selected_label = if let Some(r) = self.chain_results.get(current_idx) {
+                    format!("#{} (+{:.2}M ISK, {}j, {} legs)", current_idx + 1, r.total_profit / 1_000_000.0, r.total_jumps, r.legs.len())
+                } else {
+                    "None".to_string()
+                };
+
+                egui::ComboBox::from_id_source("chain_route_dropdown_selector")
+                    .selected_text(selected_label)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for (idx, r) in self.chain_results.iter().enumerate() {
+                            let label = format!("#{} (+{:.2}M ISK, {}j, {} legs)", idx + 1, r.total_profit / 1_000_000.0, r.total_jumps, r.legs.len());
+                            let mut sel = current_idx;
+                            if ui.selectable_value(&mut sel, idx, label).clicked() {
+                                new_selected_idx = Some(idx);
+                            }
+                        }
+                    });
             });
 
             ui.add_space(6.0);
@@ -3960,56 +4946,75 @@ impl DesktopApp {
                 ui.horizontal(|ui| {
                     for (idx, route) in self.chain_results.iter().enumerate() {
                         let is_selected = self.chain_selected_idx == Some(idx);
-                        let bg_color = if is_selected {
-                            Color32::from_rgb(28, 42, 68)
-                        } else {
-                            Color32::from_rgb(16, 22, 36)
-                        };
-                        let border_color = if is_selected {
-                            Color32::from_rgb(0, 220, 255)
-                        } else {
-                            Color32::from_rgb(38, 52, 78)
-                        };
 
-                        let frame = egui::Frame::none()
-                            .fill(bg_color)
-                            .stroke(Stroke::new(if is_selected { 1.5_f32 } else { 1.0_f32 }, border_color))
-                            .rounding(6.0)
-                            .inner_margin(egui::Margin::symmetric(10.0, 8.0));
+                        ui.push_id(idx, |ui| {
+                            let bg_color = if is_selected {
+                                Color32::from_rgb(28, 42, 68)
+                            } else {
+                                Color32::from_rgb(16, 22, 36)
+                            };
+                            let border_color = if is_selected {
+                                Color32::from_rgb(0, 220, 255)
+                            } else {
+                                Color32::from_rgb(38, 52, 78)
+                            };
 
-                        frame.show(ui, |ui| {
-                            let resp = ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    let rank_text = format!("#{}", idx + 1);
-                                    let rank_color = match idx {
-                                        0 => Color32::from_rgb(255, 215, 0),
-                                        1 => Color32::from_rgb(200, 205, 215),
-                                        2 => Color32::from_rgb(205, 127, 50),
-                                        _ => Color32::from_rgb(140, 160, 190),
-                                    };
-                                    ui.label(RichText::new(rank_text).strong().color(rank_color));
+                            let frame = egui::Frame::none()
+                                .fill(bg_color)
+                                .stroke(Stroke::new(if is_selected { 1.5_f32 } else { 1.0_f32 }, border_color))
+                                .rounding(6.0)
+                                .inner_margin(egui::Margin::symmetric(10.0, 8.0));
 
-                                    ui.label(
-                                        RichText::new(format!("+{:.2}M ISK", route.total_profit / 1_000_000.0))
-                                            .strong()
-                                            .color(Color32::from_rgb(0, 255, 140)),
-                                    );
-                                });
+                            let frame_resp = frame.show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        let rank_text = format!("#{}", idx + 1);
+                                        let rank_color = match idx {
+                                            0 => Color32::from_rgb(255, 215, 0),
+                                            1 => Color32::from_rgb(200, 205, 215),
+                                            2 => Color32::from_rgb(205, 127, 50),
+                                            _ => Color32::from_rgb(140, 160, 190),
+                                        };
+                                        ui.label(RichText::new(rank_text).strong().color(rank_color));
 
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("{} jumps", route.total_jumps)).color(Color32::from_rgb(255, 205, 0)).size(11.0));
-                                    ui.label(RichText::new(format!("{:.2}M/j", route.profit_per_jump / 1_000_000.0)).color(Color32::from_rgb(0, 220, 255)).size(11.0));
-                                    ui.label(RichText::new(format!("{} legs", route.legs.len())).color(Color32::LIGHT_GRAY).size(11.0));
+                                        ui.label(
+                                            RichText::new(format!("+{:.2}M ISK", route.total_profit / 1_000_000.0))
+                                                .strong()
+                                                .color(Color32::from_rgb(0, 255, 140)),
+                                        );
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{} jumps", route.total_jumps)).color(Color32::from_rgb(255, 205, 0)).size(11.0));
+                                        ui.label(RichText::new(format!("{:.2}M/j", route.profit_per_jump / 1_000_000.0)).color(Color32::from_rgb(0, 220, 255)).size(11.0));
+                                        ui.label(RichText::new(format!("{} legs", route.legs.len())).color(Color32::LIGHT_GRAY).size(11.0));
+                                    });
                                 });
                             });
 
-                            if resp.response.interact(egui::Sense::click()).clicked() {
-                                self.chain_selected_idx = Some(idx);
+                            let card_rect = frame_resp.response.rect;
+                            let card_interact = ui.interact(card_rect, ui.id(), egui::Sense::click());
+                            if card_interact.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                if !is_selected {
+                                    ui.painter().rect_stroke(
+                                        card_rect,
+                                        6.0,
+                                        Stroke::new(1.0_f32, Color32::from_rgb(0, 180, 220)),
+                                    );
+                                }
+                            }
+                            if card_interact.clicked() {
+                                new_selected_idx = Some(idx);
                             }
                         });
                     }
                 });
             });
+
+            if let Some(idx) = new_selected_idx {
+                self.chain_selected_idx = Some(idx);
+            }
 
             ui.add_space(14.0);
 
@@ -4173,37 +5178,56 @@ impl DesktopApp {
             });
 
         // ── Helper closure to draw flowchart connector ──
-        let render_connector = |ui: &mut egui::Ui, jumps: u32| {
+        let render_connector = |ui: &mut egui::Ui, jumps: u32, is_empty_reposition: bool| {
             ui.vertical_centered(|ui| {
                 ui.add_space(3.0);
-                ui.label(
-                    RichText::new("│")
-                        .size(13.0)
-                        .color(Color32::from_rgb(0, 180, 255)),
-                );
-                let jump_text = if jumps == 0 {
-                    "⚡ Intra-System Warp (0 jumps)".to_string()
+                let line_color = if is_empty_reposition && jumps > 0 {
+                    Color32::from_rgb(255, 170, 0)
                 } else {
-                    format!("⚡ {} Jump(s) • Safe Highsec", jumps)
+                    Color32::from_rgb(0, 180, 255)
+                };
+                ui.label(RichText::new("│").size(13.0).color(line_color));
+                let (jump_text, stroke_color, text_color) = if is_empty_reposition {
+                    if jumps == 0 {
+                        (
+                            "⚡ Seamless Station Trade (0 empty jumps)".to_string(),
+                            Color32::from_rgb(0, 220, 140),
+                            Color32::from_rgb(0, 255, 140),
+                        )
+                    } else {
+                        (
+                            format!("⚡ {} Empty Reposition Jump(s) • Deadhead", jumps),
+                            Color32::from_rgb(255, 170, 0),
+                            Color32::from_rgb(255, 205, 50),
+                        )
+                    }
+                } else if jumps == 0 {
+                    (
+                        "⚡ Intra-System Delivery (0 jumps)".to_string(),
+                        Color32::from_rgb(0, 200, 255),
+                        Color32::from_rgb(0, 220, 255),
+                    )
+                } else {
+                    (
+                        format!("⚡ {} Haul Jump(s) • Cargo On Board", jumps),
+                        Color32::from_rgb(0, 200, 255),
+                        Color32::from_rgb(180, 230, 255),
+                    )
                 };
                 egui::Frame::none()
                     .fill(Color32::from_rgb(24, 32, 50))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 205, 0)))
+                    .stroke(Stroke::new(1.0_f32, stroke_color))
                     .rounding(10.0)
                     .inner_margin(egui::Margin::symmetric(10.0, 3.0))
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new(jump_text)
                                 .size(11.0)
-                                .color(Color32::from_rgb(255, 215, 0))
+                                .color(text_color)
                                 .strong(),
                         );
                     });
-                ui.label(
-                    RichText::new("▼")
-                        .size(13.0)
-                        .color(Color32::from_rgb(0, 180, 255)),
-                );
+                ui.label(RichText::new("▼").size(13.0).color(line_color));
                 ui.add_space(3.0);
             });
         };
@@ -4215,7 +5239,7 @@ impl DesktopApp {
             .and_then(|l| l.pickups.first())
             .map(|p| p.jumps_from_prev)
             .unwrap_or(0);
-        render_connector(ui, first_jumps);
+        render_connector(ui, first_jumps, true);
 
         // ── 2. Sequential Stops Across Legs ──
         for (leg_idx, leg) in route.legs.iter().enumerate() {
@@ -4448,7 +5472,7 @@ impl DesktopApp {
                 } else {
                     leg.sell.jumps_from_prev
                 };
-                render_connector(ui, next_jumps);
+                render_connector(ui, next_jumps, false);
             }
 
             // Sell Stop
@@ -4624,7 +5648,7 @@ impl DesktopApp {
                     .first()
                     .map(|p| p.jumps_from_prev)
                     .unwrap_or(0);
-                render_connector(ui, next_leg_jumps);
+                render_connector(ui, next_leg_jumps, true);
             }
         }
 
@@ -4714,8 +5738,45 @@ impl DesktopApp {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let push_btn = egui::Button::new(
+                            RichText::new(if self.sso_is_pushing {
+                                "⏳ Pushing to EVE..."
+                            } else {
+                                "🚀 Push Route to EVE Autopilot"
+                            })
+                            .color(Color32::BLACK)
+                            .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+
+                        if ui
+                            .add_enabled(!self.sso_is_pushing, push_btn)
+                            .on_hover_text("Directly inject all station stops into your live running EVE Online Autopilot HUD")
+                            .clicked()
+                        {
+                            let dest_ids = route.ordered_destination_ids();
+                            self.push_to_eve_autopilot(dest_ids, "Chain Route");
+                        }
+
+                        let sheet_btn = egui::Button::new(
+                            RichText::new("📋 Copy EVE Flight Sheet (Alt+N)")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(255, 205, 0));
+
+                        if ui
+                            .add(sheet_btn)
+                            .on_hover_text("Copy formatted Flight Sheet with clickable in-game station links for EVE Notepad (Alt+N)")
+                            .clicked()
+                        {
+                            let sheet = route.format_eve_flight_sheet(selected_idx + 1);
+                            copy_to_clipboard(ui, sheet);
+                            self.set_toast("Copied EVE Flight Sheet! Paste into in-game Notepad (Alt+N).");
+                        }
+
                         let copy_btn = egui::Button::new(
-                            RichText::new("📋 Copy Autopilot Route")
+                            RichText::new("📋 Copy Waypoints")
                                 .color(Color32::BLACK)
                                 .strong(),
                         )
@@ -4794,6 +5855,10 @@ impl DesktopApp {
                 .rounding(6.0)
                 .inner_margin(12.0)
                 .show(ui, |ui| {
+                    let leg_empty_jumps =
+                        leg.pickups.first().map(|p| p.jumps_from_prev).unwrap_or(0);
+                    let leg_haul_jumps = leg.leg_total_jumps.saturating_sub(leg_empty_jumps);
+                    let leg_ppj = leg.leg_total_profit / (leg.leg_total_jumps.max(1) as f64);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("LEG #{}", leg_idx + 1))
@@ -4802,10 +5867,15 @@ impl DesktopApp {
                                 .color(Color32::from_rgb(0, 220, 255)),
                         );
                         ui.separator();
-                        ui.label(
-                            RichText::new(format!("{} jumps", leg.leg_total_jumps))
-                                .color(Color32::from_rgb(255, 205, 0)),
-                        );
+                        let jumps_str = if leg_empty_jumps > 0 {
+                            format!(
+                                "{} jumps ({} empty + {} haul)",
+                                leg.leg_total_jumps, leg_empty_jumps, leg_haul_jumps
+                            )
+                        } else {
+                            format!("{} jumps (direct haul)", leg.leg_total_jumps)
+                        };
+                        ui.label(RichText::new(jumps_str).color(Color32::from_rgb(255, 205, 0)));
                         ui.separator();
                         ui.label(
                             RichText::new(format!(
@@ -4814,6 +5884,12 @@ impl DesktopApp {
                             ))
                             .strong()
                             .color(Color32::from_rgb(0, 255, 140)),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("PPJ: {:.2}M/j", leg_ppj / 1_000_000.0))
+                                .strong()
+                                .color(Color32::from_rgb(0, 220, 255)),
                         );
                     });
 
@@ -4984,6 +6060,1000 @@ impl DesktopApp {
         );
     }
 
+    fn render_hub_arbitrage_tab(&mut self, ui: &mut egui::Ui) {
+        if self.deals.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.heading(
+                    RichText::new("No Market Deals Loaded")
+                        .size(22.0)
+                        .color(Color32::from_rgb(150, 170, 200)),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Scan the 5 empire trade hubs to discover inter-hub arbitrage opportunities.")
+                        .size(14.0)
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(16.0);
+                let btn = egui::Button::new(
+                    RichText::new("⚡ Scan All 5 Core Hubs")
+                        .size(16.0)
+                        .color(Color32::BLACK)
+                        .strong(),
+                )
+                .fill(Color32::from_rgb(0, 220, 170))
+                .min_size(Vec2::new(260.0, 42.0));
+
+                if ui.add(btn).clicked() {
+                    self.region_the_forge = true;
+                    self.region_domain = true;
+                    self.region_sinq_laison = true;
+                    self.region_heimatar = true;
+                    self.region_metropolis = true;
+                    self.start_scan();
+                }
+            });
+            return;
+        }
+
+        let mut do_scan_all = false;
+        let mut do_pack_cargo = false;
+        let mut do_export_csv = false;
+        let mut action_toast: Option<String> = None;
+        let mut toggle_select: Option<usize> = None;
+        let mut change_sort: Option<(DealSortBy, bool)> = None;
+        let mut push_dest_ids: Option<(Vec<u64>, &'static str)> = None;
+
+        // 1. Controls Header Card
+        egui::Frame::none()
+            .fill(Color32::from_rgb(20, 28, 46))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 200, 255)))
+            .rounding(6.0)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        RichText::new("🏛️ Core Hub Arbitrage — Inter-Hub Direct Trade Scout")
+                            .color(Color32::from_rgb(0, 220, 255))
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new("Trade directly between EVE's 5 major empire trade hubs")
+                            .color(Color32::from_rgb(140, 175, 215))
+                            .size(12.0),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                // Row 1: Hub Corridor Selectors & Scan/Pack/Export buttons
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Origin Hub:").strong());
+                    let src_name = self.hub_source_filter.map(|h| h.name()).unwrap_or("Any Hub (Wildcard)");
+                    egui::ComboBox::from_id_source("hub_source_combo")
+                        .selected_text(src_name)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.hub_source_filter, None, "Any Hub (Wildcard)");
+                            for &hub in &CoreHub::ALL {
+                                ui.selectable_value(
+                                    &mut self.hub_source_filter,
+                                    Some(hub),
+                                    format!("{} ({})", hub.name(), hub.region_name()),
+                                );
+                            }
+                        });
+
+                    if ui.button(RichText::new("⇄ Swap").strong()).on_hover_text("Swap origin and destination hubs").clicked() {
+                        std::mem::swap(&mut self.hub_source_filter, &mut self.hub_dest_filter);
+                    }
+
+                    ui.label(RichText::new("Destination Hub:").strong());
+                    let dst_name = self.hub_dest_filter.map(|h| h.name()).unwrap_or("Any Hub (Wildcard)");
+                    egui::ComboBox::from_id_source("hub_dest_combo")
+                        .selected_text(dst_name)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.hub_dest_filter, None, "Any Hub (Wildcard)");
+                            for &hub in &CoreHub::ALL {
+                                ui.selectable_value(
+                                    &mut self.hub_dest_filter,
+                                    Some(hub),
+                                    format!("{} ({})", hub.name(), hub.region_name()),
+                                );
+                            }
+                        });
+
+                    ui.separator();
+
+                    if ui.button(RichText::new("⚡ Scan All 5 Hubs").strong().color(Color32::from_rgb(0, 240, 180)))
+                        .on_hover_text("Select all 5 trade hub regions (Forge, Domain, Sinq Laison, Heimatar, Metropolis) and fetch fresh market orders")
+                        .clicked()
+                    {
+                        do_scan_all = true;
+                    }
+
+                    if ui.button(RichText::new("📦 Pack Ship Cargo").strong().color(Color32::from_rgb(255, 215, 0)))
+                        .on_hover_text("Use knapsack optimization to pack your active ship cargo with the most profitable items in this corridor")
+                        .clicked()
+                    {
+                        do_pack_cargo = true;
+                    }
+
+                    if ui.button(RichText::new("📥 Export CSV").color(Color32::LIGHT_GRAY))
+                        .on_hover_text("Export current filtered hub deals to ./hub_arbitrage_export.csv and clipboard")
+                        .clicked()
+                    {
+                        do_export_csv = true;
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // Row 2: Secondary Filters & Search
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut self.hub_include_npc, RichText::new("NPC Commodities").strong())
+                        .on_hover_text("Include seeded NPC trade commodities (e.g. Spirits, Wheat). When unchecked, only player market orders are considered.");
+
+                    ui.separator();
+
+                    ui.checkbox(&mut self.hub_major_stations_only, RichText::new("Major Stations Only").strong())
+                        .on_hover_text("Restrict trades strictly to the primary trade stations (Jita 4-4, Amarr VIII, Dodixie IX, Rens VI, Hek VIII). Excludes secondary stations in these systems.");
+
+                    ui.separator();
+
+                    ui.label(RichText::new("Min Profit:").strong());
+                    ui.add(
+                        egui::Slider::new(&mut self.hub_min_profit_m, 0.1..=50.0)
+                            .suffix("M ISK")
+                            .step_by(0.5)
+                            .clamp_to_range(true),
+                    );
+
+                    ui.separator();
+
+                    ui.label(RichText::new("🔍 Search:").strong());
+                    ui.add(egui::TextEdit::singleline(&mut self.hub_search_query).desired_width(160.0))
+                        .on_hover_text("Search by item name or station name");
+                    if !self.hub_search_query.is_empty() && ui.button("✖ Clear").clicked() {
+                        self.hub_search_query.clear();
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
+        if do_scan_all {
+            self.region_the_forge = true;
+            self.region_domain = true;
+            self.region_sinq_laison = true;
+            self.region_heimatar = true;
+            self.region_metropolis = true;
+            self.start_scan();
+            return;
+        }
+
+        let opts = hub_arbitrage::HubFilterOptions {
+            source_hub: self.hub_source_filter,
+            dest_hub: self.hub_dest_filter,
+            include_npc: self.hub_include_npc,
+            major_stations_only: self.hub_major_stations_only,
+            min_profit: self.hub_min_profit_m * 1_000_000.0,
+            search_query: self.hub_search_query.clone(),
+        };
+
+        let mut filtered_deals: Vec<crate::arbitrage::ArbitrageDeal> =
+            hub_arbitrage::filter_hub_deals(&self.deals, &opts)
+                .into_iter()
+                .cloned()
+                .collect();
+
+        // Sorting
+        match self.hub_sort_by {
+            DealSortBy::ProfitPerJump => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.profit_per_jump
+                        .partial_cmp(&a.profit_per_jump)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.profit_per_jump
+                        .partial_cmp(&b.profit_per_jump)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::TotalProfit => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.net_profit
+                        .partial_cmp(&a.net_profit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.net_profit
+                        .partial_cmp(&b.net_profit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::RoiPct => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.net_profit_pct
+                        .partial_cmp(&a.net_profit_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.net_profit_pct
+                        .partial_cmp(&b.net_profit_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::ProfitPerM3 => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.profit_per_m3
+                        .partial_cmp(&a.profit_per_m3)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.profit_per_m3
+                        .partial_cmp(&b.profit_per_m3)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::Jumps => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.total_jumps.cmp(&a.total_jumps)
+                } else {
+                    a.total_jumps.cmp(&b.total_jumps)
+                }
+            }),
+            DealSortBy::Cost => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.capital_required
+                        .partial_cmp(&a.capital_required)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.capital_required
+                        .partial_cmp(&b.capital_required)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::ItemName => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.item_name.cmp(&a.item_name)
+                } else {
+                    a.item_name.cmp(&b.item_name)
+                }
+            }),
+            DealSortBy::BuySystem => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.source_system_name.cmp(&a.source_system_name)
+                } else {
+                    a.source_system_name.cmp(&b.source_system_name)
+                }
+            }),
+            DealSortBy::BuyPrice => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.buy_price
+                        .partial_cmp(&a.buy_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.buy_price
+                        .partial_cmp(&b.buy_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::SellSystem => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.dest_system_name.cmp(&a.dest_system_name)
+                } else {
+                    a.dest_system_name.cmp(&b.dest_system_name)
+                }
+            }),
+            DealSortBy::SellPrice => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.sell_price
+                        .partial_cmp(&a.sell_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.sell_price
+                        .partial_cmp(&b.sell_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+            DealSortBy::Quantity => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.quantity.cmp(&a.quantity)
+                } else {
+                    a.quantity.cmp(&b.quantity)
+                }
+            }),
+            DealSortBy::Volume => filtered_deals.sort_by(|a, b| {
+                if self.hub_sort_descending {
+                    b.volume_used
+                        .partial_cmp(&a.volume_used)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.volume_used
+                        .partial_cmp(&b.volume_used)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }),
+        }
+
+        if do_pack_cargo {
+            let ship = self.current_ship();
+            let deal_refs: Vec<&ArbitrageDeal> = filtered_deals.iter().collect();
+            let packed = hub_arbitrage::pack_hub_corridor_manifest(
+                &deal_refs,
+                ship.max_volume,
+                ship.max_budget,
+            );
+            let count = packed.packed.len();
+            self.hub_packed_manifest = Some(packed);
+            self.hub_show_manifest_card = true;
+            action_toast = Some(format!("Packed {} items into ship cargo manifest!", count));
+        }
+
+        if do_export_csv {
+            let deals_for_csv: Vec<(usize, &ArbitrageDeal)> =
+                filtered_deals.iter().enumerate().collect();
+            let csv_str = export_deals_to_csv(&deals_for_csv);
+            let export_path = resolve_csv_export_path("hub_arbitrage_export.csv");
+            let _ = std::fs::write(&export_path, &csv_str);
+            copy_to_clipboard(ui, csv_str);
+            action_toast = Some(format!(
+                "Exported {} hub deals to {} & copied to clipboard!",
+                filtered_deals.len(),
+                export_path.display()
+            ));
+        }
+
+        // 2. Corridor Telemetry & KPI Banner
+        let total_pot_profit: f64 = filtered_deals.iter().map(|d| d.net_profit).sum();
+        let total_pot_capital: f64 = filtered_deals.iter().map(|d| d.capital_required).sum();
+        let total_pot_vol: f64 = filtered_deals.iter().map(|d| d.volume_used).sum();
+        let jumps_str = if let (Some(s), Some(d), Some(g)) =
+            (self.hub_source_filter, self.hub_dest_filter, &self.graph)
+        {
+            let j = g.jump_count(s.system_id(), d.system_id(), self.safe_only);
+            format!("{} jumps (highsec safe)", j)
+        } else {
+            "Variable jumps".to_string()
+        };
+
+        egui::Frame::none()
+            .fill(Color32::from_rgb(16, 24, 38))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(28, 42, 65)))
+            .rounding(4.0)
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let corridor_badge = format!(
+                        "Corridor: {} ➔ {}",
+                        self.hub_source_filter.map(|h| h.name()).unwrap_or("Any Hub"),
+                        self.hub_dest_filter.map(|h| h.name()).unwrap_or("Any Hub"),
+                    );
+                    ui.label(RichText::new(corridor_badge).color(Color32::from_rgb(0, 220, 255)).strong());
+                    ui.separator();
+                    ui.label(RichText::new(format!("Distance: {}", jumps_str)).color(Color32::LIGHT_GRAY));
+                    ui.separator();
+                    ui.label(RichText::new(format!("Deals: {}", filtered_deals.len())).color(Color32::WHITE).strong());
+                    ui.separator();
+                    ui.label(RichText::new(format!("Total Potential Profit: +{:.2}M ISK", total_pot_profit / 1_000_000.0)).color(Color32::from_rgb(0, 240, 160)).strong());
+                    ui.separator();
+                    ui.label(RichText::new(format!("Capital: {:.2}M ISK", total_pot_capital / 1_000_000.0)).color(Color32::GRAY));
+                    ui.separator();
+                    ui.label(RichText::new(format!("Volume: {:.1} m³", total_pot_vol)).color(Color32::GRAY));
+
+                    if let (Some(s), Some(d)) = (self.hub_source_filter, self.hub_dest_filter) {
+                        ui.separator();
+                        let push_corridor_btn = egui::Button::new(
+                            RichText::new("🚀 Push Corridor to EVE Autopilot")
+                                .color(Color32::BLACK)
+                                .strong(),
+                        )
+                        .fill(Color32::from_rgb(0, 220, 255));
+                        if ui.add_enabled(!self.sso_is_pushing, push_corridor_btn)
+                            .on_hover_text("Send origin and destination hub trade stations directly to your in-game Autopilot")
+                            .clicked()
+                        {
+                            let dests = hub_arbitrage::hub_corridor_destination_ids(s, d, &self.hub_packed_manifest);
+                            push_dest_ids = Some((dests, "Hub Corridor"));
+                        }
+
+                        if let Some(manifest) = &self.hub_packed_manifest {
+                            let sheet_btn = egui::Button::new(
+                                RichText::new("📋 Copy Corridor for EVE Notepad")
+                                    .color(Color32::BLACK)
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(255, 205, 0));
+                            if ui.add(sheet_btn)
+                                .on_hover_text("Copy formatted trade run manifest for in-game Notepad (Alt+N)")
+                                .clicked()
+                            {
+                                let jumps = self.graph.as_ref().map(|g| g.jump_count(s.system_id(), d.system_id(), self.safe_only)).unwrap_or(0);
+                                let sheet = hub_arbitrage::format_hub_flight_sheet(s, d, jumps, manifest);
+                                copy_to_clipboard(ui, sheet);
+                                action_toast = Some("Copied Hub Corridor Flight Sheet for in-game Notepad (Alt+N)!".to_string());
+                            }
+                        }
+                    }
+                });
+            });
+
+        ui.add_space(6.0);
+
+        // 3. Packed Cargo Manifest Card (if active)
+        let mut close_manifest = false;
+        if self.hub_show_manifest_card {
+            if let Some(manifest) = &self.hub_packed_manifest {
+                let ship = self.current_ship();
+                let ship_is_big = self.ship_is_big;
+                egui::Frame::none()
+                    .fill(Color32::from_rgb(18, 30, 48))
+                    .stroke(Stroke::new(1.5_f32, Color32::from_rgb(0, 230, 180)))
+                    .rounding(6.0)
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let vol_pct = (manifest.total_volume / ship.max_volume * 100.0).min(100.0);
+                        let cap_pct = (manifest.total_capital / ship.max_budget * 100.0).min(100.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("📦 Optimized Ship Cargo Manifest")
+                                    .size(15.0)
+                                    .color(Color32::from_rgb(0, 230, 180))
+                                    .strong(),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "({}: {:.0} m³ / {:.0}M ISK)",
+                                    if ship_is_big { "Big Hauler" } else { "Small Hauler" },
+                                    ship.max_volume,
+                                    ship.max_budget / 1_000_000.0
+                                ))
+                                .color(Color32::LIGHT_GRAY)
+                                .size(12.0),
+                            );
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button(RichText::new("✖ Close Manifest").color(Color32::GRAY)).clicked() {
+                                    close_manifest = true;
+                                }
+
+                                if let (Some(s), Some(d)) = (self.hub_source_filter, self.hub_dest_filter) {
+                                    let sheet_btn = egui::Button::new(
+                                        RichText::new("📋 Copy Manifest for EVE Notepad (Alt+N)")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(255, 205, 0));
+                                    if ui.add(sheet_btn)
+                                        .on_hover_text("Copy complete manifest shopping list and sell orders for in-game Notepad (Alt+N)")
+                                        .clicked()
+                                    {
+                                        let jumps = self.graph.as_ref().map(|g| g.jump_count(s.system_id(), d.system_id(), self.safe_only)).unwrap_or(0);
+                                        let sheet = hub_arbitrage::format_hub_flight_sheet(s, d, jumps, manifest);
+                                        copy_to_clipboard(ui, sheet);
+                                        action_toast = Some("Copied Hub Manifest Flight Sheet for in-game Notepad (Alt+N)!".to_string());
+                                    }
+
+                                    let push_btn = egui::Button::new(
+                                        RichText::new("🚀 Push Manifest to EVE Autopilot")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(0, 220, 255));
+                                    if ui.add_enabled(!self.sso_is_pushing, push_btn)
+                                        .on_hover_text("Send origin and destination hub trade stations directly to in-game Autopilot")
+                                        .clicked()
+                                    {
+                                        let dests = hub_arbitrage::hub_corridor_destination_ids(s, d, &Some(manifest.clone()));
+                                        push_dest_ids = Some((dests, "Hub Manifest"));
+                                    }
+                                } else if let Some(first) = manifest.packed.first() {
+                                    let push_btn = egui::Button::new(
+                                        RichText::new("🚀 Push Manifest to EVE Autopilot")
+                                            .color(Color32::BLACK)
+                                            .strong(),
+                                    )
+                                    .fill(Color32::from_rgb(0, 220, 255));
+                                    if ui.add_enabled(!self.sso_is_pushing, push_btn)
+                                        .on_hover_text("Send origin and destination trade stations directly to in-game Autopilot")
+                                        .clicked()
+                                    {
+                                        let dests = if first.deal.source_station_id == first.deal.dest_station_id {
+                                            vec![first.deal.source_station_id]
+                                        } else {
+                                            vec![first.deal.source_station_id, first.deal.dest_station_id]
+                                        };
+                                        push_dest_ids = Some((dests, "Hub Manifest"));
+                                    }
+                                }
+                            });
+                        });
+
+                        ui.add_space(6.0);
+
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(format!("Items: {}", manifest.packed.len())).strong());
+                            ui.separator();
+                            ui.label(RichText::new(format!("Volume Used: {:.1} / {:.0} m³ ({:.1}%)", manifest.total_volume, ship.max_volume, vol_pct)).strong());
+                            ui.separator();
+                            ui.label(RichText::new(format!("Capital Spent: {:.2} / {:.0}M ISK ({:.1}%)", manifest.total_capital / 1_000_000.0, ship.max_budget / 1_000_000.0, cap_pct)).strong());
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("Realized Net Profit: +{:.2}M ISK", manifest.total_profit / 1_000_000.0))
+                                    .color(Color32::from_rgb(0, 255, 170))
+                                    .size(13.5)
+                                    .strong(),
+                            );
+                        });
+
+                        ui.add_space(8.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(140.0)
+                            .id_source("hub_manifest_scroll")
+                            .show(ui, |ui| {
+                                for (slot_idx, slot) in manifest.packed.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{}.", slot_idx + 1)).color(Color32::GRAY));
+                                        ui.label(RichText::new(&slot.deal.item_name).color(Color32::WHITE).strong());
+                                        ui.label(format!("Qty: {} ({:.1} m³)", slot.deal.quantity, slot.volume));
+                                        ui.label(format!("Buy: {:.2}M", slot.capital / 1_000_000.0));
+                                        ui.label(
+                                            RichText::new(format!("+{:.2}M ISK ({:.1}%)", slot.net_profit / 1_000_000.0, slot.deal.net_profit_pct))
+                                                .color(Color32::from_rgb(0, 240, 150))
+                                                .strong(),
+                                        );
+                                        ui.label(RichText::new(format!("➔ {}", slot.sell_name)).color(Color32::LIGHT_GRAY));
+
+                                        if ui.small_button("📋 Item").clicked() {
+                                            copy_to_clipboard(ui, slot.deal.item_name.clone());
+                                            action_toast = Some(format!("Copied '{}' to clipboard", slot.deal.item_name));
+                                        }
+                                        if ui.small_button("📋 Buy").clicked() {
+                                            copy_to_clipboard(ui, slot.deal.source_station_name.clone());
+                                            action_toast = Some(format!("Copied '{}' to clipboard", slot.deal.source_station_name));
+                                        }
+                                        if ui.small_button("📋 Sell").clicked() {
+                                            copy_to_clipboard(ui, slot.deal.dest_station_name.clone());
+                                            action_toast = Some(format!("Copied '{}' to clipboard", slot.deal.dest_station_name));
+                                        }
+                                    });
+                                }
+                            });
+                    });
+                ui.add_space(6.0);
+            }
+        }
+        if close_manifest {
+            self.hub_show_manifest_card = false;
+        }
+
+        // 4. Deals Table Grid
+        if filtered_deals.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.label(
+                    RichText::new("No hub deals match the selected criteria.")
+                        .size(16.0)
+                        .color(Color32::from_rgb(160, 180, 205)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Try selecting 'Any Hub (Wildcard)', enabling NPC Commodities, lowering Min Profit, or clearing the search query.")
+                        .color(Color32::GRAY),
+                );
+            });
+        } else {
+            let current_sort = self.hub_sort_by;
+            let is_desc = self.hub_sort_descending;
+            let current_selected_idx = self.selected_deal_idx;
+
+            let mut render_header_btn =
+                |ui: &mut egui::Ui, title: &str, sort_target: DealSortBy| {
+                    let is_active = current_sort == sort_target;
+                    let arrow = if is_active {
+                        if is_desc {
+                            " ▼"
+                        } else {
+                            " ▲"
+                        }
+                    } else {
+                        ""
+                    };
+                    let label_text = format!("{}{}", title, arrow);
+                    let text_color = if is_active {
+                        Color32::from_rgb(255, 215, 0)
+                    } else {
+                        Color32::from_rgb(255, 205, 0)
+                    };
+                    let resp = ui.add(
+                        egui::Button::new(RichText::new(label_text).color(text_color).strong())
+                            .frame(false),
+                    );
+                    if resp.clicked() {
+                        ui.ctx().request_repaint();
+                        if is_active {
+                            change_sort = Some((sort_target, !is_desc));
+                        } else {
+                            let default_desc = !matches!(
+                                sort_target,
+                                DealSortBy::ItemName
+                                    | DealSortBy::BuySystem
+                                    | DealSortBy::SellSystem
+                                    | DealSortBy::Jumps
+                                    | DealSortBy::Cost
+                            );
+                            change_sort = Some((sort_target, default_desc));
+                        }
+                    }
+                };
+
+            let actions_w = 120.0;
+            let rank_w = 38.0;
+
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .min_scrolled_height(0.0)
+                .column(Column::exact(rank_w)) // #
+                .column(Column::remainder().at_least(140.0).resizable(true)) // ITEM
+                .column(Column::initial(150.0).at_least(110.0).resizable(true)) // BUY HUB & STATION
+                .column(Column::initial(80.0).at_least(65.0).resizable(true)) // BUY / ITEM
+                .column(Column::initial(150.0).at_least(110.0).resizable(true)) // SELL HUB & STATION
+                .column(Column::initial(80.0).at_least(65.0).resizable(true)) // SELL / ITEM
+                .column(Column::initial(50.0).at_least(40.0).resizable(true)) // QTY
+                .column(Column::initial(60.0).at_least(45.0).resizable(true)) // VOL
+                .column(Column::initial(70.0).at_least(55.0).resizable(true)) // COST
+                .column(Column::initial(85.0).at_least(75.0).resizable(true)) // NET PROFIT
+                .column(Column::initial(55.0).at_least(45.0).resizable(true)) // NET ROI
+                .column(Column::initial(45.0).at_least(35.0).resizable(true)) // JUMPS
+                .column(Column::initial(80.0).at_least(70.0).resizable(true)) // PROFIT/JUMP
+                .column(Column::exact(actions_w)) // ACTIONS
+                .header(24.0, |mut header| {
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("#")
+                                .color(Color32::from_rgb(255, 205, 0))
+                                .strong(),
+                        );
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "ITEM", DealSortBy::ItemName);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "BUY HUB / STATION", DealSortBy::BuySystem);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "BUY / ITEM", DealSortBy::BuyPrice);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "SELL HUB / STATION", DealSortBy::SellSystem);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "SELL / ITEM", DealSortBy::SellPrice);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "QTY", DealSortBy::Quantity);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "VOL (m³)", DealSortBy::Volume);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "COST (M)", DealSortBy::Cost);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "NET PROFIT", DealSortBy::TotalProfit);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "NET ROI", DealSortBy::RoiPct);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "JUMPS", DealSortBy::Jumps);
+                    });
+                    header.col(|ui| {
+                        render_header_btn(ui, "PROFIT/JUMP", DealSortBy::ProfitPerJump);
+                    });
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("ACTIONS")
+                                .color(Color32::from_rgb(255, 205, 0))
+                                .strong(),
+                        );
+                    });
+                })
+                .body(|mut body| {
+                    for (display_rank, deal) in filtered_deals.iter().enumerate() {
+                        let orig_idx = self.deals.iter().position(|d| {
+                            d.type_id == deal.type_id
+                                && d.source_order_id == deal.source_order_id
+                                && d.dest_order_id == deal.dest_order_id
+                        });
+                        let is_selected = orig_idx.is_some() && orig_idx == current_selected_idx;
+
+                        body.row(28.0, |mut row| {
+                            row.set_selected(is_selected);
+
+                            // 1: Rank badge
+                            row.col(|ui| {
+                                let rank_color = match display_rank {
+                                    0 => Color32::from_rgb(255, 215, 0),
+                                    1 => Color32::from_rgb(200, 215, 230),
+                                    2 => Color32::from_rgb(205, 127, 50),
+                                    _ => Color32::GRAY,
+                                };
+                                let rank_resp = egui::Frame::none()
+                                    .fill(Color32::from_rgba_unmultiplied(
+                                        rank_color.r(),
+                                        rank_color.g(),
+                                        rank_color.b(),
+                                        28,
+                                    ))
+                                    .stroke(Stroke::new(1.0_f32, rank_color))
+                                    .rounding(3.0)
+                                    .inner_margin(4.0)
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(format!("#{}", display_rank + 1))
+                                                .color(rank_color)
+                                                .strong()
+                                                .size(12.0),
+                                        );
+                                    });
+                                if rank_resp.response.interact(egui::Sense::click()).clicked() {
+                                    if let Some(idx) = orig_idx {
+                                        toggle_select = Some(idx);
+                                    }
+                                }
+                            });
+
+                            // 2: Item Name
+                            row.col(|ui| {
+                                let item_color = if is_selected {
+                                    Color32::from_rgb(0, 230, 255)
+                                } else {
+                                    Color32::WHITE
+                                };
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .selectable_label(
+                                            is_selected,
+                                            RichText::new(&deal.item_name)
+                                                .color(item_color)
+                                                .strong(),
+                                        )
+                                        .clicked()
+                                    {
+                                        if let Some(idx) = orig_idx {
+                                            toggle_select = Some(idx);
+                                        }
+                                    }
+                                    if deal.is_npc_trade {
+                                        ui.label(
+                                            RichText::new("NPC")
+                                                .color(Color32::from_rgb(255, 180, 0))
+                                                .size(10.0),
+                                        );
+                                    }
+                                });
+                            });
+
+                            // Helper closure for hub badge color
+                            let hub_badge_color = |hub: Option<CoreHub>| match hub {
+                                Some(CoreHub::Jita) => Color32::from_rgb(0, 190, 255),
+                                Some(CoreHub::Amarr) => Color32::from_rgb(255, 205, 50),
+                                Some(CoreHub::Dodixie) => Color32::from_rgb(50, 220, 120),
+                                Some(CoreHub::Rens) => Color32::from_rgb(240, 80, 60),
+                                Some(CoreHub::Hek) => Color32::from_rgb(240, 130, 60),
+                                None => Color32::GRAY,
+                            };
+
+                            // 3: Buy Hub & Station
+                            row.col(|ui| {
+                                let src_hub = CoreHub::from_system_id(deal.source_system_id);
+                                let col = hub_badge_color(src_hub);
+                                ui.horizontal(|ui| {
+                                    if let Some(h) = src_hub {
+                                        ui.label(
+                                            RichText::new(format!("[{}]", h.name()))
+                                                .color(col)
+                                                .strong(),
+                                        );
+                                    }
+                                    let st_label = if deal.source_station_name.len() > 22 {
+                                        format!("{}…", &deal.source_station_name[..20])
+                                    } else {
+                                        deal.source_station_name.clone()
+                                    };
+                                    ui.label(RichText::new(st_label).color(Color32::LIGHT_GRAY))
+                                        .on_hover_text(&deal.source_station_name);
+                                });
+                            });
+
+                            // 4: Buy / Item
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{:.2}", deal.buy_price))
+                                        .color(Color32::LIGHT_GRAY),
+                                );
+                            });
+
+                            // 5: Sell Hub & Station
+                            row.col(|ui| {
+                                let dst_hub = CoreHub::from_system_id(deal.dest_system_id);
+                                let col = hub_badge_color(dst_hub);
+                                ui.horizontal(|ui| {
+                                    if let Some(h) = dst_hub {
+                                        ui.label(
+                                            RichText::new(format!("[{}]", h.name()))
+                                                .color(col)
+                                                .strong(),
+                                        );
+                                    }
+                                    let st_label = if deal.dest_station_name.len() > 22 {
+                                        format!("{}…", &deal.dest_station_name[..20])
+                                    } else {
+                                        deal.dest_station_name.clone()
+                                    };
+                                    ui.label(RichText::new(st_label).color(Color32::LIGHT_GRAY))
+                                        .on_hover_text(&deal.dest_station_name);
+                                });
+                            });
+
+                            // 6: Sell / Item
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{:.2}", deal.sell_price))
+                                        .color(Color32::LIGHT_GRAY),
+                                );
+                            });
+
+                            // 7: QTY
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(deal.quantity.to_string())
+                                        .color(Color32::LIGHT_GRAY),
+                                );
+                            });
+
+                            // 8: VOL
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{:.1}", deal.volume_used))
+                                        .color(Color32::LIGHT_GRAY),
+                                );
+                            });
+
+                            // 9: COST (M)
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{:.2}M",
+                                        deal.capital_required / 1_000_000.0
+                                    ))
+                                    .color(Color32::LIGHT_GRAY),
+                                );
+                            });
+
+                            // 10: NET PROFIT
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "+{:.2}M ISK",
+                                        deal.net_profit / 1_000_000.0
+                                    ))
+                                    .color(Color32::from_rgb(0, 240, 150))
+                                    .strong(),
+                                );
+                            });
+
+                            // 11: NET ROI
+                            row.col(|ui| {
+                                let roi_col = if deal.is_high_roi() {
+                                    Color32::from_rgb(255, 140, 0)
+                                } else {
+                                    Color32::from_rgb(0, 255, 180)
+                                };
+                                ui.label(
+                                    RichText::new(format!("+{:.1}%", deal.net_profit_pct))
+                                        .color(roi_col)
+                                        .strong(),
+                                );
+                            });
+
+                            // 12: JUMPS
+                            row.col(|ui| {
+                                let jumps_tag = format!(
+                                    "{}+{}={}",
+                                    deal.jumps_from_home, deal.jumps_source_dest, deal.total_jumps
+                                );
+                                ui.label(RichText::new(jumps_tag).color(Color32::LIGHT_GRAY));
+                            });
+
+                            // 13: PROFIT/JUMP
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{:.2}M",
+                                        deal.profit_per_jump / 1_000_000.0
+                                    ))
+                                    .color(Color32::from_rgb(255, 215, 0))
+                                    .strong(),
+                                );
+                            });
+
+                            // 14: ACTIONS
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .small_button("📋 Item")
+                                        .on_hover_text("Copy item name to clipboard")
+                                        .clicked()
+                                    {
+                                        copy_to_clipboard(ui, deal.item_name.clone());
+                                        action_toast = Some(format!(
+                                            "Copied item '{}' to clipboard!",
+                                            deal.item_name
+                                        ));
+                                    }
+                                    if ui
+                                        .small_button("📋 Buy")
+                                        .on_hover_text(format!(
+                                            "Copy buy station '{}' to clipboard",
+                                            deal.source_station_name
+                                        ))
+                                        .clicked()
+                                    {
+                                        copy_to_clipboard(ui, deal.source_station_name.clone());
+                                        action_toast = Some(format!(
+                                            "Copied buy station '{}' to clipboard!",
+                                            deal.source_station_name
+                                        ));
+                                    }
+                                    if ui
+                                        .small_button("📋 Sell")
+                                        .on_hover_text(format!(
+                                            "Copy sell station '{}' to clipboard",
+                                            deal.dest_station_name
+                                        ))
+                                        .clicked()
+                                    {
+                                        copy_to_clipboard(ui, deal.dest_station_name.clone());
+                                        action_toast = Some(format!(
+                                            "Copied sell station '{}' to clipboard!",
+                                            deal.dest_station_name
+                                        ));
+                                    }
+                                });
+                            });
+                        });
+                    }
+                });
+        }
+
+        // Apply any deferred UI updates
+        if let Some((new_sort, new_desc)) = change_sort {
+            self.hub_sort_by = new_sort;
+            self.hub_sort_descending = new_desc;
+        }
+
+        if let Some(toggled) = toggle_select {
+            if self.selected_deal_idx == Some(toggled) {
+                self.selected_deal_idx = None;
+            } else {
+                self.selected_deal_idx = Some(toggled);
+                self.dossier_side_panel = true; // Open dossier panel automatically on selection
+            }
+        }
+
+        if let Some((dests, label)) = push_dest_ids {
+            self.push_to_eve_autopilot(dests, label);
+        }
+
+        if let Some(msg) = action_toast {
+            self.set_toast(msg);
+        }
+    }
+
     fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Configuration & Tax Parameters");
         ui.add_space(10.0);
@@ -5049,6 +7119,194 @@ impl DesktopApp {
                             self.set_toast("KPI bar set to Compact Pills");
                         }
                     });
+                });
+
+            ui.add_space(12.0);
+
+            // Card: EVE SSO & In-Game Autopilot Sync
+            egui::Frame::none()
+                .fill(Color32::from_rgb(18, 25, 40))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(0, 200, 255)))
+                .rounding(6.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("🚀 EVE SSO & Live In-Game Autopilot Sync")
+                            .size(15.0)
+                            .color(Color32::from_rgb(0, 210, 255))
+                            .strong(),
+                    );
+                    ui.label(
+                        "Connect your EVE Online pilot via official CCP SSO (OAuth2 + PKCE) to push multi-stop trade routes and waypoints straight into your running EVE client Autopilot HUD (`Alt+A` / `POST /v2/ui/autopilot/waypoint/`).",
+                    );
+                    ui.add_space(8.0);
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new("🔒 Official CCP Single Sign-On (OAuth2 PKCE)")
+                                .color(Color32::from_rgb(0, 220, 255))
+                                .size(12.0)
+                                .strong(),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Scopes: Waypoints (`Alt+A`) & Live Pilot Location")
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .size(11.5),
+                        );
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Safe client: No passwords or private keys stored.")
+                                .color(Color32::GRAY)
+                                .size(11.5),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(ref char_name) = self.sso_character_name {
+                            let char_id_str = self
+                                .sso_character_id
+                                .map(|id| format!(" [ID: {}]", id))
+                                .unwrap_or_default();
+                            ui.label(
+                                RichText::new(format!(
+                                    "✅ Connected Character: {}{}",
+                                    char_name, char_id_str
+                                ))
+                                .size(13.5)
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .strong(),
+                            );
+
+                            let saved_token_opt = crate::esi::sso::load_saved_token();
+                            let token_status_label = if let Some(ref t) = saved_token_opt {
+                                let secs = t.seconds_until_expiration();
+                                let mins = secs / 60;
+                                if self.sso_is_refreshing_token {
+                                    "⏳ Refreshing token...".to_string()
+                                } else if t.is_expired() {
+                                    "⚠️ Expired (auto-refreshing)".to_string()
+                                } else if t.needs_refresh() {
+                                    format!("⏳ Expiring in {}s (auto-refreshing)", secs)
+                                } else {
+                                    format!("🛡️ Token Active (Expires in {}m) • Auto-Refreshes", mins)
+                                }
+                            } else {
+                                "No token".to_string()
+                            };
+
+                            ui.separator();
+                            ui.label(
+                                RichText::new(token_status_label)
+                                    .size(11.5)
+                                    .color(Color32::from_rgb(0, 220, 255)),
+                            );
+
+                            ui.add_space(8.0);
+                            let ref_btn = egui::Button::new(
+                                RichText::new(if self.sso_is_refreshing_token {
+                                    "⏳ Refreshing"
+                                } else {
+                                    "🔄 Refresh Token"
+                                })
+                                .size(12.0)
+                                .color(Color32::from_rgb(255, 230, 120))
+                                .strong(),
+                            );
+                            if ui
+                                .add_enabled(!self.sso_is_refreshing_token, ref_btn)
+                                .on_hover_text(
+                                    "Manually renew the EVE SSO access token right now using your saved refresh token",
+                                )
+                                .clicked()
+                            {
+                                self.check_and_refresh_sso_token(true);
+                            }
+
+                            ui.add_space(6.0);
+                            let disc_btn = egui::Button::new(
+                                RichText::new("🔌 Disconnect")
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(255, 100, 100)),
+                            );
+                            if ui.add(disc_btn).clicked() {
+                                self.disconnect_sso();
+                            }
+                        } else if self.sso_is_authenticating {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(
+                                    "⏳ Waiting for CCP SSO Authorization in web browser...",
+                                )
+                                .size(13.0)
+                                .color(Color32::from_rgb(255, 205, 0))
+                                .strong(),
+                            );
+                        } else {
+                            let conn_btn = egui::Button::new(
+                                RichText::new("🔑 Connect EVE Character via SSO")
+                                    .size(13.0)
+                                    .color(Color32::BLACK)
+                                    .strong(),
+                            )
+                            .fill(Color32::from_rgb(0, 230, 170));
+
+                            if ui.add(conn_btn).clicked() {
+                                self.start_sso_authentication();
+                            }
+                            ui.label(
+                                RichText::new("(Opens your default browser to login with CCP)")
+                                    .color(Color32::GRAY)
+                                    .size(11.5),
+                            );
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    if self.sso_character_name.is_some() {
+                        ui.horizontal(|ui| {
+                            let loc_btn = egui::Button::new(
+                                RichText::new(if self.sso_is_fetching_location {
+                                    "⏳ Querying Live Location..."
+                                } else {
+                                    "🛰️ Check Character Location"
+                                })
+                                .size(12.5)
+                                .color(Color32::BLACK)
+                                .strong(),
+                            )
+                            .fill(Color32::from_rgb(0, 220, 255));
+
+                            if ui
+                                .add_enabled(!self.sso_is_fetching_location, loc_btn)
+                                .on_hover_text(
+                                    "Query ESI right now for your pilot's live in-game solar system and set it as Deals starting system",
+                                )
+                                .clicked()
+                            {
+                                self.fetch_live_character_location(true);
+                            }
+
+                            ui.label(
+                                RichText::new(
+                                    "Queries CCP ESI for your pilot's active solar system and automatically updates the Deals starting location.",
+                                )
+                                .size(11.5)
+                                .color(Color32::GRAY),
+                            );
+
+                            if self.sso_is_fetching_location {
+                                ui.spinner();
+                            }
+                        });
+                    }
                 });
 
             ui.add_space(12.0);
@@ -5307,6 +7565,84 @@ impl DesktopApp {
                     ui.label("• Safe Stargate Navigation: Routes avoid lowsec (<0.45) and nullsec camps by default.");
                     ui.label("• Highsec Space Only: All trade routes and station orders are restricted to high security space.");
                 });
+
+            ui.add_space(14.0);
+
+            // Card 5: In-Game ISK Donations & Support
+            let corp_tex = self.ensure_corp_icon(ui.ctx()).cloned();
+            let mut copy_corp = false;
+            egui::Frame::none()
+                .fill(Color32::from_rgb(22, 28, 44))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(218, 165, 32)))
+                .rounding(8.0)
+                .inner_margin(16.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if let Some(ref tex) = corp_tex {
+                            ui.image((tex.id(), egui::vec2(52.0, 52.0)));
+                            ui.add_space(12.0);
+                        }
+
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("🪙 Support EVE Traveling Merchant — In-Game ISK Donations")
+                                        .size(16.0)
+                                        .color(Color32::from_rgb(255, 215, 0))
+                                        .strong(),
+                                );
+                                egui::Frame::none()
+                                    .fill(Color32::from_rgba_unmultiplied(255, 215, 0, 30))
+                                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(255, 215, 0)))
+                                    .rounding(4.0)
+                                    .inner_margin(egui::vec2(8.0, 2.0))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new("COMMUNITY")
+                                                .size(10.0)
+                                                .color(Color32::from_rgb(255, 215, 0))
+                                                .strong(),
+                                        );
+                                    });
+                            });
+
+                            ui.add_space(4.0);
+                            ui.label(
+                                "EVE Traveling Merchant is 100% free, open-source, and community-driven. If the arbitrage scout and knapsack corridor route engine help you haul billions of ISK, consider sending a voluntary in-game ISK donation to support ongoing development and server infrastructure!",
+                            );
+
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Recipient Corporation:").strong());
+                                ui.label(
+                                    RichText::new(CORP_DONATION_RECIPIENT)
+                                        .size(14.0)
+                                        .color(Color32::from_rgb(255, 225, 80))
+                                        .strong(),
+                                );
+
+                                if ui.button(RichText::new("📋 Copy 'Expandabliss'").strong()).clicked() {
+                                    copy_corp = true;
+                                }
+                            });
+
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("How to donate in-game:").size(11.5).color(Color32::GRAY));
+                                ui.label(
+                                    RichText::new("1. Open Wallet (Alt+W)  •  2. Click 'Transfer ISK'  •  3. Search 'Expandabliss' (Corporation)  •  4. Fly Safe o7!")
+                                        .size(11.5)
+                                        .color(Color32::from_rgb(140, 190, 240)),
+                                );
+                            });
+                        });
+                    });
+                });
+
+            if copy_corp {
+                ui.output_mut(|o| o.copied_text = CORP_DONATION_RECIPIENT.to_string());
+                self.set_toast("Copied 'Expandabliss' to clipboard! Send ISK in-game via Wallet > Transfer.");
+            }
         });
     }
 

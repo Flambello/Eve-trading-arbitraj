@@ -1060,6 +1060,7 @@ name = "eve-trade-scout"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bzip2",
  "chrono",
  "clap",
@@ -1069,11 +1070,13 @@ dependencies = [
  "egui_extras",
  "flate2",
  "futures-util",
+ "image",
  "indicatif",
  "lru",
  "petgraph",
  "ratatui",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

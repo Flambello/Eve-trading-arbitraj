@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, Semaphore};
 const ESI_BASE: &str = "https://esi.evetech.net/latest";
 const USER_AGENT_VAL: &str = "eve-trade-scout/0.1.0 (EVE Online Arbitrage Scout)";
 pub const MAX_PAGES_LIMIT: u32 = 500;
+pub const MAX_NETWORK_RETRIES: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredEtag {
@@ -107,12 +108,17 @@ impl EsiClient {
         }
 
         let mut backoff = Duration::from_millis(500);
+        let mut attempts = 0u32;
         let resp: Response = loop {
+            attempts += 1;
             let req_clone = req.try_clone().context("Failed to clone request")?;
             match req_clone.send().await {
                 Ok(r) => {
                     let status = r.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                        if attempts > MAX_NETWORK_RETRIES {
+                            bail!("ESI rate limit hit; aborted after {} attempts", attempts);
+                        }
                         eprintln!(
                             " [ESI] Rate limit hit ({}). Backing off for {:?}...",
                             status, backoff
@@ -121,6 +127,13 @@ impl EsiClient {
                         backoff = (backoff * 2).min(Duration::from_secs(60));
                         continue;
                     } else if status.is_server_error() {
+                        if attempts > MAX_NETWORK_RETRIES {
+                            bail!(
+                                "ESI server error ({}); aborted after {} attempts",
+                                status,
+                                attempts
+                            );
+                        }
                         eprintln!(
                             " [ESI] Server error ({}). Retrying in {:?}...",
                             status, backoff
@@ -132,6 +145,14 @@ impl EsiClient {
                     break r;
                 }
                 Err(e) => {
+                    if attempts > MAX_NETWORK_RETRIES {
+                        bail!(
+                            "ESI network request to {} failed after {} retries: {}",
+                            url,
+                            attempts,
+                            e
+                        );
+                    }
                     eprintln!(" [ESI] Network error: {}. Retrying in {:?}...", e, backoff);
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(10));
@@ -215,7 +236,9 @@ impl EsiClient {
         p1_query.push(("page", "1".to_string()));
 
         let mut backoff = Duration::from_millis(500);
+        let mut attempts = 0u32;
         let resp = loop {
+            attempts += 1;
             let _permit = self.concurrency_sem.acquire().await?;
             let mut req = self.client.get(&url);
             for (k, v) in &p1_query {
@@ -230,6 +253,12 @@ impl EsiClient {
                 Ok(r) => {
                     let status = r.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                        if attempts > MAX_NETWORK_RETRIES {
+                            bail!(
+                                "ESI page 1 rate limited; aborted after {} attempts",
+                                attempts
+                            );
+                        }
                         eprintln!(
                             " [ESI] Page 1 rate limited ({}). Backing off for {:?}...",
                             status, backoff
@@ -238,6 +267,13 @@ impl EsiClient {
                         backoff = (backoff * 2).min(Duration::from_secs(10));
                         continue;
                     } else if status.is_server_error() {
+                        if attempts > MAX_NETWORK_RETRIES {
+                            bail!(
+                                "ESI page 1 server error ({}); aborted after {} attempts",
+                                status,
+                                attempts
+                            );
+                        }
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(10));
                         continue;
@@ -248,7 +284,14 @@ impl EsiClient {
                     }
                     break r;
                 }
-                Err(_e) => {
+                Err(e) => {
+                    if attempts > MAX_NETWORK_RETRIES {
+                        bail!(
+                            "ESI page 1 request failed after {} retries: {}",
+                            attempts,
+                            e
+                        );
+                    }
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(10));
                 }
@@ -319,7 +362,9 @@ impl EsiClient {
 
                 tasks.push(tokio::spawn(async move {
                     let mut page_backoff = Duration::from_millis(500);
+                    let mut attempts = 0u32;
                     let text = loop {
+                        attempts += 1;
                         let _p = sem.acquire().await.map_err(|e| anyhow::anyhow!("{}", e))?;
                         let mut req = client.get(&u);
                         for (k, v) in &q {
@@ -330,6 +375,13 @@ impl EsiClient {
                                 let status = r.status();
                                 if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420
                                 {
+                                    if attempts > MAX_NETWORK_RETRIES {
+                                        bail!(
+                                            "Page {} rate limited; aborted after {} attempts",
+                                            page,
+                                            attempts
+                                        );
+                                    }
                                     eprintln!(
                                         " [ESI] Page {} rate limited ({}). Retrying in {:?}...",
                                         page, status, page_backoff
@@ -338,6 +390,14 @@ impl EsiClient {
                                     page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
                                     continue;
                                 } else if status.is_server_error() {
+                                    if attempts > MAX_NETWORK_RETRIES {
+                                        bail!(
+                                            "Page {} server error ({}); aborted after {} attempts",
+                                            page,
+                                            status,
+                                            attempts
+                                        );
+                                    }
                                     tokio::time::sleep(page_backoff).await;
                                     page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
                                     continue;
@@ -346,7 +406,15 @@ impl EsiClient {
                                 }
                                 break r.text().await?;
                             }
-                            Err(_e) => {
+                            Err(e) => {
+                                if attempts > MAX_NETWORK_RETRIES {
+                                    bail!(
+                                        "Page {} request failed after {} retries: {}",
+                                        page,
+                                        attempts,
+                                        e
+                                    );
+                                }
                                 tokio::time::sleep(page_backoff).await;
                                 page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
                             }

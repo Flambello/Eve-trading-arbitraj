@@ -38,7 +38,6 @@ impl ItemInfo {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct SystemNode {
     pub system_id: u32,
@@ -205,6 +204,8 @@ impl SdeLoader {
             }
         }
 
+        Self::validate_schema(&conn)?;
+
         // Inspect table structure for volume columns
         let has_inv_volumes = {
             let mut stmt = conn.prepare(
@@ -233,6 +234,32 @@ impl SdeLoader {
             has_inv_volumes,
             has_packaged_col,
         })
+    }
+
+    /// Validates that the SQLite connection contains all required universe tables and data.
+    pub fn validate_schema(conn: &Connection) -> Result<()> {
+        let required_tables = [
+            "mapSolarSystems",
+            "staStations",
+            "invTypes",
+            "mapSolarSystemJumps",
+        ];
+        for table in required_tables {
+            let mut stmt =
+                conn.prepare("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1")?;
+            let count: i64 = stmt.query_row(params![table], |r| r.get(0)).unwrap_or(0);
+            if count == 0 {
+                bail!("SDE database missing essential universe table: {}", table);
+            }
+        }
+
+        let mut stmt = conn.prepare("SELECT count(*) FROM mapSolarSystems")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0)).unwrap_or(0);
+        if count == 0 {
+            bail!("SDE database contains 0 solar systems in mapSolarSystems");
+        }
+
+        Ok(())
     }
 
     /// Create an in-memory SdeLoader populated with standard test fixtures.

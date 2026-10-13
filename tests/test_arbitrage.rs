@@ -3,7 +3,8 @@
 #[cfg(test)]
 mod tests {
     use eve_trade_scout::arbitrage::{
-        calculate_deal, is_npc_station, ArbitrageConfig, ArbitrageDeal,
+        calculate_deal, filter_deals_by_order_limit, is_npc_station, prune_redundant_order_deals,
+        ArbitrageConfig, ArbitrageDeal,
     };
     use eve_trade_scout::config::{BIG_HAULER, SMALL_HAULER};
     use eve_trade_scout::esi::models::MarketOrder;
@@ -1080,10 +1081,324 @@ mod tests {
             2,
             "Both the player insignia deal and the player mineral deal must pass when hide_npc_trades is active"
         );
-        assert_eq!(filtered[0].item_name, "Federation Navy Midshipman Insignia I");
+        assert_eq!(
+            filtered[0].item_name,
+            "Federation Navy Midshipman Insignia I"
+        );
         assert!(!filtered[0].is_npc_trade);
         assert_eq!(filtered[1].item_name, "Tritanium");
         assert!(!filtered[1].is_npc_trade);
     }
-}
 
+    #[test]
+    fn test_filter_top_deals_per_sell_order_prunes_excess_destinations() {
+        // Create 1 sell order (ID 1001) mapped to 5 buy orders (IDs 2001..2005)
+        // with decreasing profit-per-jump (and increasing total jumps).
+        let make_deal = |dst_order_id: u64, dst_station_id: u64, ppj: f64, jumps: u32, net: f64| {
+            ArbitrageDeal {
+                type_id: 34,
+                item_name: "Tritanium".to_string(),
+                source_order_id: 1001,
+                dest_order_id: dst_order_id,
+                source_order_volume_remain: 10000,
+                dest_order_volume_remain: 10000,
+                dest_order_min_volume: 1,
+                is_npc_trade: false,
+                buy_price: 5.0,
+                sell_price: 10.0,
+                spread_pct: 100.0,
+                source_station_id: 60003760,
+                source_system_id: 30000142,
+                source_system_name: "Jita".to_string(),
+                source_station_name: "Jita IV-4".to_string(),
+                source_security: 0.95,
+                dest_station_id: dst_station_id,
+                dest_system_id: 30000144,
+                dest_system_name: "Perimeter".to_string(),
+                dest_station_name: format!("Station {}", dst_station_id),
+                dest_security: 0.90,
+                quantity: 1000,
+                volume_used: 10.0,
+                capital_required: 5000.0,
+                gross_profit: net * 1.2,
+                taxes_and_fees: net * 0.2,
+                net_profit: net,
+                net_profit_pct: 50.0,
+                jumps_from_home: 0,
+                jumps_source_dest: jumps,
+                total_jumps: jumps,
+                profit_per_jump: ppj,
+                profit_per_m3: net / 10.0,
+            }
+        };
+
+        let deals = vec![
+            make_deal(2001, 60000001, 5.0, 1, 50000.0), // Top 1: 1 jump, 5.0M/jump
+            make_deal(2002, 60000002, 3.0, 2, 60000.0), // Top 2: 2 jumps, 3.0M/jump
+            make_deal(2003, 60000003, 2.0, 4, 80000.0), // 4 jumps, 2.0M/jump (filler)
+            make_deal(2004, 60000004, 1.0, 8, 80000.0), // 8 jumps, 1.0M/jump (filler)
+            make_deal(2005, 60000005, 0.5, 12, 60000.0), // 12 jumps, 0.5M/jump (filler)
+        ];
+
+        // Pruning to top 2 destinations per sell order (unlimited buy side)
+        let pruned = prune_redundant_order_deals(&deals, 2, 0);
+        assert_eq!(
+            pruned.len(),
+            2,
+            "Must keep strictly the top 2 destinations for sell order 1001"
+        );
+        assert_eq!(
+            pruned[0].dest_order_id, 2001,
+            "Top 1 destination must be 2001 (5.0 PPJ)"
+        );
+        assert_eq!(
+            pruned[1].dest_order_id, 2002,
+            "Top 2 destination must be 2002 (3.0 PPJ)"
+        );
+    }
+
+    #[test]
+    fn test_filter_top_deals_per_buy_order_prunes_excess_sources() {
+        // Create 1 buy order (ID 2001) mapped from 5 sell orders (IDs 1001..1005)
+        let make_deal = |src_order_id: u64, src_station_id: u64, ppj: f64, jumps: u32, net: f64| {
+            ArbitrageDeal {
+                type_id: 34,
+                item_name: "Tritanium".to_string(),
+                source_order_id: src_order_id,
+                dest_order_id: 2001,
+                source_order_volume_remain: 10000,
+                dest_order_volume_remain: 10000,
+                dest_order_min_volume: 1,
+                is_npc_trade: false,
+                buy_price: 5.0,
+                sell_price: 10.0,
+                spread_pct: 100.0,
+                source_station_id: src_station_id,
+                source_system_id: 30000142,
+                source_system_name: "Jita".to_string(),
+                source_station_name: format!("Station {}", src_station_id),
+                source_security: 0.95,
+                dest_station_id: 60003761,
+                dest_system_id: 30000144,
+                dest_system_name: "Perimeter".to_string(),
+                dest_station_name: "Perimeter I".to_string(),
+                dest_security: 0.90,
+                quantity: 1000,
+                volume_used: 10.0,
+                capital_required: 5000.0,
+                gross_profit: net * 1.2,
+                taxes_and_fees: net * 0.2,
+                net_profit: net,
+                net_profit_pct: 50.0,
+                jumps_from_home: 0,
+                jumps_source_dest: jumps,
+                total_jumps: jumps,
+                profit_per_jump: ppj,
+                profit_per_m3: net / 10.0,
+            }
+        };
+
+        let deals = vec![
+            make_deal(1001, 60000010, 8.0, 1, 80000.0), // Top 1: 1 jump, 8.0M/jump
+            make_deal(1002, 60000020, 6.0, 2, 120000.0), // Top 2: 2 jumps, 6.0M/jump
+            make_deal(1003, 60000030, 4.0, 3, 120000.0), // 3 jumps, 4.0M/jump (filler)
+            make_deal(1004, 60000040, 2.0, 6, 120000.0), // 6 jumps, 2.0M/jump (filler)
+            make_deal(1005, 60000050, 1.0, 10, 100000.0), // 10 jumps, 1.0M/jump (filler)
+        ];
+
+        // Pruning to top 2 sources per buy order (unlimited sell side)
+        let pruned = prune_redundant_order_deals(&deals, 0, 2);
+        assert_eq!(
+            pruned.len(),
+            2,
+            "Must keep strictly the top 2 sources for buy order 2001"
+        );
+        assert_eq!(
+            pruned[0].source_order_id, 1001,
+            "Top 1 source must be 1001 (8.0 PPJ)"
+        );
+        assert_eq!(
+            pruned[1].source_order_id, 1002,
+            "Top 2 source must be 1002 (6.0 PPJ)"
+        );
+    }
+
+    #[test]
+    fn test_filter_top_deals_simultaneous_sell_and_buy_limits() {
+        let make_deal = |src_id: u64, dst_id: u64, ppj: f64| ArbitrageDeal {
+            type_id: 34,
+            item_name: "Tritanium".to_string(),
+            source_order_id: src_id,
+            dest_order_id: dst_id,
+            source_order_volume_remain: 1000,
+            dest_order_volume_remain: 1000,
+            dest_order_min_volume: 1,
+            is_npc_trade: false,
+            buy_price: 5.0,
+            sell_price: 10.0,
+            spread_pct: 100.0,
+            source_station_id: src_id,
+            source_system_id: 30000142,
+            source_system_name: "Jita".to_string(),
+            source_station_name: format!("Station {}", src_id),
+            source_security: 0.95,
+            dest_station_id: dst_id,
+            dest_system_id: 30000144,
+            dest_system_name: "Perimeter".to_string(),
+            dest_station_name: format!("Station {}", dst_id),
+            dest_security: 0.90,
+            quantity: 100,
+            volume_used: 1.0,
+            capital_required: 500.0,
+            gross_profit: 500.0,
+            taxes_and_fees: 50.0,
+            net_profit: 450.0,
+            net_profit_pct: 90.0,
+            jumps_from_home: 0,
+            jumps_source_dest: 1,
+            total_jumps: 1,
+            profit_per_jump: ppj,
+            profit_per_m3: 450.0,
+        };
+
+        // Sell order 101 mapped to B201, B202, B203
+        // Sell order 102 mapped to B201, B202, B204
+        let deals = vec![
+            make_deal(101, 201, 10.0), // S101 -> B201 (S101: 1/2, B201: 1/2) -> kept
+            make_deal(101, 202, 9.0),  // S101 -> B202 (S101: 2/2, B202: 1/2) -> kept
+            make_deal(101, 203, 8.0),  // S101 -> B203 (S101: 3/2 -> rejected)
+            make_deal(102, 201, 7.0),  // S102 -> B201 (S102: 1/2, B201: 2/2) -> kept
+            make_deal(102, 202, 6.0),  // S102 -> B202 (S102: 2/2, B202: 2/2) -> kept
+            make_deal(102, 204, 5.0),  // S102 -> B204 (S102: 3/2 -> rejected)
+            make_deal(103, 201, 4.0),  // S103 -> B201 (S103: 1/2, B201: 3/2 -> rejected)
+        ];
+
+        let pruned = prune_redundant_order_deals(&deals, 2, 2);
+        assert_eq!(
+            pruned.len(),
+            4,
+            "Must enforce max 2 per sell and max 2 per buy"
+        );
+        assert_eq!(
+            (pruned[0].source_order_id, pruned[0].dest_order_id),
+            (101, 201)
+        );
+        assert_eq!(
+            (pruned[1].source_order_id, pruned[1].dest_order_id),
+            (101, 202)
+        );
+        assert_eq!(
+            (pruned[2].source_order_id, pruned[2].dest_order_id),
+            (102, 201)
+        );
+        assert_eq!(
+            (pruned[3].source_order_id, pruned[3].dest_order_id),
+            (102, 202)
+        );
+    }
+
+    #[test]
+    fn test_filter_top_deals_zero_limit_preserves_all_deals() {
+        let make_deal = |id: u64| ArbitrageDeal {
+            type_id: 34,
+            item_name: "Tritanium".to_string(),
+            source_order_id: 101,
+            dest_order_id: 200 + id,
+            source_order_volume_remain: 100,
+            dest_order_volume_remain: 100,
+            dest_order_min_volume: 1,
+            is_npc_trade: false,
+            buy_price: 5.0,
+            sell_price: 10.0,
+            spread_pct: 100.0,
+            source_station_id: 101,
+            source_system_id: 30000142,
+            source_system_name: "Jita".to_string(),
+            source_station_name: "Station".to_string(),
+            source_security: 0.95,
+            dest_station_id: 200 + id,
+            dest_system_id: 30000144,
+            dest_system_name: "Perimeter".to_string(),
+            dest_station_name: "Station".to_string(),
+            dest_security: 0.90,
+            quantity: 100,
+            volume_used: 1.0,
+            capital_required: 500.0,
+            gross_profit: 500.0,
+            taxes_and_fees: 50.0,
+            net_profit: 450.0,
+            net_profit_pct: 90.0,
+            jumps_from_home: 0,
+            jumps_source_dest: 1,
+            total_jumps: 1,
+            profit_per_jump: 450.0,
+            profit_per_m3: 450.0,
+        };
+
+        let deals = vec![make_deal(1), make_deal(2), make_deal(3), make_deal(4)];
+        let unpruned = prune_redundant_order_deals(&deals, 0, 0);
+        assert_eq!(
+            unpruned.len(),
+            4,
+            "Zero limit must preserve 100% of candidate deals"
+        );
+    }
+
+    #[test]
+    fn test_filter_top_deals_preserves_fastest_highest_profit_routes() {
+        let make_indexed_deal = |idx: usize, src_id: u64, dst_id: u64, ppj: f64| {
+            (
+                idx,
+                ArbitrageDeal {
+                    type_id: 34,
+                    item_name: "Tritanium".to_string(),
+                    source_order_id: src_id,
+                    dest_order_id: dst_id,
+                    source_order_volume_remain: 100,
+                    dest_order_volume_remain: 100,
+                    dest_order_min_volume: 1,
+                    is_npc_trade: false,
+                    buy_price: 5.0,
+                    sell_price: 10.0,
+                    spread_pct: 100.0,
+                    source_station_id: src_id,
+                    source_system_id: 30000142,
+                    source_system_name: "Jita".to_string(),
+                    source_station_name: "Station".to_string(),
+                    source_security: 0.95,
+                    dest_station_id: dst_id,
+                    dest_system_id: 30000144,
+                    dest_system_name: "Perimeter".to_string(),
+                    dest_station_name: "Station".to_string(),
+                    dest_security: 0.90,
+                    quantity: 100,
+                    volume_used: 1.0,
+                    capital_required: 500.0,
+                    gross_profit: 500.0,
+                    taxes_and_fees: 50.0,
+                    net_profit: 450.0,
+                    net_profit_pct: 90.0,
+                    jumps_from_home: 0,
+                    jumps_source_dest: 1,
+                    total_jumps: 1,
+                    profit_per_jump: ppj,
+                    profit_per_m3: 450.0,
+                },
+            )
+        };
+
+        let indexed_deals = vec![
+            make_indexed_deal(10, 501, 601, 15.0),
+            make_indexed_deal(11, 501, 602, 12.0),
+            make_indexed_deal(12, 501, 603, 9.0), // 3rd destination for 501 -> rejected
+            make_indexed_deal(13, 502, 601, 8.0),
+        ];
+
+        let filtered = filter_deals_by_order_limit(indexed_deals, 2, 2, |(_, d)| d);
+
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(filtered[0].0, 10);
+        assert_eq!(filtered[1].0, 11);
+        assert_eq!(filtered[2].0, 13);
+    }
+}

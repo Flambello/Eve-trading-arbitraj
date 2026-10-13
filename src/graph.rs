@@ -1,10 +1,8 @@
 use crate::sde::{SdeLoader, SystemNode};
 use anyhow::Result;
 use lru::LruCache;
-use petgraph::algo::{astar, dijkstra};
 use petgraph::graph::{NodeIndex, UnGraph};
-use petgraph::visit::EdgeRef;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
@@ -136,27 +134,53 @@ impl SystemGraph {
                 return 9999;
             }
 
-            // Dijkstra where target system security < 0.45 has high weight 1000.0
-            let costs = dijkstra(&self.graph, origin_idx, Some(dest_idx), |edge| {
-                let target = edge.target();
-                let sec = self.graph[target].security_status;
-                if sec < 0.45 {
-                    1000.0
-                } else {
-                    1.0
-                }
-            });
+            let node_count = self.graph.node_count();
+            let mut visited = vec![false; node_count];
+            let mut queue = VecDeque::new();
+            visited[origin_idx.index()] = true;
+            queue.push_back((origin_idx, 0u32));
 
-            match costs.get(&dest_idx) {
-                Some(&cost) if cost < 1000.0 => cost as u32,
-                _ => 9999, // Requires lowsec/nullsec or unreachable
+            let mut found_dist = None;
+            while let Some((curr, dist)) = queue.pop_front() {
+                if curr == dest_idx {
+                    found_dist = Some(dist);
+                    break;
+                }
+                for neighbor in self.graph.neighbors(curr) {
+                    let n_idx = neighbor.index();
+                    if !visited[n_idx] {
+                        if self.graph[neighbor].security_status >= 0.45 {
+                            visited[n_idx] = true;
+                            queue.push_back((neighbor, dist + 1));
+                        }
+                    }
+                }
             }
+
+            found_dist.unwrap_or(9999)
         } else {
-            let costs = dijkstra(&self.graph, origin_idx, Some(dest_idx), |_| 1.0);
-            match costs.get(&dest_idx) {
-                Some(&cost) => cost as u32,
-                None => 9999,
+            let node_count = self.graph.node_count();
+            let mut visited = vec![false; node_count];
+            let mut queue = VecDeque::new();
+            visited[origin_idx.index()] = true;
+            queue.push_back((origin_idx, 0u32));
+
+            let mut found_dist = None;
+            while let Some((curr, dist)) = queue.pop_front() {
+                if curr == dest_idx {
+                    found_dist = Some(dist);
+                    break;
+                }
+                for neighbor in self.graph.neighbors(curr) {
+                    let n_idx = neighbor.index();
+                    if !visited[n_idx] {
+                        visited[n_idx] = true;
+                        queue.push_back((neighbor, dist + 1));
+                    }
+                }
             }
+
+            found_dist.unwrap_or(9999)
         };
 
         if let Ok(mut cache) = self.jump_cache.lock() {
@@ -166,7 +190,7 @@ impl SystemGraph {
         result
     }
 
-    /// Calculates the ordered list of solar system IDs along the shortest stargate path using A*.
+    /// Calculates the ordered list of solar system IDs along the shortest stargate path using BFS.
     ///
     /// Returns an empty `Vec` as a sentinel if no path exists, or if `safe_only` is true and
     /// any endpoint or connecting path enters lowsec/nullsec.
@@ -189,34 +213,48 @@ impl SystemGraph {
             None => return Vec::new(),
         };
 
-        let path_opt = astar(
-            &self.graph,
-            origin_idx,
-            |finish| finish == dest_idx,
-            |edge| {
-                let target = edge.target();
-                let sec = self.graph[target].security_status;
-                if safe_only && sec < 0.45 {
-                    1000.0
-                } else {
-                    1.0
-                }
-            },
-            |_| 0.0,
-        );
+        let node_count = self.graph.node_count();
+        let mut visited = vec![false; node_count];
+        let mut parent = vec![None; node_count];
+        let mut queue = VecDeque::new();
 
-        match path_opt {
-            Some((cost, node_path)) => {
-                if safe_only && cost >= 1000.0 {
-                    Vec::new()
-                } else {
-                    node_path
-                        .into_iter()
-                        .map(|idx| self.graph[idx].system_id)
-                        .collect()
+        visited[origin_idx.index()] = true;
+        queue.push_back(origin_idx);
+
+        let mut found = false;
+        while let Some(curr) = queue.pop_front() {
+            if curr == dest_idx {
+                found = true;
+                break;
+            }
+            for neighbor in self.graph.neighbors(curr) {
+                let n_idx = neighbor.index();
+                if !visited[n_idx] {
+                    if safe_only && self.graph[neighbor].security_status < 0.45 {
+                        continue;
+                    }
+                    visited[n_idx] = true;
+                    parent[n_idx] = Some(curr);
+                    queue.push_back(neighbor);
                 }
             }
-            None => Vec::new(),
         }
+
+        if !found {
+            return Vec::new();
+        }
+
+        let mut path = Vec::new();
+        let mut curr = dest_idx;
+        while curr != origin_idx {
+            path.push(self.graph[curr].system_id);
+            curr = match parent[curr.index()] {
+                Some(p) => p,
+                None => return Vec::new(),
+            };
+        }
+        path.push(self.graph[origin_idx].system_id);
+        path.reverse();
+        path
     }
 }

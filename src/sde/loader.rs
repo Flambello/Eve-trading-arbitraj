@@ -3,6 +3,7 @@ use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use rusqlite::{params, Connection, OpenFlags};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -168,6 +169,13 @@ pub struct SdeLoader {
     conn: Mutex<Connection>,
     has_inv_volumes: bool,
     has_packaged_col: bool,
+    station_names: HashMap<u64, String>,
+    station_systems: HashMap<u64, u32>,
+    system_names: HashMap<u32, String>,
+    system_regions: HashMap<u32, u32>,
+    system_securities: HashMap<u32, f64>,
+    region_names: HashMap<u32, String>,
+    item_cache: Mutex<HashMap<u32, Option<ItemInfo>>>,
 }
 
 impl SdeLoader {
@@ -227,10 +235,26 @@ impl SdeLoader {
             found
         };
 
+        let (
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+        ) = Self::preload_static_tables(&conn);
+
         Ok(Self {
             conn: Mutex::new(conn),
             has_inv_volumes,
             has_packaged_col,
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+            item_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -344,10 +368,26 @@ impl SdeLoader {
             ",
         )?;
 
+        let (
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+        ) = Self::preload_static_tables(&conn);
+
         Ok(Self {
             conn: Mutex::new(conn),
             has_inv_volumes: false,
             has_packaged_col: true,
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+            item_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -476,7 +516,85 @@ impl SdeLoader {
         Ok(())
     }
 
+    fn preload_static_tables(
+        conn: &Connection,
+    ) -> (
+        HashMap<u64, String>,
+        HashMap<u64, u32>,
+        HashMap<u32, String>,
+        HashMap<u32, u32>,
+        HashMap<u32, f64>,
+        HashMap<u32, String>,
+    ) {
+        let mut station_names = HashMap::new();
+        let mut station_systems = HashMap::new();
+        let mut system_names = HashMap::new();
+        let mut system_regions = HashMap::new();
+        let mut system_securities = HashMap::new();
+        let mut region_names = HashMap::new();
+
+        if let Ok(mut stmt) = conn.prepare("SELECT stationID, stationName, solarSystemID FROM staStations") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(sta_id), Ok(raw_name), Ok(sys_id)) = (
+                        row.get::<_, u64>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, u32>(2),
+                    ) {
+                        station_names.insert(sta_id, format_station_name(&raw_name));
+                        station_systems.insert(sta_id, sys_id);
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut stmt) = conn.prepare("SELECT solarSystemID, solarSystemName, security, regionID FROM mapSolarSystems") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(sys_id), Ok(sys_name), Ok(sec), Ok(reg_id)) = (
+                        row.get::<_, u32>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, f64>(2),
+                        row.get::<_, u32>(3),
+                    ) {
+                        system_names.insert(sys_id, sys_name);
+                        system_securities.insert(sys_id, sec);
+                        system_regions.insert(sys_id, reg_id);
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut stmt) = conn.prepare("SELECT regionID, regionName FROM mapRegions") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while let Ok(Some(row)) = rows.next() {
+                    if let (Ok(reg_id), Ok(reg_name)) = (
+                        row.get::<_, u32>(0),
+                        row.get::<_, String>(1),
+                    ) {
+                        region_names.insert(reg_id, reg_name);
+                    }
+                }
+            }
+        }
+
+        (
+            station_names,
+            station_systems,
+            system_names,
+            system_regions,
+            system_securities,
+            region_names,
+        )
+    }
+
     pub fn get_item_info(&self, type_id: u32) -> Option<ItemInfo> {
+        if let Ok(cache) = self.item_cache.lock() {
+            if let Some(res) = cache.get(&type_id) {
+                return res.clone();
+            }
+        }
+
         let conn = self.conn.lock().ok()?;
 
         let query = if self.has_packaged_col {
@@ -493,8 +611,8 @@ impl SdeLoader {
              WHERE t.typeID = ?1"
         };
 
-        let mut stmt = conn.prepare(query).ok()?;
-        stmt.query_row(params![type_id], |row| {
+        let mut stmt = conn.prepare_cached(query).ok()?;
+        let info = stmt.query_row(params![type_id], |row| {
             let vol: f64 = row.get(2)?;
             let pub_flag: i64 = row.get(5)?;
             Ok(ItemInfo {
@@ -506,7 +624,13 @@ impl SdeLoader {
                 published: pub_flag == 1,
             })
         })
-        .ok()
+        .ok();
+
+        if let Ok(mut cache) = self.item_cache.lock() {
+            cache.insert(type_id, info.clone());
+        }
+
+        info
     }
 
     /// Resolve a user input string to a solar system ID.
@@ -580,25 +704,34 @@ impl SdeLoader {
     }
 
     pub fn get_system_name(&self, system_id: u32) -> Option<String> {
+        if let Some(name) = self.system_names.get(&system_id) {
+            return Some(name.clone());
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .prepare_cached("SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
     pub fn get_system_security(&self, system_id: u32) -> Option<f64> {
+        if let Some(&sec) = self.system_securities.get(&system_id) {
+            return Some(sec);
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT security FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .prepare_cached("SELECT security FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
 
     pub fn get_system_region(&self, system_id: u32) -> Option<u32> {
+        if let Some(&reg_id) = self.system_regions.get(&system_id) {
+            return Some(reg_id);
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
+            .prepare_cached("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
         stmt.query_row(params![system_id], |row| row.get(0)).ok()
     }
@@ -679,26 +812,35 @@ impl SdeLoader {
     }
 
     pub fn get_station_system(&self, station_id: u64) -> Option<u32> {
+        if let Some(&sys_id) = self.station_systems.get(&station_id) {
+            return Some(sys_id);
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT solarSystemID FROM staStations WHERE stationID = ?1")
+            .prepare_cached("SELECT solarSystemID FROM staStations WHERE stationID = ?1")
             .ok()?;
         stmt.query_row(params![station_id], |row| row.get(0)).ok()
     }
 
     pub fn get_station_name(&self, station_id: u64) -> Option<String> {
+        if let Some(name) = self.station_names.get(&station_id) {
+            return Some(name.clone());
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT stationName FROM staStations WHERE stationID = ?1")
+            .prepare_cached("SELECT stationName FROM staStations WHERE stationID = ?1")
             .ok()?;
         let raw_name: String = stmt.query_row(params![station_id], |row| row.get(0)).ok()?;
         Some(format_station_name(&raw_name))
     }
 
     pub fn get_region_name(&self, region_id: u32) -> Option<String> {
+        if let Some(name) = self.region_names.get(&region_id) {
+            return Some(name.clone());
+        }
         let conn = self.conn.lock().ok()?;
         let mut stmt = conn
-            .prepare("SELECT regionName FROM mapRegions WHERE regionID = ?1")
+            .prepare_cached("SELECT regionName FROM mapRegions WHERE regionID = ?1")
             .ok()?;
         stmt.query_row(params![region_id], |row| row.get(0)).ok()
     }

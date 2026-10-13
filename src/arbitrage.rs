@@ -280,19 +280,6 @@ pub fn calculate_deal(
         return None;
     }
 
-    // Jump calculations
-    let jumps_from_home = graph.jump_count(cfg.home_system, src_system_id, cfg.safe_only);
-    if cfg.safe_only && jumps_from_home >= 9999 {
-        return None;
-    }
-
-    let jumps_source_dest = graph.jump_count(src_system_id, dst_system_id, cfg.safe_only);
-    if cfg.safe_only && jumps_source_dest >= 9999 {
-        return None;
-    }
-
-    let total_jumps = (jumps_from_home + jumps_source_dest).max(1);
-
     // Quantity constraints:
     // 1. Cargo volume limit
     let max_by_volume = if item.packaged_volume > 0.0 {
@@ -356,6 +343,19 @@ pub fn calculate_deal(
     if net_profit_pct < cfg.min_net_profit_pct {
         return None;
     }
+
+    // Jump calculations: evaluate graph distances only for viable profitable deals
+    let jumps_from_home = graph.jump_count(cfg.home_system, src_system_id, cfg.safe_only);
+    if cfg.safe_only && jumps_from_home >= 9999 {
+        return None;
+    }
+
+    let jumps_source_dest = graph.jump_count(src_system_id, dst_system_id, cfg.safe_only);
+    if cfg.safe_only && jumps_source_dest >= 9999 {
+        return None;
+    }
+
+    let total_jumps = (jumps_from_home + jumps_source_dest).max(1);
 
     let spread_pct = ((sell_price - buy_price) / buy_price) * 100.0;
     let profit_per_jump = net_profit / (total_jumps as f64);

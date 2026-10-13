@@ -727,8 +727,9 @@ fn test_token_response_deserialization_standard_ccp_refresh_omits_refresh_token(
         "expires_in": 1199
     }"#;
 
-    let token_resp: TokenResponse = serde_json::from_str(json_payload)
-        .expect("CCP standard refresh response must deserialize cleanly even without refresh_token");
+    let token_resp: TokenResponse = serde_json::from_str(json_payload).expect(
+        "CCP standard refresh response must deserialize cleanly even without refresh_token",
+    );
 
     assert_eq!(token_resp.access_token, "renewed_access_token_12345");
     assert_eq!(token_resp.token_type, "Bearer");
@@ -762,6 +763,18 @@ fn test_token_response_deserialization_rotating_refresh_includes_refresh_token()
 
 #[tokio::test]
 async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_response() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_refresh_std_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+
     use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -784,13 +797,17 @@ async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_
         assert!(request_str.contains("client_id=test_client_id_val"));
 
         // Respond with standard CCP refresh payload (omitting refresh_token)
-        let body = r#"{"access_token":"brand_new_access_jwt","token_type":"Bearer","expires_in":1199}"#;
+        let body =
+            r#"{"access_token":"brand_new_access_jwt","token_type":"Bearer","expires_in":1199}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
-        socket.write_all(response.as_bytes()).await.expect("Write failed");
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
     });
 
     let client = reqwest::Client::new();
@@ -805,7 +822,11 @@ async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_
     };
 
     let res = ensure_fresh_token_at_url(&client, &mock_url, "test_client_id_val", &mut token).await;
-    assert!(res.is_ok(), "Token refresh against mock CCP endpoint must succeed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "Token refresh against mock CCP endpoint must succeed: {:?}",
+        res.err()
+    );
 
     // Verify token was renewed and existing refresh token was preserved!
     assert_eq!(token.access_token, "brand_new_access_jwt");
@@ -813,10 +834,23 @@ async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_
     assert!(token.expires_at > now_secs() + 1100);
 
     let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_refresh_rot_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+
     use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -843,7 +877,10 @@ async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
             body.len(),
             body
         );
-        socket.write_all(response.as_bytes()).await.expect("Write failed");
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
     });
 
     let client = reqwest::Client::new();
@@ -865,10 +902,23 @@ async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
     assert!(token.expires_at > now_secs() + 1100);
 
     let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_refresh_rev_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+
     use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -883,13 +933,17 @@ async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
         let mut buf = vec![0u8; 2048];
         let _ = socket.read(&mut buf).await;
 
-        let body = r#"{"error":"invalid_grant","error_description":"Token has been revoked or expired"}"#;
+        let body =
+            r#"{"error":"invalid_grant","error_description":"Token has been revoked or expired"}"#;
         let response = format!(
             "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         );
-        socket.write_all(response.as_bytes()).await.expect("Write failed");
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
     });
 
     let client = reqwest::Client::new();
@@ -909,4 +963,5 @@ async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
     assert!(err_msg.contains("EVE SSO session has expired or was revoked"));
 
     let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }

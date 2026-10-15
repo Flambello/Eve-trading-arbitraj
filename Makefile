@@ -9,6 +9,7 @@ install-deps:
 	sudo dnf install -y gcc pkg-config git rust cargo desktop-file-utils tar gzip
 
 check:
+	cargo fmt --check
 	cargo check --all-targets
 
 test:

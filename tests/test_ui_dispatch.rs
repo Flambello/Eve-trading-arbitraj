@@ -121,14 +121,7 @@ fn test_deprecated_tui_app_state_backward_compatibility() {
         avg_profit_per_jump: 0.0,
     };
 
-    let mut state = AppState::new(
-        &deals,
-        &route,
-        BIG_HAULER,
-        "Jita".to_string(),
-        true,
-        true,
-    );
+    let mut state = AppState::new(&deals, &route, BIG_HAULER, "Jita".to_string(), true, true);
 
     // Verify state methods work without panic
     state.next_row();

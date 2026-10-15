@@ -65,7 +65,7 @@ impl SsoToken {
 /// Returns the path to the stored SSO token file (~/.config/eve-traveling-merchant/sso_token.json).
 /// Falls back to legacy ~/.config/eve-trade-scout/sso_token.json if present.
 pub fn token_storage_path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    let base = crate::config::config_base_dir().unwrap_or_else(|| PathBuf::from("."));
     let new_path = base.join("eve-traveling-merchant").join("sso_token.json");
     if new_path.exists() {
         return new_path;
@@ -199,7 +199,7 @@ pub fn get_developer_client_id() -> Option<String> {
         }
     }
     // 3. Private local config file (~/.config/eve-traveling-merchant/developer_client_id or legacy ~/.config/eve-trade-scout/developer_client_id)
-    let base = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let base = crate::config::config_base_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     let new_path = base
         .join("eve-traveling-merchant")
         .join("developer_client_id");

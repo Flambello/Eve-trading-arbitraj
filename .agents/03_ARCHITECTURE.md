@@ -62,8 +62,9 @@
 
 ### `src/main.rs`
 - Executable binary (`eve-merchant`).
-- Parse CLI arguments via `clap` (`--ship`, `--system`, `--regions`, `--safe`, `--unsafe-routes`, `--npc-only`, `--allow-structures`, `--min-roi`, `--gui`, `--tui`, `--no-ui`, `--no-tui`, `--auto-refresh`, `--route`, `--export`).
-- Detects environment (launches Desktop GUI by default when DISPLAY/WAYLAND_DISPLAY is present and stdout is a terminal, falls back to TUI or console).
+- Uses Windows GUI subsystem (`windows_subsystem = "windows"`) on release builds to avoid command prompt popup windows on Windows.
+- Automatically launches Desktop GUI by default across all platforms (Windows, Linux, macOS).
+- Deprecated CLI arguments `--tui`, `--no-ui`, and `--no-tui` print deprecation warnings when invoked.
 - Orchestrates SDE check, graph creation, market fetching, deal analysis, and UI launching.
 
 ### `src/config.rs`
@@ -101,8 +102,8 @@
 - Continually re-evaluates remaining capacity and jumps from current stop to the next deal.
 
 ### `src/ui/gui.rs` & `src/ui/tui.rs`
-- `gui.rs`: Native desktop GUI window powered by `eframe` / `egui`. Includes live scanning thread, item search, clipboard copy buttons, and visual route display.
-- `tui.rs`: Interactive terminal interface built with `ratatui` / `crossterm` for SSH or terminal power users.
+- `gui.rs`: Native desktop GUI window powered by `eframe` / `egui`. Primary, default user interface across all platforms. Includes live scanning thread, item search, clipboard copy buttons, and visual route display.
+- `tui.rs`: Legacy terminal interface built with `ratatui` / `crossterm`. **Deprecated on all platforms (Windows and Linux)** and slated for removal in a future release.
 
 ---
 

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-15
+
+### Changed
+- **Default Application Interface**: Made the native Desktop GUI the universal default on all platforms (Windows, Linux, macOS). Running `eve-merchant` or double-clicking `eve-merchant.exe` now always launches the graphical interface without requiring `--gui`.
+- **Windows Packaging & Subsystem**: Added `#![windows_subsystem = "windows"]` for Windows release builds to prevent terminal popup windows, added console attachment (`AttachConsole`) for CLI usage from PowerShell/CMD, and included `start-gui.bat` in the standalone Windows release bundle.
+- **Terminal UI / CLI Deprecation**: Formally deprecated the interactive Terminal UI (`--tui`, `ui::run_tui`) and console output (`--no-ui`, `--no-tui`) across all platforms with compile-time deprecation attributes, clap documentation flags, and runtime banners.
+
+### Added
+- **UI Dispatch Test Suite**: Added `tests/test_ui_dispatch.rs` validating default GUI launch behavior, display detection, and deprecation notices.
+
 ## [0.1.0] - 2026-10-10
 
 ### Changed

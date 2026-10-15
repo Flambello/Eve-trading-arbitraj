@@ -30,6 +30,9 @@ jobs:
       - name: Validate Desktop Entry File
         run: desktop-file-validate eve-trade.desktop
 
+      - name: Run Test Suites
+        run: cargo test --verbose --target x86_64-unknown-linux-gnu
+
       - name: Build Optimized Release Binary
         run: cargo build --release --target x86_64-unknown-linux-gnu --bin eve-merchant
 
@@ -70,6 +73,9 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Run Test Suites
+        run: cargo test --verbose --target x86_64-pc-windows-msvc
+
       - name: Build Optimized Release Binary
         run: cargo build --release --target x86_64-pc-windows-msvc --bin eve-merchant
 
@@ -79,6 +85,7 @@ jobs:
           $DistDir = "eve-traveling-merchant-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
           Copy-Item "target\x86_64-pc-windows-msvc\release\eve-merchant.exe" -Destination "$DistDir\"
+          Copy-Item "start-gui.bat" -Destination "$DistDir\"
           Copy-Item "README.md", "LICENSE", "CHANGELOG.md" -Destination "$DistDir\"
           Copy-Item "assets\icons\io.github.flambello.eve_merchant.png" -Destination "$DistDir\"
           Copy-Item "assets\icons\io.github.flambello.eve_merchant.svg" -Destination "$DistDir\"

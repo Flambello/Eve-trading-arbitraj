@@ -36,9 +36,9 @@ Traditional trade finders often force you to haul single items, leave your hold 
 - 🏛️ **Station Docking Pool Toggle**: Choose between **NPC Stations Only** (guaranteed 100% public docking access) or include **Player Citadels / Upwell Structures**.
 - 💡 **Real-Time SDE Autocomplete**: Type any solar system name for instant prefix/substring search, security rating pills, and parent region tags from the embedded universe SQLite export.
 - 🔔 **Audible Sound Alerts**: Freedesktop audio alerts and desktop notifications when deals yielding $\ge 100\%$ ROI are detected.
-- 🖥️ **Native Desktop GUI**: Built with `egui` and `eframe` for Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting.
-- 💻 **Terminal Dashboard (TUI)**: Fully keyboard-driven `ratatui` terminal interface for SSH sessions and terminal enthusiasts.
-- 📊 **Headless Scripting & CSV Export**: Stream formatted tables to stdout or export deal rosters directly to CSV via `--no-ui` and `--export`.
+- 🖥️ **Native Desktop GUI (Universal Default)**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting. Launches automatically by default on all platforms.
+- 💻 **Terminal Dashboard (TUI) [DEPRECATED]**: Keyboard-driven `ratatui` terminal interface. Deprecated across all platforms; will be removed in a future release.
+- 📊 **Headless Scripting & CSV Export [DEPRECATED]**: Console table output (deprecated) or direct CSV data export via `--export`.
 
 ---
 
@@ -56,8 +56,8 @@ wget https://github.com/Flambello/eve-traveling-merchant/releases/latest/downloa
 tar -xzf eve-traveling-merchant-linux-x86_64.tar.gz
 cd eve-traveling-merchant-linux-x86_64
 
-# Launch the desktop GUI interface
-./start-gui.sh    # or directly: ./eve-merchant --gui
+# Launch the desktop GUI interface directly (launches GUI by default)
+./eve-merchant      # or via launcher: ./start-gui.sh
 ```
 
 ### Option 2: Portable Windows Release Bundle (.zip)
@@ -66,7 +66,7 @@ Download the latest standalone `.zip` bundle for Windows x86_64 from [GitHub Rel
 
 1. Download `eve-traveling-merchant-windows-x86_64.zip`.
 2. Extract the archive into a folder of your choice.
-3. Double-click `eve-merchant.exe` to launch the native desktop GUI.
+3. Double-click `eve-merchant.exe` (or `start-gui.bat`) to launch the native desktop GUI. No command-line flags required.
 
 ### Option 3: Install via Cargo
 
@@ -158,10 +158,10 @@ eve-merchant --ship big --system Jita --export deals.csv
 
 | Flag | Default | Description |
 |---|---|---|
-| `--gui` | `auto` | Force desktop GUI window mode (`egui` native window; default when display server is active) |
-| `--tui` | `false` | Force terminal TUI mode (`ratatui`) |
-| `--no-ui` | `false` | Disable interactive interfaces (GUI & TUI) and output directly to console |
-| `--no-tui` | `false` | Disable interactive TUI and output directly to console |
+| `--gui` | `true` | Force desktop GUI window mode (`egui` native window; default on all platforms) |
+| `--tui` | `false` | **[DEPRECATED]** Force terminal TUI mode (`ratatui`) |
+| `--no-ui` | `false` | **[DEPRECATED]** Disable interactive interfaces (GUI & TUI) and output directly to console |
+| `--no-tui` | `false` | **[DEPRECATED]** Disable interactive TUI and output directly to console |
 | `--auto-refresh` | `false` | Automatically refresh market data every 5 minutes in GUI mode |
 | `-s, --ship <SHIP>` | `big` | Ship profile (`big`: 60k m³/500M or `small`: 30k m³/50M) |
 | `--system <SYSTEM>` | `Jita` | Starting solar system name |

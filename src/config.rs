@@ -173,6 +173,26 @@ impl Default for UserConfig {
     }
 }
 
+/// Returns the base configuration directory for the application across all platforms.
+///
+/// Precedence:
+/// 1. `EVE_CONFIG_DIR` environment variable (if set and non-empty)
+/// 2. `XDG_CONFIG_HOME` environment variable (if set and non-empty, cross-platform)
+/// 3. Platform default via `dirs::config_dir()` (%APPDATA% on Windows, ~/.config on Linux, ~/Library/Application Support on macOS)
+pub fn config_base_dir() -> Option<PathBuf> {
+    if let Some(val) = std::env::var_os("EVE_CONFIG_DIR") {
+        if !val.is_empty() {
+            return Some(PathBuf::from(val));
+        }
+    }
+    if let Some(val) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !val.is_empty() {
+            return Some(PathBuf::from(val));
+        }
+    }
+    dirs::config_dir()
+}
+
 impl UserConfig {
     /// Resolves the filesystem path to the user's `config.toml`.
     ///
@@ -180,7 +200,7 @@ impl UserConfig {
     /// a legacy `~/.config/eve-trade-scout/config.toml` exists, returns the legacy path for backwards compatibility.
     /// Otherwise returns the modern path.
     pub fn config_path() -> Result<PathBuf> {
-        let base = dirs::config_dir().context("Could not determine user config directory")?;
+        let base = config_base_dir().context("Could not determine user config directory")?;
         let new_path = base.join("eve-traveling-merchant").join("config.toml");
         if new_path.exists() {
             return Ok(new_path);

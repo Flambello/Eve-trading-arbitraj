@@ -204,13 +204,14 @@ Add the AppImage build to the GitHub Actions release workflow to attach it to ev
 The project ships zero-dependency standalone release archives for Linux and Windows:
 
 ### Linux Bundle (`eve-traveling-merchant-linux-x86_64.tar.gz`)
-- Pre-compiled optimized release binary (`eve-merchant`)
+- Pre-compiled optimized release binary (`eve-merchant`) — launches Desktop GUI directly by default
 - Native desktop entry (`eve-trade.desktop`) and Freedesktop icons
 - Shell launcher script (`start-gui.sh`)
 - Full documentation and license files
 
 ### Windows Bundle (`eve-traveling-merchant-windows-x86_64.zip`)
-- Pre-compiled optimized release executable (`eve-merchant.exe`)
+- Pre-compiled optimized release executable (`eve-merchant.exe`) compiled with Windows GUI subsystem (`windows_subsystem = "windows"`), launching the native GUI window directly without background console prompts
+- Batch launcher helper (`start-gui.bat`)
 - Embedded assets, application icons, and documentation
 - Portable zero-install execution directly on Windows 10/11
 

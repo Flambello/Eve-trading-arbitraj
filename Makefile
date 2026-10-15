@@ -9,6 +9,7 @@ install-deps:
 	sudo dnf install -y gcc pkg-config git rust cargo desktop-file-utils tar gzip
 
 check:
+	cargo fmt --check
 	cargo check --all-targets
 
 test:
@@ -27,7 +28,7 @@ release:
 	cargo build --release --bin eve-merchant
 
 run:
-	./target/release/eve-merchant --gui
+	./target/release/eve-merchant
 
 validate-desktop:
 	desktop-file-validate eve-trade.desktop

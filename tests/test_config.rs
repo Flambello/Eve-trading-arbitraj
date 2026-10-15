@@ -133,3 +133,62 @@ fn test_user_config_toml_rejects_corrupted_syntax_and_types() {
         "Must fail when boolean field is given as string"
     );
 }
+
+#[test]
+fn test_config_base_dir_resolution_and_precedence() {
+    use eve_trade_scout::config::config_base_dir;
+
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let orig_eve = std::env::var_os("EVE_CONFIG_DIR");
+    let orig_xdg = std::env::var_os("XDG_CONFIG_HOME");
+
+    let temp_custom = std::env::temp_dir().join("eve_test_cfg_precedence_custom");
+    let temp_xdg = std::env::temp_dir().join("eve_test_cfg_precedence_xdg");
+
+    // Case 1: EVE_CONFIG_DIR takes absolute precedence over XDG_CONFIG_HOME
+    std::env::set_var("EVE_CONFIG_DIR", &temp_custom);
+    std::env::set_var("XDG_CONFIG_HOME", &temp_xdg);
+    assert_eq!(
+        config_base_dir(),
+        Some(temp_custom.clone()),
+        "EVE_CONFIG_DIR must take highest precedence"
+    );
+
+    // Case 2: XDG_CONFIG_HOME takes precedence when EVE_CONFIG_DIR is unset or empty
+    std::env::remove_var("EVE_CONFIG_DIR");
+    assert_eq!(
+        config_base_dir(),
+        Some(temp_xdg.clone()),
+        "XDG_CONFIG_HOME must be used when EVE_CONFIG_DIR is unset"
+    );
+
+    std::env::set_var("EVE_CONFIG_DIR", "");
+    assert_eq!(
+        config_base_dir(),
+        Some(temp_xdg.clone()),
+        "Empty EVE_CONFIG_DIR must be ignored in favor of XDG_CONFIG_HOME"
+    );
+
+    // Case 3: Empty XDG_CONFIG_HOME falls back to dirs::config_dir()
+    std::env::remove_var("EVE_CONFIG_DIR");
+    std::env::remove_var("XDG_CONFIG_HOME");
+    assert_eq!(
+        config_base_dir(),
+        dirs::config_dir(),
+        "Must fall back to platform default dirs::config_dir() when no env overrides exist"
+    );
+
+    // Restore environment
+    if let Some(ref val) = orig_eve {
+        std::env::set_var("EVE_CONFIG_DIR", val);
+    } else {
+        std::env::remove_var("EVE_CONFIG_DIR");
+    }
+    if let Some(ref val) = orig_xdg {
+        std::env::set_var("XDG_CONFIG_HOME", val);
+    } else {
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+}

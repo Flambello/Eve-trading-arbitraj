@@ -1,4 +1,4 @@
-name: CI (Fedora Linux & Standards QA)
+name: CI (Linux & Windows QA)
 
 on:
   push:
@@ -52,3 +52,25 @@ jobs:
 
     - name: Build Optimized Release Binary
       run: cargo build --release --verbose --bin eve-merchant
+
+  build_and_test_windows:
+    name: Windows x86_64 Build & Test QA
+    runs-on: windows-2022
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust Stable Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-pc-windows-msvc
+
+    - name: Cargo Check
+      run: cargo check --all-targets --target x86_64-pc-windows-msvc --verbose
+
+    - name: Run Test Suites
+      run: cargo test --target x86_64-pc-windows-msvc --verbose
+
+    - name: Build Optimized Release Binary
+      run: cargo build --release --target x86_64-pc-windows-msvc --verbose --bin eve-merchant

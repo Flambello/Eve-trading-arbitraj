@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use crate::arbitrage::ArbitrageDeal;
 use crate::config::ShipProfile;
 use crate::route_planner::TradeRoute;
@@ -17,12 +19,20 @@ use ratatui::{
 };
 use std::io;
 
+#[deprecated(
+    since = "0.1.0",
+    note = "Terminal UI (TUI) is deprecated on all platforms. EVE Traveling Merchant is a desktop GUI-first application; use DesktopApp instead."
+)]
 pub enum AppTab {
     Deals,
     Route,
     Help,
 }
 
+#[deprecated(
+    since = "0.1.0",
+    note = "Terminal UI (TUI) is deprecated on all platforms. EVE Traveling Merchant is a desktop GUI-first application; use DesktopApp instead."
+)]
 pub struct AppState<'a> {
     pub tab: AppTab,
     pub deals: &'a [ArbitrageDeal],
@@ -110,6 +120,10 @@ impl Drop for TerminalGuard {
     }
 }
 
+#[deprecated(
+    since = "0.1.0",
+    note = "Terminal UI (TUI) is deprecated on all platforms. EVE Traveling Merchant is a desktop GUI-first application; use run_desktop_gui instead."
+)]
 pub fn run_tui(
     deals: &[ArbitrageDeal],
     route: &TradeRoute,
@@ -118,6 +132,10 @@ pub fn run_tui(
     safe_only: bool,
     npc_stations_only: bool,
 ) -> Result<()> {
+    tracing::warn!(
+        target: "eve_trade_scout",
+        "DEPRECATION: Terminal UI (TUI) is deprecated on all platforms (Windows & Linux) and will be removed in a future release. Please use the Desktop GUI."
+    );
     tracing::info!(
         target: "eve_trade_scout",
         deals_count = deals.len(),

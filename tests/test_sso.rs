@@ -481,6 +481,20 @@ impl Drop for EnvGuard {
     }
 }
 
+struct ConfigDirGuard {
+    _xdg: EnvGuard,
+    _eve: EnvGuard,
+}
+
+impl ConfigDirGuard {
+    fn set(path: &std::path::Path) -> Self {
+        Self {
+            _xdg: EnvGuard::set("XDG_CONFIG_HOME", path),
+            _eve: EnvGuard::set("EVE_CONFIG_DIR", path),
+        }
+    }
+}
+
 #[test]
 fn test_developer_client_id_resolution() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -495,8 +509,8 @@ fn test_developer_client_id_resolution() {
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("Must create test temp dir");
 
-    // Guard XDG_CONFIG_HOME so it restores on drop
-    let _xdg_guard = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    // Guard configuration directories so they restore on drop
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
 
     // 2. Test environment variable resolution (takes precedence over config file)
     {
@@ -581,7 +595,7 @@ fn test_load_saved_token_auto_backfills_missing_client_id() {
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("Must create test temp dir");
 
-    let _xdg_guard = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
     let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
 
     // Create developer_client_id file
@@ -669,7 +683,7 @@ async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
     let temp_dir = std::env::temp_dir().join(format!("eve_test_token_err_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
     let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
 
     let client = reqwest::Client::new();
@@ -774,7 +788,7 @@ async fn test_ensure_fresh_token_at_url_preserves_refresh_token_on_standard_ccp_
     ));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
 
     use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -851,7 +865,7 @@ async fn test_ensure_fresh_token_at_url_rotates_refresh_token_when_present() {
     ));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
 
     use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -920,7 +934,7 @@ async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
     ));
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let _xdg = EnvGuard::set("XDG_CONFIG_HOME", &temp_dir);
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
 
     use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

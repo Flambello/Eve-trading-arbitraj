@@ -1,9 +1,9 @@
 # UI/UX Design — Desktop GUI & Terminal Interfaces
 
-EVE Traveling Merchant provides **two user interface modes**:
-1. **Native Desktop GUI Window** (built with [`egui`](https://github.com/emilk/egui) / [`eframe`](https://docs.rs/eframe)): A sleek, dark-mode sci-fi desktop window running natively on Linux Fedora (Wayland & X11). Features interactive deal tables, real-time starting system autocomplete, packed corridor manifests, clipboard copy buttons for in-game pasting, visual multi-hop route cards, live market re-scanning, and quick hub presets. This launches automatically when a graphical desktop is detected.
-2. **Terminal Interactive Interface (TUI)** (built with [`ratatui`](https://ratatui.rs/) and `crossterm`): High-performance keyboard-navigated terminal dashboard for terminal enthusiasts and headless/SSH sessions.
-3. **Headless CLI Output**: Scriptable console output (`--no-ui`) with optional CSV export (`--export`).
+EVE Traveling Merchant provides user interfaces with a **GUI-First Architecture**:
+1. **Native Desktop GUI Window (Universal Default)** (built with [`egui`](https://github.com/emilk/egui) / [`eframe`](https://docs.rs/eframe)): A sleek, dark-mode sci-fi desktop window running natively on Linux (Wayland & X11) and Windows 10/11. Features interactive deal tables, real-time starting system autocomplete, packed corridor manifests, clipboard copy buttons for in-game pasting, visual multi-hop route cards, live market re-scanning, and quick hub presets. This launches automatically by default on all platforms.
+2. **Terminal Interactive Interface (TUI) [DEPRECATED]** (built with [`ratatui`](https://ratatui.rs/) and `crossterm`): Legacy keyboard-navigated terminal dashboard. Deprecated across all platforms and scheduled for future removal.
+3. **Headless CLI Output [DEPRECATED]**: Legacy console output (`--no-ui`) and CSV export (`--export`).
 
 ---
 
@@ -90,7 +90,7 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
 
 ---
 
-## 2. Terminal Interactive Interface (TUI)
+## 2. Terminal Interactive Interface (TUI) [DEPRECATED]
 
 ```
 ╔══════════════════════════════════════════════╗
@@ -270,11 +270,11 @@ Options:
   -t, --top <TOP>                      Number of top deals to display in CLI mode [default: 25]
       --max-stops <MAX_STOPS>          Maximum stops in route [default: 5]
       --route                          Print planned multi-stop route
-      --gui                            Force desktop GUI window mode (egui native window)
+      --gui                            Force desktop GUI window mode (egui native window; default on all platforms)
       --auto-refresh                   Automatically refresh market data every 5 minutes in GUI mode
-      --tui                            Force terminal TUI mode (ratatui)
-      --no-ui                          Disable interactive UI (GUI & TUI) and output directly to console
-      --no-tui                         Disable interactive TUI and output directly to console
+      --tui                            [DEPRECATED] Force terminal TUI mode (ratatui) - terminal mode is deprecated
+      --no-ui                          [DEPRECATED] Disable interactive UI (GUI & TUI) and output directly to console
+      --no-tui                         [DEPRECATED] Disable interactive TUI and output directly to console
       --export <EXPORT>                Export found deals to CSV file
       --update-sde                     Force update / re-download of SDE database
   -h, --help                           Print help

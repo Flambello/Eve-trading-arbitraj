@@ -92,8 +92,8 @@ Eve trading arbitraj/
 │   ├── audio.rs                    ← freedesktop notifications & sound alerts
 │   └── ui/
 │       ├── mod.rs                  ← UI dispatcher (GUI vs TUI vs CLI)
-│       ├── gui.rs                  ← native desktop GUI (egui / eframe)
-│       └── tui.rs                  ← terminal interface (ratatui / crossterm)
+│       ├── gui.rs                  ← native desktop GUI (egui / eframe, universal default)
+│       └── tui.rs                  ← terminal interface (ratatui / crossterm, deprecated)
 │
 ├── data/                           ← cached SDE SQLite database
 │   └── .gitkeep

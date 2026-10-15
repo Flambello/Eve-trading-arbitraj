@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use eve_trade_scout::arbitrage::{
@@ -9,106 +11,34 @@ use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::route_planner::{plan_route, TradeRoute};
 use eve_trade_scout::sde::SdeLoader;
 use eve_trade_scout::ui;
+use eve_trade_scout::Args;
 use std::fs::File;
 use std::io::{stdout, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "eve-merchant",
-    author = "EVE Traveling Merchant",
-    version = "0.1.0",
-    about = "EVE Traveling Merchant — High-profit cross-station arbitrage engine & multi-stop route planner"
-)]
-struct Args {
-    /// Ship profile to use: 'big' (60k m³, 500M ISK) or 'small' (30k m³, 50M ISK)
-    #[arg(short, long)]
-    ship: Option<String>,
-
-    /// Starting solar system name (e.g. Jita, Amarr, Dodixie, Rens)
-    #[arg(long)]
-    system: Option<String>,
-
-    /// Comma-separated region IDs to scan (e.g. 10000002 for The Forge)
-    #[arg(long)]
-    regions: Option<String>,
-
-    /// Automatically scan stargate-connected neighbor regions of your starting system (default: true)
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    adjacent_regions: bool,
-
-    /// Force highsec safe route only (avoid lowsec/nullsec)
-    #[arg(long)]
-    safe: bool,
-
-    /// Allow lowsec and nullsec routes
-    #[arg(long)]
-    unsafe_routes: bool,
-
-    /// Restrict search strictly to NPC stations (guaranteed public docking)
-    #[arg(long)]
-    npc_only: bool,
-
-    /// Allow player-owned structures (Upwell Citadels) in search pool
-    #[arg(long, aliases = ["allow-citadels", "include-structures"])]
-    allow_structures: bool,
-
-    /// Minimum net profit filter in ISK
-    #[arg(long)]
-    min_profit: Option<f64>,
-
-    /// Minimum price spread percentage filter
-    #[arg(long)]
-    min_spread: Option<f64>,
-
-    /// Minimum overall net profitability (ROI %) after all taxes (enforced default: 10.0%)
-    #[arg(long)]
-    min_roi: Option<f64>,
-
-    /// Number of top deals to display in CLI mode
-    #[arg(short, long, default_value_t = 25)]
-    top: usize,
-
-    /// Maximum number of stops in the planned route
-    #[arg(long, default_value_t = 5)]
-    max_stops: usize,
-
-    /// Print planned route in CLI mode
-    #[arg(long)]
-    route: bool,
-
-    /// Force desktop GUI window mode (egui native window)
-    #[arg(long)]
-    gui: bool,
-
-    /// Automatically refresh market data every 5 minutes in GUI mode
-    #[arg(long)]
-    auto_refresh: bool,
-
-    /// Force terminal TUI mode (ratatui)
-    #[arg(long)]
-    tui: bool,
-
-    /// Disable interactive UI (both GUI and TUI) and output directly to console
-    #[arg(long)]
-    no_ui: bool,
-
-    /// Disable interactive TUI and output directly to console
-    #[arg(long)]
-    no_tui: bool,
-
-    /// Export found deals to a CSV file
-    #[arg(long)]
-    export: Option<PathBuf>,
-
-    /// Force update / re-download of the SDE database
-    #[arg(long)]
-    update_sde: bool,
+fn print_terminal_deprecation_notice() {
+    eprintln!("╔══════════════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║ ⚠ DEPRECATION NOTICE: Terminal/TUI mode is deprecated on all platforms.      ║");
+    eprintln!("║ EVE Traveling Merchant is a desktop GUI-first application.                   ║");
+    eprintln!("║ The terminal interface will be removed in a future release.                  ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════════════════════╝");
+    eprintln!();
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // When executed from cmd.exe or PowerShell, attach to the caller's console
+        // so that CLI options (--help, --version, --export, or deprecated CLI output) work properly.
+        extern "system" {
+            fn AttachConsole(dw_process_id: u32) -> i32;
+        }
+        const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+
     let log_dir = std::path::Path::new("logs");
     let _log_guard = eve_trade_scout::logging::init_logging(Some(log_dir), "info")
         .expect("Failed to initialize logging subsystem");
@@ -191,11 +121,24 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    let has_display = std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
-    let launch_gui = (args.gui || (has_display && !args.tui))
-        && !args.no_tui
-        && !args.no_ui
-        && args.export.is_none();
+    let is_desktop_os = cfg!(target_os = "windows") || cfg!(target_os = "macos");
+    let has_linux_display =
+        std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("DISPLAY").is_ok();
+    let has_display = is_desktop_os || has_linux_display;
+
+    // GUI is the primary, default interface across all platforms.
+    // Terminal and TUI modes are deprecated.
+    let launch_gui = args.should_launch_gui(has_display);
+
+    if !launch_gui && args.export.is_none() {
+        if !has_display && !args.tui && !args.no_tui && !args.no_ui {
+            eprintln!(
+                " ⚠ NOTICE: No graphical display detected (neither WAYLAND_DISPLAY nor DISPLAY is set)."
+            );
+            eprintln!("   Falling back to deprecated terminal output.");
+        }
+        print_terminal_deprecation_notice();
+    }
 
     let sde_path = resolve_sde_path();
     let cache_dir = resolve_cache_dir(&cfg.cache.directory);
@@ -596,6 +539,7 @@ async fn main() -> Result<()> {
     // 8. Output Mode (Terminal / CLI)
     if is_interactive {
         println!(" Launching Interactive Terminal UI (press [Q] to exit)...");
+        #[allow(deprecated)]
         ui::run_tui(
             &deals,
             &route,

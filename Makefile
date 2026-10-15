@@ -27,7 +27,7 @@ release:
 	cargo build --release --bin eve-merchant
 
 run:
-	./target/release/eve-merchant --gui
+	./target/release/eve-merchant
 
 validate-desktop:
 	desktop-file-validate eve-trade.desktop

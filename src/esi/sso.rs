@@ -316,7 +316,9 @@ pub fn open_browser(url: &str) -> Result<()> {
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", url])
             .spawn()
-            .context("Failed to spawn Windows browser command (rundll32 url.dll,FileProtocolHandler)")?;
+            .context(
+                "Failed to spawn Windows browser command (rundll32 url.dll,FileProtocolHandler)",
+            )?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -509,7 +511,10 @@ pub async fn listen_for_auth_code(
                 continue;
             }
 
-            let query_start = first_line.find("/callback?").unwrap();
+            let query_start = match first_line.find("/callback?") {
+                Some(idx) => idx,
+                None => continue,
+            };
             let query = &first_line[query_start + 10..];
             let query_end = query.find(' ').unwrap_or(query.len());
             let query_str = &query[..query_end];
@@ -745,7 +750,16 @@ pub async fn ensure_fresh_token(
     client_id: &str,
     token: &mut SsoToken,
 ) -> Result<()> {
-    ensure_fresh_token_at_url(client, SSO_TOKEN_URL, client_id, token).await
+    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, false).await
+}
+
+/// Force-refreshes the access token unconditionally using the refresh token.
+pub async fn ensure_fresh_token_force(
+    client: &reqwest::Client,
+    client_id: &str,
+    token: &mut SsoToken,
+) -> Result<()> {
+    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, true).await
 }
 
 /// Refreshes the access token using the refresh token against the specified token endpoint URL.
@@ -755,7 +769,18 @@ pub async fn ensure_fresh_token_at_url(
     client_id: &str,
     token: &mut SsoToken,
 ) -> Result<()> {
-    if !token.needs_refresh() {
+    ensure_fresh_token_opts(client, token_url, client_id, token, false).await
+}
+
+/// Refreshes the access token with optional force flag (bypasses expiration check when force is true).
+pub async fn ensure_fresh_token_opts(
+    client: &reqwest::Client,
+    token_url: &str,
+    client_id: &str,
+    token: &mut SsoToken,
+    force: bool,
+) -> Result<()> {
+    if !force && !token.needs_refresh() {
         return Ok(());
     }
 
@@ -829,16 +854,25 @@ pub async fn refresh_saved_token_if_needed(
     client: &reqwest::Client,
     client_id: &str,
 ) -> Result<Option<SsoToken>> {
+    refresh_saved_token_opts(client, client_id, false).await
+}
+
+/// Refreshes the saved token with optional force override (bypasses expiration check when force is true).
+pub async fn refresh_saved_token_opts(
+    client: &reqwest::Client,
+    client_id: &str,
+    force: bool,
+) -> Result<Option<SsoToken>> {
     let mut token = match load_saved_token() {
         Some(t) => t,
         None => return Ok(None),
     };
 
-    if !token.needs_refresh() {
+    if !force && !token.needs_refresh() {
         return Ok(Some(token));
     }
 
-    ensure_fresh_token(client, client_id, &mut token).await?;
+    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, &mut token, force).await?;
     Ok(Some(token))
 }
 
@@ -881,8 +915,9 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
 ///
 /// For the first waypoint: `clear_other_waypoints = true`
 /// For subsequent waypoints: `clear_other_waypoints = false, add_to_beginning = false`
-pub async fn push_waypoints_to_client(
+pub async fn push_waypoints_to_client_at_url(
     client: &reqwest::Client,
+    waypoint_base_url: &str,
     access_token: &str,
     destination_ids: &[u64],
 ) -> Result<usize> {
@@ -896,7 +931,7 @@ pub async fn push_waypoints_to_client(
         let is_first = idx == 0;
         let url = format!(
             "{}?destination_id={}&add_to_beginning=false&clear_other_waypoints={}",
-            ESI_WAYPOINT_URL, dest_id, is_first
+            waypoint_base_url, dest_id, is_first
         );
 
         let mut attempts = 0u32;
@@ -981,6 +1016,15 @@ pub async fn push_waypoints_to_client(
     Ok(injected_count)
 }
 
+/// Injects an ordered sequence of waypoints directly into the running EVE client using default ESI endpoint.
+pub async fn push_waypoints_to_client(
+    client: &reqwest::Client,
+    access_token: &str,
+    destination_ids: &[u64],
+) -> Result<usize> {
+    push_waypoints_to_client_at_url(client, ESI_WAYPOINT_URL, access_token, destination_ids).await
+}
+
 /// Orchestrates full PKCE login flow: generates keys, launches browser, listens on localhost, exchanges code.
 pub async fn authenticate_character_via_pkce(
     client: &reqwest::Client,
@@ -1022,17 +1066,65 @@ pub async fn authenticate_character_via_pkce(
     Ok(token)
 }
 
-/// Loads the saved token, refreshes it if needed, and pushes waypoints to the live EVE client HUD.
-pub async fn push_waypoints_with_token(
+/// Loads the saved token, refreshes it if needed, and pushes waypoints to the live EVE client HUD with custom URLs.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn push_waypoints_with_token_opts(
     client: &reqwest::Client,
+    token_url: &str,
+    waypoint_base_url: &str,
     client_id: &str,
     destination_ids: &[u64],
 ) -> Result<usize> {
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, client_id, &mut token).await?;
-    push_waypoints_to_client(client, &token.access_token, destination_ids).await
+    ensure_fresh_token_opts(client, token_url, client_id, &mut token, false).await?;
+    match push_waypoints_to_client_at_url(
+        client,
+        waypoint_base_url,
+        &token.access_token,
+        destination_ids,
+    )
+    .await
+    {
+        Ok(count) => Ok(count),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("401") || err_str.contains("expired") {
+                tracing::info!(
+                    character_id = token.character_id,
+                    "Access token expired during waypoint injection; executing automatic refresh and retry"
+                );
+                ensure_fresh_token_opts(client, token_url, client_id, &mut token, true).await?;
+                push_waypoints_to_client_at_url(
+                    client,
+                    waypoint_base_url,
+                    &token.access_token,
+                    destination_ids,
+                )
+                .await
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Loads the saved token, refreshes it if needed, and pushes waypoints to the live EVE client HUD.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn push_waypoints_with_token(
+    client: &reqwest::Client,
+    client_id: &str,
+    destination_ids: &[u64],
+) -> Result<usize> {
+    push_waypoints_with_token_opts(
+        client,
+        SSO_TOKEN_URL,
+        ESI_WAYPOINT_URL,
+        client_id,
+        destination_ids,
+    )
+    .await
 }
 
 /// Live character location returned by ESI GET /v1/characters/{character_id}/location/
@@ -1045,13 +1137,15 @@ pub struct CharacterLocation {
     pub structure_id: Option<u64>,
 }
 
-/// Queries the live character location from ESI for an authenticated character.
-pub async fn fetch_character_location(
+/// Queries the live character location from ESI for an authenticated character at custom base URL.
+pub async fn fetch_character_location_at_url(
     client: &reqwest::Client,
+    base_url: &str,
     token: &SsoToken,
 ) -> Result<CharacterLocation> {
     let url = format!(
-        "https://esi.evetech.net/v1/characters/{}/location/",
+        "{}/v1/characters/{}/location/",
+        base_url.trim_end_matches('/'),
         token.character_id
     );
 
@@ -1095,14 +1189,55 @@ pub async fn fetch_character_location(
     Ok(loc)
 }
 
-/// Loads the saved token, refreshes it if needed, and fetches the character's live location.
-pub async fn get_character_location_with_token(
+/// Queries the live character location from ESI for an authenticated character.
+pub async fn fetch_character_location(
     client: &reqwest::Client,
+    token: &SsoToken,
+) -> Result<CharacterLocation> {
+    fetch_character_location_at_url(client, "https://esi.evetech.net", token).await
+}
+
+/// Loads the saved token, refreshes it if needed, and fetches the character's live location with custom URLs.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn get_character_location_with_token_opts(
+    client: &reqwest::Client,
+    token_url: &str,
+    location_base_url: &str,
     client_id: &str,
 ) -> Result<CharacterLocation> {
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, client_id, &mut token).await?;
-    fetch_character_location(client, &token).await
+    ensure_fresh_token_opts(client, token_url, client_id, &mut token, false).await?;
+    match fetch_character_location_at_url(client, location_base_url, &token).await {
+        Ok(loc) => Ok(loc),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("401") || err_str.contains("expired") {
+                tracing::info!(
+                    character_id = token.character_id,
+                    "Access token expired during location fetch; executing automatic refresh and retry"
+                );
+                ensure_fresh_token_opts(client, token_url, client_id, &mut token, true).await?;
+                fetch_character_location_at_url(client, location_base_url, &token).await
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Loads the saved token, refreshes it if needed, and fetches the character's live location.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn get_character_location_with_token(
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<CharacterLocation> {
+    get_character_location_with_token_opts(
+        client,
+        SSO_TOKEN_URL,
+        "https://esi.evetech.net",
+        client_id,
+    )
+    .await
 }

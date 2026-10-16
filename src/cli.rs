@@ -104,4 +104,28 @@ impl Args {
             self.tui || self.no_tui || self.no_ui || self.export.is_some();
         self.gui || (has_display && !explicitly_requested_terminal)
     }
+
+    /// Parses and validates the `--regions` CLI argument.
+    ///
+    /// Returns `Ok(Some(Vec<u32>))` if a valid comma-separated list of numeric region IDs was provided,
+    /// `Ok(None)` if no `--regions` flag was passed, or an error if the flag was provided but contained
+    /// no valid numeric IDs.
+    pub fn parse_regions(&self) -> anyhow::Result<Option<Vec<u32>>> {
+        match self.regions.as_deref() {
+            Some(reg_str) => {
+                let parsed_regions: Vec<u32> = reg_str
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<u32>().ok())
+                    .collect();
+                if parsed_regions.is_empty() {
+                    anyhow::bail!(
+                        "Invalid --regions argument '{}'. Expected comma-separated numeric region IDs (e.g. --regions 10000002,10000043).",
+                        reg_str
+                    );
+                }
+                Ok(Some(parsed_regions))
+            }
+            None => Ok(None),
+        }
+    }
 }

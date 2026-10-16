@@ -15,7 +15,7 @@ impl FastBitSet {
     #[inline]
     fn new(size: usize) -> Self {
         Self {
-            words: vec![0u64; (size + 63) / 64],
+            words: vec![0u64; size.div_ceil(64)],
         }
     }
 

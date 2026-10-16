@@ -130,7 +130,11 @@ fn play_sound_internal(sound_theme_id: &str) {
         {
             // On Windows, play standard Asterisk alert sound via PowerShell
             if let Ok(mut child) = Command::new("powershell")
-                .args(["-NoProfile", "-Command", "[System.Media.SystemSounds]::Asterisk.Play()"])
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "[System.Media.SystemSounds]::Asterisk.Play()",
+                ])
                 .spawn()
             {
                 if let Ok(status) = child.wait() {

@@ -337,7 +337,9 @@ pub fn calculate_deal(
     };
 
     // Enforce minimum overall profitability percentage after taxes
-    if net_profit_pct < cfg.min_net_profit_pct {
+    // Mandatory domain invariant: Deals must achieve at least 10.0% net profit after taxes and fees
+    let effective_min_roi = cfg.min_net_profit_pct.max(10.0);
+    if net_profit_pct < effective_min_roi {
         return None;
     }
 

@@ -191,9 +191,19 @@ impl EsiClient {
 
         // Parse cached JSON outside of mutex lock to prevent lock contention
         if let Some(body_json) = cached_body {
-            let parsed: Vec<T> = serde_json::from_str(&body_json)
-                .context("Failed to deserialize cached paginated ESI response")?;
-            return Ok(parsed);
+            match serde_json::from_str::<Vec<T>>(&body_json) {
+                Ok(parsed) => return Ok(parsed),
+                Err(e) => {
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiParseFailed,
+                        error = %e,
+                        key = %cache_key,
+                        "Corrupted cached ESI response encountered in local cache; purging entry and re-fetching from source"
+                    );
+                    let mut map = self.etags.lock().await;
+                    map.remove(&cache_key);
+                }
+            }
         }
 
         // Fetch page 1 fresh (no IF_NONE_MATCH to avoid false 304s from Page 1 alone)
@@ -214,8 +224,7 @@ impl EsiClient {
                 Ok(r) => {
                     let status = r.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
-                        let wait_dur =
-                            extract_error_limit_reset(r.headers()).unwrap_or(backoff);
+                        let wait_dur = extract_error_limit_reset(r.headers()).unwrap_or(backoff);
                         if attempts > MAX_NETWORK_RETRIES {
                             tracing::error!(
                                 error_code = %ErrorCode::ErrEsiRateLimited,

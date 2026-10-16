@@ -79,16 +79,19 @@ async fn main() -> Result<()> {
         cfg.filters.min_spread_pct = min_s;
     }
     if let Some(min_r) = args.min_roi {
-        cfg.filters.min_net_profit_pct = min_r;
-    }
-    if let Some(ref reg_str) = args.regions {
-        let parsed_regions: Vec<u32> = reg_str
-            .split(',')
-            .filter_map(|s| s.trim().parse::<u32>().ok())
-            .collect();
-        if !parsed_regions.is_empty() {
-            cfg.scan.regions = parsed_regions;
+        if min_r < 10.0 {
+            eprintln!(
+                " ⚠ Warning: Minimum net ROI cannot be lower than 10.0% (enforced domain invariant). Clamping to 10.0%."
+            );
+            cfg.filters.min_net_profit_pct = 10.0;
+        } else {
+            cfg.filters.min_net_profit_pct = min_r;
         }
+    } else if cfg.filters.min_net_profit_pct < 10.0 {
+        cfg.filters.min_net_profit_pct = 10.0;
+    }
+    if let Some(parsed_regions) = args.parse_regions()? {
+        cfg.scan.regions = parsed_regions;
     }
     if args.auto_refresh {
         cfg.scan.auto_refresh = true;
@@ -837,4 +840,3 @@ fn resolve_log_dir() -> PathBuf {
     }
     local
 }
-

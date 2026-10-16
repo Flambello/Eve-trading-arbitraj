@@ -600,6 +600,9 @@ impl DesktopApp {
 
         if app.sso_character_name.is_some() {
             app.check_and_refresh_sso_token(false);
+            if app.sso_auto_sync_location {
+                app.fetch_live_character_location(true);
+            }
         }
 
         app
@@ -844,9 +847,10 @@ impl DesktopApp {
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new());
-            let res = rt.block_on(crate::esi::sso::refresh_saved_token_if_needed(
+            let res = rt.block_on(crate::esi::sso::refresh_saved_token_opts(
                 &http_client,
                 &client_id,
+                force,
             ));
             match res {
                 Ok(Some(token)) => {
@@ -1306,6 +1310,9 @@ impl eframe::App for DesktopApp {
                     self.deals.len(),
                     self.manifests.len()
                 );
+                if self.sso_character_name.is_some() && self.sso_auto_sync_location {
+                    self.fetch_live_character_location(true);
+                }
                 ctx.request_repaint();
             }
 
@@ -1463,7 +1470,7 @@ impl eframe::App for DesktopApp {
                             error = %err,
                             "SSO waypoint injection worker reported failure: {err}"
                         );
-                        if err.contains("expired") || err.contains("revoked") || err.contains("401") {
+                        if err.contains("invalid_grant") || err.contains("revoked") {
                             self.sso_character_name = None;
                             self.sso_character_id = None;
                             self.sso_token_expires_at = None;
@@ -1524,7 +1531,7 @@ impl eframe::App for DesktopApp {
                             error = %err,
                             "SSO character location sync worker reported failure: {err}"
                         );
-                        if err.contains("expired") || err.contains("revoked") || err.contains("401") {
+                        if err.contains("invalid_grant") || err.contains("revoked") {
                             self.sso_character_name = None;
                             self.sso_character_id = None;
                             self.sso_token_expires_at = None;
@@ -7600,6 +7607,25 @@ impl DesktopApp {
 
                             if self.sso_is_fetching_location {
                                 ui.spinner();
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(
+                                    &mut self.sso_auto_sync_location,
+                                    "Auto-sync character location on launch",
+                                )
+                                .on_hover_text(
+                                    "Automatically query CCP ESI on application launch to detect your active solar system and set it as the starting hub.",
+                                )
+                                .changed()
+                            {
+                                if let Ok(mut cfg) = crate::config::UserConfig::load() {
+                                    cfg.sso.auto_sync_location = self.sso_auto_sync_location;
+                                    let _ = cfg.save();
+                                }
                             }
                         });
                     }

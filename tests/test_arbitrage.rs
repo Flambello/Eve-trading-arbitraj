@@ -1621,4 +1621,78 @@ mod tests {
         assert!(filter_deals_by_npc_status(&empty_deals, true).is_empty());
         assert!(filter_deals_by_npc_status(&empty_deals, false).is_empty());
     }
+
+    #[test]
+    fn test_calculate_deal_strictly_enforces_10_percent_net_roi_invariant() {
+        let (sde, graph, mut cfg, item) = create_test_env();
+
+        // Standard buy and sell orders
+        let src = MarketOrder {
+            order_id: 101,
+            type_id: 34,
+            location_id: 60003760,
+            system_id: 30000142,
+            price: 1_000.0,
+            volume_total: 1_000,
+            volume_remain: 1_000,
+            min_volume: 1,
+            is_buy_order: false,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+
+        // dst price 1190.0 yields net profit % of approx 5.5% (after 3% broker fee and 8% sales tax)
+        let sub_10_pct_dst = MarketOrder {
+            order_id: 102,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 1_190.0,
+            volume_total: 1_000,
+            volume_remain: 1_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+
+        // Explicitly set config to attempt bypassing the invariant with 0.0% or 5.0%
+        cfg.min_net_profit_pct = 5.0;
+        let deal_attempt = calculate_deal(34, &item, &src, &sub_10_pct_dst, &cfg, &sde, &graph);
+        assert!(
+            deal_attempt.is_none(),
+            "Deals yielding sub-10.0% net ROI must be rejected even if cfg.min_net_profit_pct is 5.0%"
+        );
+
+        cfg.min_net_profit_pct = -10.0;
+        let deal_attempt_negative =
+            calculate_deal(34, &item, &src, &sub_10_pct_dst, &cfg, &sde, &graph);
+        assert!(
+            deal_attempt_negative.is_none(),
+            "Deals yielding sub-10.0% net ROI must be rejected even if cfg.min_net_profit_pct is negative"
+        );
+
+        // dst price 1350.0 yields net profit % of approx 18.6% (> 10.0%)
+        let valid_roi_dst = MarketOrder {
+            order_id: 103,
+            type_id: 34,
+            location_id: 60003761,
+            system_id: 30000144,
+            price: 1_350.0,
+            volume_total: 1_000,
+            volume_remain: 1_000,
+            min_volume: 1,
+            is_buy_order: true,
+            duration: 90,
+            issued: None,
+            range: None,
+        };
+
+        cfg.min_net_profit_pct = 10.0;
+        let valid_deal = calculate_deal(34, &item, &src, &valid_roi_dst, &cfg, &sde, &graph)
+            .expect("Valid deal >= 10.0% net ROI must be accepted");
+        assert!(valid_deal.net_profit_pct >= 10.0);
+    }
 }

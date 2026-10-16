@@ -1209,8 +1209,12 @@ fn test_cross_platform_browser_command_syntax() {
 #[tokio::test]
 async fn test_listen_for_auth_code_addr_in_use_actionable_error() {
     // Bind a real socket on loopback to occupy an ephemeral port
-    let occupying_socket = std::net::TcpListener::bind("127.0.0.1:0").expect("Must bind ephemeral port");
-    let occupied_port = occupying_socket.local_addr().expect("Must have local addr").port();
+    let occupying_socket =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("Must bind ephemeral port");
+    let occupied_port = occupying_socket
+        .local_addr()
+        .expect("Must have local addr")
+        .port();
 
     let res = eve_trade_scout::esi::sso::listen_for_auth_code(
         occupied_port,
@@ -1222,12 +1226,17 @@ async fn test_listen_for_auth_code_addr_in_use_actionable_error() {
     assert!(res.is_err(), "Must fail when port is already bound");
     let err_str = res.unwrap_err().to_string();
     assert!(
-        err_str.contains(&format!("Local port {} is already in use by another application", occupied_port)),
+        err_str.contains(&format!(
+            "Local port {} is already in use by another application",
+            occupied_port
+        )),
         "Error message must be actionable and specify the conflicting port, got: {}",
         err_str
     );
     assert!(
-        err_str.contains("Please close conflicting applications or configure an alternate callback port"),
+        err_str.contains(
+            "Please close conflicting applications or configure an alternate callback port"
+        ),
         "Error message must provide user guidance on how to resolve the collision, got: {}",
         err_str
     );
@@ -1426,4 +1435,307 @@ async fn test_listen_for_auth_code_rejects_invalid_host_and_non_get() {
         .expect("Task panicked")
         .expect("Must extract code");
     assert_eq!(code, "verified_code_xyz");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_ensure_fresh_token_opts_force_bypasses_expiration_check() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_force_refresh_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::ensure_fresh_token_opts;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(request_str.starts_with("POST /v2/oauth/token"));
+        assert!(request_str.contains("grant_type=refresh_token"));
+        assert!(request_str.contains("refresh_token=my_valid_refresh_token"));
+
+        let body =
+            r#"{"access_token":"forced_fresh_access_jwt","token_type":"Bearer","expires_in":1200}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
+    });
+
+    let client = reqwest::Client::new();
+    let mut token = SsoToken {
+        access_token: "existing_valid_token".to_string(),
+        refresh_token: "my_valid_refresh_token".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+
+    assert!(!token.needs_refresh(), "Token must not need normal refresh");
+
+    let res =
+        ensure_fresh_token_opts(&client, &mock_url, "test_client_id_val", &mut token, true).await;
+    assert!(
+        res.is_ok(),
+        "Forced token refresh must succeed: {:?}",
+        res.err()
+    );
+    assert_eq!(token.access_token, "forced_fresh_access_jwt");
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_get_character_location_recovers_from_401_via_transparent_token_refresh() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_location_401_retry_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::{get_character_location_with_token_opts, save_token};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Save initial token with unexpired timestamp to disk
+    let initial_token = SsoToken {
+        access_token: "stale_access_jwt_that_will_401".to_string(),
+        refresh_token: "valid_refresh_secret".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+    save_token(&initial_token).expect("Must save initial token");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_token_url = format!("http://{}/v2/oauth/token", addr);
+    let mock_esi_base = format!("http://{}", addr);
+
+    // Mock server handles 3 sequential requests:
+    // 1. GET /v1/characters/2112345678/location/ with stale token -> responds HTTP 401
+    // 2. POST /v2/oauth/token with refresh token -> responds HTTP 200 with new access token
+    // 3. GET /v1/characters/2112345678/location/ with new token -> responds HTTP 200 with location
+    let server_task = tokio::spawn(async move {
+        // Request 1: ESI returns 401
+        let (mut socket1, _) = listener.accept().await.expect("Accept 1 failed");
+        let mut buf1 = vec![0u8; 2048];
+        let n1 = socket1.read(&mut buf1).await.expect("Read 1 failed");
+        let req1 = String::from_utf8_lossy(&buf1[..n1]);
+        assert!(req1.starts_with("GET /v1/characters/2112345678/location/"));
+        assert!(req1.contains("stale_access_jwt_that_will_401"));
+
+        let resp1 = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"token expired\"}";
+        socket1
+            .write_all(resp1.as_bytes())
+            .await
+            .expect("Write 1 failed");
+        drop(socket1);
+
+        // Request 2: Token refresh
+        let (mut socket2, _) = listener.accept().await.expect("Accept 2 failed");
+        let mut buf2 = vec![0u8; 2048];
+        let n2 = socket2.read(&mut buf2).await.expect("Read 2 failed");
+        let req2 = String::from_utf8_lossy(&buf2[..n2]);
+        assert!(req2.starts_with("POST /v2/oauth/token"));
+        assert!(req2.contains("valid_refresh_secret"));
+
+        let token_body = r#"{"access_token":"brand_new_refreshed_access_jwt","token_type":"Bearer","expires_in":1200}"#;
+        let resp2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            token_body.len(),
+            token_body
+        );
+        socket2
+            .write_all(resp2.as_bytes())
+            .await
+            .expect("Write 2 failed");
+        drop(socket2);
+
+        // Request 3: ESI retried with new token
+        let (mut socket3, _) = listener.accept().await.expect("Accept 3 failed");
+        let mut buf3 = vec![0u8; 2048];
+        let n3 = socket3.read(&mut buf3).await.expect("Read 3 failed");
+        let req3 = String::from_utf8_lossy(&buf3[..n3]);
+        assert!(req3.starts_with("GET /v1/characters/2112345678/location/"));
+        assert!(req3.contains("brand_new_refreshed_access_jwt"));
+
+        let loc_body = r#"{"solar_system_id":30000142,"station_id":60003760}"#;
+        let resp3 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            loc_body.len(),
+            loc_body
+        );
+        socket3
+            .write_all(resp3.as_bytes())
+            .await
+            .expect("Write 3 failed");
+        drop(socket3);
+    });
+
+    let client = reqwest::Client::new();
+    let location_res = get_character_location_with_token_opts(
+        &client,
+        &mock_token_url,
+        &mock_esi_base,
+        "test_client_id_val",
+    )
+    .await;
+
+    assert!(
+        location_res.is_ok(),
+        "Must transparently recover from 401 and succeed on retry: {:?}",
+        location_res.err()
+    );
+    let location = location_res.unwrap();
+    assert_eq!(location.solar_system_id, 30000142);
+    assert_eq!(location.station_id, Some(60003760));
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_push_waypoints_recovers_from_401_via_transparent_token_refresh() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_push_401_retry_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::{push_waypoints_with_token_opts, save_token};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let initial_token = SsoToken {
+        access_token: "stale_token_before_autopilot".to_string(),
+        refresh_token: "valid_autopilot_refresh".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+    save_token(&initial_token).expect("Must save initial token");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_token_url = format!("http://{}/v2/oauth/token", addr);
+    let mock_waypoint_base = format!("http://{}/v2/user/ui/autopilot/waypoint/", addr);
+
+    let server_task = tokio::spawn(async move {
+        // Request 1: Waypoint injection returns 401
+        let (mut socket1, _) = listener.accept().await.expect("Accept 1 failed");
+        let mut buf1 = vec![0u8; 2048];
+        let n1 = socket1.read(&mut buf1).await.expect("Read 1 failed");
+        let req1 = String::from_utf8_lossy(&buf1[..n1]);
+        assert!(req1.starts_with("POST /v2/user/ui/autopilot/waypoint/"));
+        assert!(req1.contains("stale_token_before_autopilot"));
+
+        let resp1 = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"token expired\"}";
+        socket1
+            .write_all(resp1.as_bytes())
+            .await
+            .expect("Write 1 failed");
+        drop(socket1);
+
+        // Request 2: Token refresh
+        let (mut socket2, _) = listener.accept().await.expect("Accept 2 failed");
+        let mut buf2 = vec![0u8; 2048];
+        let n2 = socket2.read(&mut buf2).await.expect("Read 2 failed");
+        let req2 = String::from_utf8_lossy(&buf2[..n2]);
+        assert!(req2.starts_with("POST /v2/oauth/token"));
+        assert!(req2.contains("valid_autopilot_refresh"));
+
+        let token_body =
+            r#"{"access_token":"renewed_autopilot_token","token_type":"Bearer","expires_in":1200}"#;
+        let resp2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            token_body.len(),
+            token_body
+        );
+        socket2
+            .write_all(resp2.as_bytes())
+            .await
+            .expect("Write 2 failed");
+        drop(socket2);
+
+        // Request 3: Waypoint injection retried with new token
+        let (mut socket3, _) = listener.accept().await.expect("Accept 3 failed");
+        let mut buf3 = vec![0u8; 2048];
+        let n3 = socket3.read(&mut buf3).await.expect("Read 3 failed");
+        let req3 = String::from_utf8_lossy(&buf3[..n3]);
+        assert!(req3.starts_with("POST /v2/user/ui/autopilot/waypoint/"));
+        assert!(req3.contains("renewed_autopilot_token"));
+
+        let resp3 = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        socket3
+            .write_all(resp3.as_bytes())
+            .await
+            .expect("Write 3 failed");
+        drop(socket3);
+    });
+
+    let client = reqwest::Client::new();
+    let push_res = push_waypoints_with_token_opts(
+        &client,
+        &mock_token_url,
+        &mock_waypoint_base,
+        "test_client_id_val",
+        &[60003760],
+    )
+    .await;
+
+    assert!(
+        push_res.is_ok(),
+        "Must transparently recover from 401 and inject waypoint: {:?}",
+        push_res.err()
+    );
+    assert_eq!(push_res.unwrap(), 1);
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }

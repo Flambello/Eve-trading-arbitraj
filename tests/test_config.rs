@@ -47,8 +47,15 @@ fn test_user_config_defaults_and_invariants() {
     let profile = cfg.ship_profile().expect("Default profile should resolve");
     assert_eq!(profile.max_volume, BIG_HAULER.max_volume);
     assert_eq!(profile.max_budget, BIG_HAULER.max_budget);
-    assert_eq!(SMALL_HAULER.max_volume, 30_000.0);
-    assert_eq!(SMALL_HAULER.max_budget, 50_000_000.0);
+    // Verify Small Hauler profile resolves correctly through UserConfig
+    let mut small_cfg = cfg.clone();
+    small_cfg.ship.profile = "small".to_string();
+    let small_profile = small_cfg
+        .ship_profile()
+        .expect("Small profile should resolve");
+    assert_eq!(small_profile.max_volume, SMALL_HAULER.max_volume);
+    assert_eq!(small_profile.max_budget, SMALL_HAULER.max_budget);
+    assert_eq!(small_profile.name, "Small Hauler");
 
     // Location defaults
     assert_eq!(cfg.location.home_system, "Jita");

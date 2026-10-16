@@ -302,6 +302,44 @@ pub fn resolve_client_id(custom: &str) -> Result<String> {
     Ok(DEFAULT_PUBLIC_CLIENT_ID.to_string())
 }
 
+/// Builds the system command to open a URL in the browser on the target OS.
+pub fn build_browser_command_for_os(os: &str, url: &str) -> Result<std::process::Command> {
+    match os {
+        "windows" => {
+            // On Windows, use rundll32 url.dll,FileProtocolHandler to directly invoke ShellExecuteEx
+            // without cmd.exe shell interpretation stripping query parameters (&).
+            let mut cmd = std::process::Command::new("rundll32");
+            cmd.args(["url.dll,FileProtocolHandler", url]);
+            Ok(cmd)
+        }
+        "macos" => {
+            let mut cmd = std::process::Command::new("open");
+            cmd.arg(url);
+            Ok(cmd)
+        }
+        "linux" => {
+            let mut cmd = std::process::Command::new("xdg-open");
+            cmd.arg(url);
+            Ok(cmd)
+        }
+        other => anyhow::bail!("Unsupported target operating system for browser: {}", other),
+    }
+}
+
+/// Builds the system command to open a URL in the default browser for the current runtime platform.
+pub fn build_browser_command(url: &str) -> Result<std::process::Command> {
+    #[cfg(target_os = "windows")]
+    let os = "windows";
+    #[cfg(target_os = "macos")]
+    let os = "macos";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let os = "linux";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    let os = "unknown";
+
+    build_browser_command_for_os(os, url)
+}
+
 /// Opens the specified URL in the system's default web browser across platforms.
 pub fn open_browser(url: &str) -> Result<()> {
     tracing::info!(
@@ -309,31 +347,13 @@ pub fn open_browser(url: &str) -> Result<()> {
         "Opening browser for EVE SSO authentication (or navigate manually to this URL)"
     );
 
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows, use rundll32 url.dll,FileProtocolHandler to directly invoke ShellExecuteEx
-        // without cmd.exe shell interpretation stripping query parameters (&).
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn()
-            .context(
-                "Failed to spawn Windows browser command (rundll32 url.dll,FileProtocolHandler)",
-            )?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .context("Failed to spawn macOS browser command (open)")?;
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .context("Failed to spawn Linux browser command (xdg-open)")?;
-    }
+    let mut cmd = build_browser_command(url)?;
+    cmd.spawn().with_context(|| {
+        format!(
+            "Failed to spawn browser command for {}",
+            sanitize_auth_url(url)
+        )
+    })?;
 
     Ok(())
 }

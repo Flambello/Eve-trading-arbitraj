@@ -106,10 +106,53 @@ fn test_cli_help_contains_deprecation_notices() {
     );
 }
 
+fn make_test_deal(type_id: u32, name: &str) -> ArbitrageDeal {
+    ArbitrageDeal {
+        type_id,
+        item_name: name.to_string(),
+        source_order_id: 100 + type_id as u64,
+        dest_order_id: 200 + type_id as u64,
+        source_order_volume_remain: 100,
+        dest_order_volume_remain: 100,
+        dest_order_min_volume: 1,
+        is_npc_trade: false,
+        buy_price: 100.0,
+        sell_price: 150.0,
+        spread_pct: 50.0,
+        source_station_id: 60003760,
+        source_system_id: 30000142,
+        source_system_name: "Jita".to_string(),
+        source_station_name: "Jita IV-4".to_string(),
+        source_security: 0.95,
+        dest_station_id: 60008494,
+        dest_system_id: 30002187,
+        dest_system_name: "Amarr".to_string(),
+        dest_station_name: "Amarr VIII-4".to_string(),
+        dest_security: 0.90,
+        quantity: 10,
+        volume_used: 10.0,
+        capital_required: 1000.0,
+        gross_profit: 500.0,
+        taxes_and_fees: 50.0,
+        net_profit: 450.0,
+        net_profit_pct: 45.0,
+        jumps_from_home: 0,
+        jumps_source_dest: 4,
+        total_jumps: 4,
+        profit_per_jump: 112.5,
+        profit_per_m3: 45.0,
+    }
+}
+
 #[test]
 #[allow(deprecated)]
 fn test_deprecated_tui_app_state_backward_compatibility() {
-    let deals: Vec<ArbitrageDeal> = Vec::new();
+    let deals = vec![
+        make_test_deal(34, "Tritanium"),
+        make_test_deal(35, "Pyerite"),
+        make_test_deal(36, "Mexallon"),
+    ];
+
     let route = TradeRoute {
         stops: Vec::new(),
         waypoints: Vec::new(),
@@ -123,8 +166,33 @@ fn test_deprecated_tui_app_state_backward_compatibility() {
 
     let mut state = AppState::new(&deals, &route, BIG_HAULER, "Jita".to_string(), true, true);
 
-    // Verify state methods work without panic
+    // Initial state: first row is selected
+    assert_eq!(state.deals.len(), 3);
+    assert_eq!(state.table_state.selected(), Some(0));
+
+    // next_row() advances selection index sequentially
     state.next_row();
+    assert_eq!(state.table_state.selected(), Some(1));
+    state.next_row();
+    assert_eq!(state.table_state.selected(), Some(2));
+
+    // Boundary wrap-around: advancing past last row wraps to index 0
+    state.next_row();
+    assert_eq!(state.table_state.selected(), Some(0));
+
+    // prev_row() wraps backwards from index 0 to last row (index 2)
     state.prev_row();
-    assert!(state.deals.is_empty());
+    assert_eq!(state.table_state.selected(), Some(2));
+    state.prev_row();
+    assert_eq!(state.table_state.selected(), Some(1));
+    state.prev_row();
+    assert_eq!(state.table_state.selected(), Some(0));
+
+    // Empty state boundary: with 0 deals, navigation must maintain None without panic
+    let mut empty_state = AppState::new(&[], &route, BIG_HAULER, "Jita".to_string(), true, true);
+    assert_eq!(empty_state.table_state.selected(), None);
+    empty_state.next_row();
+    assert_eq!(empty_state.table_state.selected(), None);
+    empty_state.prev_row();
+    assert_eq!(empty_state.table_state.selected(), None);
 }

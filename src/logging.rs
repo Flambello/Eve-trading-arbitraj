@@ -11,6 +11,13 @@ pub struct LoggingGuard {
     _file_guard: Option<WorkerGuard>,
 }
 
+impl LoggingGuard {
+    /// Returns true if file logging is active with a background worker thread.
+    pub fn has_file_writer(&self) -> bool {
+        self._file_guard.is_some()
+    }
+}
+
 /// Initializes the global tracing subscriber with dual targets:
 /// 1. Human-readable stdout with ANSI colors.
 /// 2. Daily rolling structured JSON file appender in `logs/app.log`.

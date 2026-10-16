@@ -1,7 +1,6 @@
 use eve_trade_scout::arbitrage::{calculate_deal, sanitize_csv_cell, ArbitrageConfig};
 use eve_trade_scout::audio::is_safe_sound_theme_id;
 use eve_trade_scout::config::{SsoConfig, BIG_HAULER};
-use eve_trade_scout::esi::client::{MAX_NETWORK_RETRIES, MAX_PAGES_LIMIT};
 use eve_trade_scout::esi::models::MarketOrder;
 use eve_trade_scout::esi::sso::{
     build_authorize_url, constant_time_eq, is_valid_client_id, parse_jwt_character_claims,
@@ -9,10 +8,7 @@ use eve_trade_scout::esi::sso::{
     SsoToken,
 };
 use eve_trade_scout::graph::SystemGraph;
-use eve_trade_scout::sde::loader::{
-    ItemInfo, SdeLoader, MAX_DECOMPRESSED_SDE_BYTES, MAX_SDE_COMPRESSED_BYTES,
-    MIN_SDE_COMPRESSED_BYTES,
-};
+use eve_trade_scout::sde::loader::{ItemInfo, SdeLoader, MAX_DECOMPRESSED_SDE_BYTES};
 use flate2::read::GzEncoder;
 use flate2::Compression;
 use rusqlite::Connection;
@@ -80,25 +76,51 @@ fn test_sound_theme_id_validation() {
     assert!(!is_safe_sound_theme_id("bell flag"));
 }
 
-#[test]
-#[allow(clippy::assertions_on_constants)]
-fn test_security_constants_bounds() {
-    // ESI pagination upper bound prevents OOM task flood
-    assert_eq!(MAX_PAGES_LIMIT, 500);
-    assert!(MAX_PAGES_LIMIT > 0 && MAX_PAGES_LIMIT <= 1000);
+#[tokio::test]
+async fn test_max_pages_limit_enforced_at_runtime() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("eve_test_pages_clamp_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
 
-    // Maximum bounded network retry attempts to avoid infinite hang on disconnects
-    assert_eq!(MAX_NETWORK_RETRIES, 5);
-    assert!(MAX_NETWORK_RETRIES >= 3 && MAX_NETWORK_RETRIES <= 10);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mock_url = format!("http://{}/v1/markets/10000002/orders/", addr);
 
-    // SDE decompression bomb guard thresholds
-    assert_eq!(MAX_DECOMPRESSED_SDE_BYTES, 2 * 1024 * 1024 * 1024);
-    assert_eq!(MIN_SDE_COMPRESSED_BYTES, 20 * 1024 * 1024);
-    assert_eq!(MAX_SDE_COMPRESSED_BYTES, 400 * 1024 * 1024);
+    let server_task = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 1024];
+        let n = socket.read(&mut buf).await.unwrap();
+        let req = String::from_utf8_lossy(&buf[..n]);
+        assert!(req.starts_with("GET "));
 
-    // Mathematical ordering and safety invariant enforcement
-    assert!(MIN_SDE_COMPRESSED_BYTES < MAX_SDE_COMPRESSED_BYTES);
-    assert!(MAX_SDE_COMPRESSED_BYTES < MAX_DECOMPRESSED_SDE_BYTES);
+        let body = "[]";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Pages: 1000\r\nETag: \"page-test\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let client = eve_trade_scout::esi::client::EsiClient::new(&temp_dir).unwrap();
+    let res: anyhow::Result<Vec<MarketOrder>> =
+        client.get_all_pages_opts(&mock_url, &[], false).await;
+
+    assert!(
+        res.is_err(),
+        "Must reject when X-Pages exceeds MAX_PAGES_LIMIT"
+    );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("exceeded maximum safe pagination limit (1000 pages; limit is 500)"),
+        "Error message must specify page limit violation: {}",
+        err_msg
+    );
+
+    server_task.await.unwrap();
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

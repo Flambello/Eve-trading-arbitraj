@@ -21,6 +21,10 @@ fn test_logging_initialization_with_dir() {
 
     let guard = init_logging(Some(&log_dir), "debug");
     assert!(guard.is_ok(), "init_logging should return Ok");
+    assert!(
+        guard.as_ref().unwrap().has_file_writer(),
+        "Logging with directory must activate persistent file writer"
+    );
 
     // Directory must be created
     assert!(
@@ -86,13 +90,47 @@ fn test_logging_initialization_with_dir() {
 #[test]
 fn test_logging_initialization_stdout_only() {
     // When log_dir is None, only stdout layer is registered, no error should occur
-    let guard = init_logging(None, "info");
-    assert!(guard.is_ok(), "init_logging with None dir should succeed");
+    let guard_res = init_logging(None, "info");
+    assert!(
+        guard_res.is_ok(),
+        "init_logging with None dir should succeed"
+    );
+
+    let guard = guard_res.unwrap();
+    assert!(
+        !guard.has_file_writer(),
+        "Stdout-only logging must not activate a persistent file writer"
+    );
 
     tracing::warn!("Stdout-only warning event emitted");
 }
 
 #[test]
 fn test_panic_hook_registration() {
+    // Register the custom panic hook
     init_panic_hook();
+
+    // Verify panic interception and payload preservation via catch_unwind
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panic!("Controlled QA panic verification test payload");
+    }));
+
+    assert!(
+        panic_result.is_err(),
+        "Panic must be caught by catch_unwind without aborting process"
+    );
+
+    let panic_err = panic_result.unwrap_err();
+    let panic_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = panic_err.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        String::new()
+    };
+
+    assert_eq!(
+        panic_msg, "Controlled QA panic verification test payload",
+        "Panic hook must preserve the exact panic payload"
+    );
 }

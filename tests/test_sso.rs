@@ -721,7 +721,36 @@ async fn test_ensure_fresh_token_expired_invalid_client_id_returns_error() {
 
 #[tokio::test]
 async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
-    use eve_trade_scout::esi::sso::ensure_fresh_token;
+    use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let req_str = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(req_str.contains("grant_type=refresh_token"));
+        assert!(req_str.contains("refresh_token=invalid_refresh_token_payload"));
+
+        let body =
+            r#"{"error":"invalid_request","error_description":"Invalid refresh token payload"}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
+    });
 
     let client = reqwest::Client::new();
     let mut expired_token = SsoToken {
@@ -734,11 +763,21 @@ async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
         client_id: Some("mock_client_id".to_string()),
     };
 
-    let res = ensure_fresh_token(&client, "mock_client_id", &mut expired_token).await;
+    let res =
+        ensure_fresh_token_at_url(&client, &mock_url, "mock_client_id", &mut expired_token).await;
     assert!(
         res.is_err(),
         "Refreshing expired token with invalid credentials must return Err"
     );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Invalid refresh token payload"),
+        "Error message must contain CCP error description: {}",
+        err_msg
+    );
+    assert_eq!(expired_token.access_token, "expired_access");
+
+    server_task.await.unwrap();
 }
 
 #[test]
@@ -1090,6 +1129,7 @@ async fn test_dry_run_pkce_auth_flow_with_public_client_id() {
     let mock_token_url = format!("http://{}/v2/oauth/token", token_server_addr);
 
     let verifier_clone = code_verifier.clone();
+    let challenge_clone = code_challenge.clone();
     let token_server_task = tokio::spawn(async move {
         let (mut socket, _) = token_server_listener.accept().await.expect("Accept failed");
         let mut buf = vec![0u8; 4096];
@@ -1105,7 +1145,28 @@ async fn test_dry_run_pkce_auth_flow_with_public_client_id() {
         assert!(request_str.contains("grant_type=authorization_code"));
         assert!(request_str.contains(&format!("client_id={}", DEFAULT_PUBLIC_CLIENT_ID)));
         assert!(request_str.contains("code=mock_dry_run_auth_code_999"));
-        assert!(request_str.contains(&format!("code_verifier={}", verifier_clone)));
+
+        // Extract code_verifier parameter from HTTP POST body
+        let body_part = request_str.split("\r\n\r\n").nth(1).unwrap_or("");
+        let mut received_verifier = None;
+        for pair in body_part.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == "code_verifier" {
+                    received_verifier = Some(v.to_string());
+                }
+            }
+        }
+        let verifier = received_verifier.expect("POST body must contain code_verifier parameter");
+        assert_eq!(verifier, verifier_clone);
+
+        // Core RFC 7636 PKCE S256 Cryptographic Verification:
+        // Hash received code_verifier with SHA-256 and Base64URL-encode without padding
+        let computed_challenge =
+            URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()).as_ref());
+        assert_eq!(
+            computed_challenge, challenge_clone,
+            "Mock server must cryptographically verify that BASE64URL(SHA256(code_verifier)) matches authorization code_challenge"
+        );
 
         // In PKCE public client flow, NO client_secret must ever be present
         assert!(
@@ -1170,24 +1231,114 @@ async fn test_dry_run_pkce_auth_flow_with_public_client_id() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_pkce_token_exchange_rejects_invalid_code_verifier() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_pkce_mismatch_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::{exchange_code_for_token_at_url, DEFAULT_PUBLIC_CLIENT_ID};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (_, valid_challenge) = generate_pkce_pair().expect("Must generate valid PKCE pair");
+
+    let token_server_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind mock token server");
+    let token_server_addr = token_server_listener.local_addr().unwrap();
+    let mock_token_url = format!("http://{}/v2/oauth/token", token_server_addr);
+
+    let expected_challenge = valid_challenge.clone();
+    let token_server_task = tokio::spawn(async move {
+        let (mut socket, _) = token_server_listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 4096];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        let body_part = request_str.split("\r\n\r\n").nth(1).unwrap_or("");
+        let mut received_verifier = None;
+        for pair in body_part.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == "code_verifier" {
+                    received_verifier = Some(v.to_string());
+                }
+            }
+        }
+        let verifier = received_verifier.expect("POST body must contain code_verifier parameter");
+
+        // Compute hash of received verifier
+        let computed = URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()).as_ref());
+        if computed != expected_challenge {
+            let body = r#"{"error":"invalid_grant","error_description":"PKCE code verifier does not match challenge"}"#;
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("Write error response failed");
+        } else {
+            panic!("Mock server expected mismatched verifier in negative test case!");
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let tampered_verifier = "tampered_code_verifier_1234567890123456789012345678901234567890";
+    let res = exchange_code_for_token_at_url(
+        &client,
+        &mock_token_url,
+        DEFAULT_PUBLIC_CLIENT_ID,
+        "mock_auth_code_123",
+        tampered_verifier,
+        37373,
+    )
+    .await;
+
+    assert!(
+        res.is_err(),
+        "Exchange must fail when verifier does not match challenge"
+    );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("PKCE code verifier does not match challenge"),
+        "Error message must specify PKCE challenge mismatch: {}",
+        err_msg
+    );
+
+    let _ = token_server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
 #[test]
 fn test_cross_platform_browser_command_syntax() {
+    use eve_trade_scout::esi::sso::build_browser_command_for_os;
+
     let test_url = "https://login.eveonline.com/v2/oauth/authorize?test=1&param=abc";
 
-    // Validate Windows command builder syntax: rundll32 url.dll,FileProtocolHandler "<url>"
-    let mut win_cmd = std::process::Command::new("rundll32");
-    win_cmd.args(["url.dll,FileProtocolHandler", test_url]);
-    let win_program = win_cmd.get_program().to_string_lossy();
-    assert_eq!(win_program, "rundll32");
+    // Validate Windows command builder syntax from production function
+    let win_cmd = build_browser_command_for_os("windows", test_url)
+        .expect("Must build windows browser command");
+    assert_eq!(win_cmd.get_program().to_string_lossy(), "rundll32");
     let win_args: Vec<String> = win_cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert_eq!(win_args, vec!["url.dll,FileProtocolHandler", test_url]);
 
-    // Validate Linux command builder syntax: xdg-open "<url>"
-    let mut linux_cmd = std::process::Command::new("xdg-open");
-    linux_cmd.arg(test_url);
+    // Validate Linux command builder syntax from production function
+    let linux_cmd =
+        build_browser_command_for_os("linux", test_url).expect("Must build linux browser command");
     assert_eq!(linux_cmd.get_program().to_string_lossy(), "xdg-open");
     let linux_args: Vec<String> = linux_cmd
         .get_args()
@@ -1195,15 +1346,23 @@ fn test_cross_platform_browser_command_syntax() {
         .collect();
     assert_eq!(linux_args, vec![test_url]);
 
-    // Validate macOS command builder syntax: open "<url>"
-    let mut mac_cmd = std::process::Command::new("open");
-    mac_cmd.arg(test_url);
+    // Validate macOS command builder syntax from production function
+    let mac_cmd =
+        build_browser_command_for_os("macos", test_url).expect("Must build macos browser command");
     assert_eq!(mac_cmd.get_program().to_string_lossy(), "open");
     let mac_args: Vec<String> = mac_cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert_eq!(mac_args, vec![test_url]);
+
+    // Validate unsupported OS returns actionable Err
+    let unsupported = build_browser_command_for_os("solaris", test_url);
+    assert!(unsupported.is_err());
+    assert!(unsupported
+        .unwrap_err()
+        .to_string()
+        .contains("Unsupported target operating system"));
 }
 
 #[tokio::test]
@@ -1242,10 +1401,11 @@ async fn test_listen_for_auth_code_addr_in_use_actionable_error() {
     );
 }
 
-#[test]
-fn test_esi_user_agent_header_compliance() {
+#[tokio::test]
+async fn test_esi_user_agent_header_compliance() {
     use eve_trade_scout::esi::client::USER_AGENT_VAL as CLIENT_UA;
     use eve_trade_scout::esi::sso::USER_AGENT_VAL as SSO_UA;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // Both constants must match and identify app, version, repository, and maintainer contact
     assert_eq!(CLIENT_UA, SSO_UA);
@@ -1261,6 +1421,51 @@ fn test_esi_user_agent_header_compliance() {
         CLIENT_UA.contains("contact: Flambello"),
         "User-Agent must contain maintainer contact"
     );
+
+    // Wire verification: verify that outgoing HTTP requests transmit the User-Agent header
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind listener");
+    let addr = listener.local_addr().unwrap();
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let req_str = String::from_utf8_lossy(&buf[..n]);
+
+        let has_expected_ua = req_str.lines().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("user-agent:") && line.contains(SSO_UA)
+        });
+        assert!(
+            has_expected_ua,
+            "Wire request must transmit CCP-compliant User-Agent header: {}",
+            req_str
+        );
+
+        let body = r#"{"error":"invalid_request"}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = socket.write_all(resp.as_bytes()).await;
+    });
+
+    let client = reqwest::Client::new();
+    let _ = eve_trade_scout::esi::sso::exchange_code_for_token_at_url(
+        &client,
+        &mock_url,
+        "dummy_client",
+        "dummy_code",
+        "dummy_verifier",
+        37373,
+    )
+    .await;
+
+    server_task.await.unwrap();
 }
 
 #[tokio::test]

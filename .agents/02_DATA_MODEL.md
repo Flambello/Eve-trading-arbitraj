@@ -204,11 +204,30 @@ pub struct CacheConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SsoConfig {
-    pub client_id:          String,
-    pub callback_port:      u16,
-    pub auto_sync_location: bool,
+    pub client_id:          String,  // Optional custom Client ID override; empty string uses DEFAULT_PUBLIC_CLIENT_ID
+    pub callback_port:      u16,     // Loopback TCP port (default: 37373)
+    pub auto_sync_location: bool,    // Auto-sync starting system from active character
 }
 ```
+
+### SSO Token & Local Storage (`SsoToken`)
+
+Persisted to `~/.config/eve-traveling-merchant/sso_token.json` (Linux) with POSIX `0600` file / `0700` dir permissions, or `%APPDATA%\eve-traveling-merchant\sso_token.json` (Windows).
+
+```rust
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SsoToken {
+    pub access_token:   String,       // Masked as [REDACTED] in std::fmt::Debug
+    pub refresh_token:  String,       // Masked as [REDACTED] in std::fmt::Debug
+    pub token_type:     String,
+    pub expires_at:     i64,          // Unix timestamp in seconds
+    pub character_id:   u64,
+    pub character_name: String,
+    pub client_id:      Option<String>,
+}
+```
+
+> **Security Note:** In PKCE public client OAuth2 (RFC 7636), no `client_secret` is ever compiled, requested, or persisted.
 
 ---
 

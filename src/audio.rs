@@ -96,34 +96,52 @@ fn play_sound_internal(sound_theme_id: &str) {
 
     #[cfg(not(test))]
     {
-        // 1. Canberra GTK play (Freedesktop system sound event)
-        if let Ok(status) = Command::new("canberra-gtk-play").args(&args).status() {
-            if status.success() {
-                return;
-            }
-        }
-
-        // 2. PipeWire native player (pw-play) with freedesktop stereo oga
-        let oga_path = format!(
-            "/usr/share/sounds/freedesktop/stereo/{}.oga",
-            sound_theme_id
-        );
-        if Path::new(&oga_path).exists() {
-            if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
+        #[cfg(unix)]
+        {
+            // 1. Canberra GTK play (Freedesktop system sound event)
+            if let Ok(status) = Command::new("canberra-gtk-play").args(&args).status() {
                 if status.success() {
                     return;
                 }
             }
 
-            // 3. PulseAudio player (paplay)
-            if let Ok(status) = Command::new("paplay").arg(&oga_path).status() {
-                if status.success() {
-                    return;
+            // 2. PipeWire native player (pw-play) with freedesktop stereo oga
+            let oga_path = format!(
+                "/usr/share/sounds/freedesktop/stereo/{}.oga",
+                sound_theme_id
+            );
+            if Path::new(&oga_path).exists() {
+                if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
+                    if status.success() {
+                        return;
+                    }
+                }
+
+                // 3. PulseAudio player (paplay)
+                if let Ok(status) = Command::new("paplay").arg(&oga_path).status() {
+                    if status.success() {
+                        return;
+                    }
                 }
             }
         }
 
-        // 4. Terminal ASCII Bell fallback
+        #[cfg(windows)]
+        {
+            // On Windows, play standard Asterisk alert sound via PowerShell
+            if let Ok(mut child) = Command::new("powershell")
+                .args(["-NoProfile", "-Command", "[System.Media.SystemSounds]::Asterisk.Play()"])
+                .spawn()
+            {
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Terminal ASCII Bell fallback across all platforms
         tracing::warn!(
             error_code = %crate::error::ErrorCode::ErrUiAudioPlayback,
             sound_theme_id = sound_theme_id,

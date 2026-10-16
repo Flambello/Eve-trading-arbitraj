@@ -311,12 +311,12 @@ pub fn open_browser(url: &str) -> Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        // On Windows, 'start' is a cmd built-in. An empty window title string prevents cmd
-        // from interpreting a quoted URL as the window title.
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
+        // On Windows, use rundll32 url.dll,FileProtocolHandler to directly invoke ShellExecuteEx
+        // without cmd.exe shell interpretation stripping query parameters (&).
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
             .spawn()
-            .context("Failed to spawn Windows browser command (cmd /C start)")?;
+            .context("Failed to spawn Windows browser command (rundll32 url.dll,FileProtocolHandler)")?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -412,6 +412,12 @@ pub async fn listen_for_auth_code(
                 error = %e,
                 "Failed to bind local loopback listener for SSO OAuth callback"
             );
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                bail!(
+                    "Local port {} is already in use by another application (e.g. another instance of EVE Trade Scout). Please close conflicting applications or configure an alternate callback port.",
+                    port
+                );
+            }
             return Err(e).with_context(|| {
                 format!("Failed to bind local loopback listener on port {}", port)
             });
@@ -898,6 +904,7 @@ pub async fn push_waypoints_to_client(
             .with_context(|| format!("Failed to send waypoint for destination_id {}", dest_id))?;
 
         if !resp.status().is_success() && resp.status().as_u16() != 204 {
+            let status = resp.status();
             let err = resp.text().await.unwrap_or_default();
             let sanitized = sanitize_sso_error(&err);
             tracing::error!(
@@ -906,6 +913,9 @@ pub async fn push_waypoints_to_client(
                 error = %sanitized,
                 "ESI rejected waypoint injection into client HUD"
             );
+            if status.as_u16() == 401 {
+                bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+            }
             bail!(
                 "ESI rejected waypoint {} (destination {}): {}",
                 idx + 1,
@@ -1018,6 +1028,9 @@ pub async fn fetch_character_location(
             error = %sanitized,
             "Failed to query live character location from ESI"
         );
+        if status.as_u16() == 401 {
+            bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+        }
         if status.as_u16() == 403 {
             bail!("Missing required scope 'esi-location.read_location.v1'. Please re-connect character in Settings.");
         }

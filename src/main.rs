@@ -39,9 +39,17 @@ async fn main() -> Result<()> {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
     }
 
-    let log_dir = std::path::Path::new("logs");
-    let _log_guard = eve_trade_scout::logging::init_logging(Some(log_dir), "info")
-        .expect("Failed to initialize logging subsystem");
+    let log_dir = resolve_log_dir();
+    let _log_guard = match eve_trade_scout::logging::init_logging(Some(&log_dir), "info") {
+        Ok(guard) => Some(guard),
+        Err(e) => {
+            eprintln!(
+                "[WARN] Failed to initialize file logger at {:?}: {}. Falling back to console logging.",
+                log_dir, e
+            );
+            eve_trade_scout::logging::init_logging(None, "info").ok()
+        }
+    };
 
     let args = Args::parse();
 
@@ -815,3 +823,18 @@ fn resolve_cache_dir(cfg_dir: &str) -> PathBuf {
     }
     local
 }
+
+fn resolve_log_dir() -> PathBuf {
+    let local = PathBuf::from("logs");
+    if local.is_dir() {
+        return local;
+    }
+    if let Some(data_local) = dirs::data_local_dir() {
+        let app_dir = data_local.join("eve-traveling-merchant").join("logs");
+        if std::fs::create_dir_all(&app_dir).is_ok() {
+            return app_dir;
+        }
+    }
+    local
+}
+

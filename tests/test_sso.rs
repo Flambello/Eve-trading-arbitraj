@@ -1174,16 +1174,16 @@ async fn test_dry_run_pkce_auth_flow_with_public_client_id() {
 fn test_cross_platform_browser_command_syntax() {
     let test_url = "https://login.eveonline.com/v2/oauth/authorize?test=1&param=abc";
 
-    // Validate Windows command builder syntax: cmd.exe /C start "" "<url>"
-    let mut win_cmd = std::process::Command::new("cmd");
-    win_cmd.args(["/C", "start", "", test_url]);
+    // Validate Windows command builder syntax: rundll32 url.dll,FileProtocolHandler "<url>"
+    let mut win_cmd = std::process::Command::new("rundll32");
+    win_cmd.args(["url.dll,FileProtocolHandler", test_url]);
     let win_program = win_cmd.get_program().to_string_lossy();
-    assert_eq!(win_program, "cmd");
+    assert_eq!(win_program, "rundll32");
     let win_args: Vec<String> = win_cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
         .collect();
-    assert_eq!(win_args, vec!["/C", "start", "", test_url]);
+    assert_eq!(win_args, vec!["url.dll,FileProtocolHandler", test_url]);
 
     // Validate Linux command builder syntax: xdg-open "<url>"
     let mut linux_cmd = std::process::Command::new("xdg-open");
@@ -1204,6 +1204,33 @@ fn test_cross_platform_browser_command_syntax() {
         .map(|a| a.to_string_lossy().to_string())
         .collect();
     assert_eq!(mac_args, vec![test_url]);
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_addr_in_use_actionable_error() {
+    // Bind a real socket on loopback to occupy an ephemeral port
+    let occupying_socket = std::net::TcpListener::bind("127.0.0.1:0").expect("Must bind ephemeral port");
+    let occupied_port = occupying_socket.local_addr().expect("Must have local addr").port();
+
+    let res = eve_trade_scout::esi::sso::listen_for_auth_code(
+        occupied_port,
+        "dummy_state",
+        std::time::Duration::from_millis(50),
+    )
+    .await;
+
+    assert!(res.is_err(), "Must fail when port is already bound");
+    let err_str = res.unwrap_err().to_string();
+    assert!(
+        err_str.contains(&format!("Local port {} is already in use by another application", occupied_port)),
+        "Error message must be actionable and specify the conflicting port, got: {}",
+        err_str
+    );
+    assert!(
+        err_str.contains("Please close conflicting applications or configure an alternate callback port"),
+        "Error message must provide user guidance on how to resolve the collision, got: {}",
+        err_str
+    );
 }
 
 #[test]

@@ -30,6 +30,15 @@ pub fn init_logging(
     // Target 2: Daily rolling structured file log
     let (file_layer, guard) = if let Some(dir) = log_dir {
         std::fs::create_dir_all(dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(dir) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o700);
+                let _ = std::fs::set_permissions(dir, perms);
+            }
+        }
         let file_appender = tracing_appender::rolling::daily(dir, "app.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 

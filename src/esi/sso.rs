@@ -23,7 +23,7 @@ pub const USER_AGENT_VAL: &str =
     "eve-trade-scout/0.1.0 (https://github.com/Flambello/eve-traveling-merchant; contact: Flambello)";
 
 /// Persisted ESI SSO Character Token & Metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SsoToken {
     pub access_token: String,
     pub refresh_token: String,
@@ -33,6 +33,20 @@ pub struct SsoToken {
     pub character_name: String,
     #[serde(default)]
     pub client_id: Option<String>,
+}
+
+impl std::fmt::Debug for SsoToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SsoToken")
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_at", &self.expires_at)
+            .field("character_id", &self.character_id)
+            .field("character_name", &self.character_name)
+            .field("client_id", &self.client_id)
+            .finish()
+    }
 }
 
 impl SsoToken {
@@ -231,14 +245,42 @@ pub fn is_valid_client_id(client_id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Sanitizes an upstream error response from the SSO token endpoint by truncating and stripping tokens.
+/// Sanitizes an upstream error response from the SSO token endpoint by stripping tokens and credentials.
 pub fn sanitize_sso_error(raw: &str) -> String {
-    let truncated: String = raw.chars().take(256).collect();
-    if truncated.contains("access_token") || truncated.contains("refresh_token") {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("access_token")
+        || lower.contains("refresh_token")
+        || lower.contains("code_verifier")
+        || lower.contains("bearer")
+    {
         "OAuth token endpoint error (details withheld for security)".to_string()
     } else {
+        let truncated: String = raw.chars().take(256).collect();
         truncated.replace(['\r', '\n'], " ")
     }
+}
+
+/// Sanitizes an authorization URL for safe logging by masking the sensitive CSRF state parameter.
+pub fn sanitize_auth_url(url: &str) -> String {
+    if let Some(state_idx) = url.find("state=") {
+        let rest = &url[state_idx + 6..];
+        let end_idx = rest.find('&').unwrap_or(rest.len());
+        format!("{}state=[REDACTED]{}", &url[..state_idx], &rest[end_idx..])
+    } else {
+        url.to_string()
+    }
+}
+
+/// Constant-time byte slice equality comparison to mitigate timing side-channel attacks.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Resolves the effective Client ID: if `custom` is non-empty, use it; otherwise check
@@ -263,7 +305,7 @@ pub fn resolve_client_id(custom: &str) -> Result<String> {
 /// Opens the specified URL in the system's default web browser across platforms.
 pub fn open_browser(url: &str) -> Result<()> {
     tracing::info!(
-        url = %url,
+        url = %sanitize_auth_url(url),
         "Opening browser for EVE SSO authentication (or navigate manually to this URL)"
     );
 
@@ -387,54 +429,150 @@ pub async fn listen_for_auth_code(
             };
 
             let mut request_buf = Vec::with_capacity(2048);
-            let mut temp_buf = [0u8; 1024];
             const MAX_REQUEST_SIZE: usize = 8192;
 
-            loop {
-                let n = match socket.read(&mut temp_buf).await {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                request_buf.extend_from_slice(&temp_buf[..n]);
-                if request_buf.windows(4).any(|w| w == b"\r\n\r\n")
-                    || request_buf.len() >= MAX_REQUEST_SIZE
-                {
-                    break;
+            // Bounded per-connection read timeout to prevent slowloris connection starvation
+            let read_fut = async {
+                let mut temp_buf = [0u8; 1024];
+                loop {
+                    let n = match socket.read(&mut temp_buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    request_buf.extend_from_slice(&temp_buf[..n]);
+                    if request_buf.windows(4).any(|w| w == b"\r\n\r\n")
+                        || request_buf.len() >= MAX_REQUEST_SIZE
+                    {
+                        break;
+                    }
                 }
-            }
+                Some(())
+            };
 
-            if request_buf.is_empty() {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), read_fut)
+                .await
+                .is_err()
+                || request_buf.is_empty()
+            {
                 continue;
             }
 
             let request_str = String::from_utf8_lossy(&request_buf);
             let first_line = request_str.lines().next().unwrap_or_default();
 
-            // Expected format: GET /callback?code=XYZ&state=ABC HTTP/1.1
-            if let Some(query_start) = first_line.find("/callback?") {
-                let query = &first_line[query_start + 10..];
-                let query_end = query.find(' ').unwrap_or(query.len());
-                let query_str = &query[..query_end];
+            // RFC 8252: Ensure request starts strictly with GET /callback?
+            if !first_line.starts_with("GET /callback?") {
+                let err_body = "Invalid callback path or HTTP method.";
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\n\
+                     Content-Type: text/plain; charset=utf-8\r\n\
+                     Content-Length: {}\r\n\
+                     X-Frame-Options: DENY\r\n\
+                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+                     X-Content-Type-Options: nosniff\r\n\
+                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                     Connection: close\r\n\r\n{}",
+                    err_body.len(),
+                    err_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                continue;
+            }
 
-                let mut code = None;
-                let mut state = None;
+            // RFC 8252 Section 8.8: Validate Host header targets localhost or 127.0.0.1 to mitigate DNS rebinding
+            let has_valid_host = request_str.lines().any(|l| {
+                let lower = l.to_ascii_lowercase();
+                lower.starts_with("host: localhost") || lower.starts_with("host: 127.0.0.1")
+            });
+            if !has_valid_host {
+                let err_body = "Invalid Host header.";
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\n\
+                     Content-Type: text/plain; charset=utf-8\r\n\
+                     Content-Length: {}\r\n\
+                     X-Frame-Options: DENY\r\n\
+                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+                     X-Content-Type-Options: nosniff\r\n\
+                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                     Connection: close\r\n\r\n{}",
+                    err_body.len(),
+                    err_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                continue;
+            }
 
-                for pair in query_str.split('&') {
-                    let mut parts = pair.split('=');
-                    if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                        if k == "code" {
-                            code = Some(urldecode_simple(v));
-                        } else if k == "state" {
-                            state = Some(urldecode_simple(v));
-                        }
+            let query_start = first_line.find("/callback?").unwrap();
+            let query = &first_line[query_start + 10..];
+            let query_end = query.find(' ').unwrap_or(query.len());
+            let query_str = &query[..query_end];
+
+            let mut code = None;
+            let mut state = None;
+            let mut oauth_error = None;
+            let mut oauth_error_desc = None;
+
+            for pair in query_str.split('&') {
+                let mut parts = pair.split('=');
+                if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+                    if k == "code" {
+                        code = Some(urldecode_simple(v));
+                    } else if k == "state" {
+                        state = Some(urldecode_simple(v));
+                    } else if k == "error" {
+                        oauth_error = Some(urldecode_simple(v));
+                    } else if k == "error_description" {
+                        oauth_error_desc = Some(urldecode_simple(v));
                     }
                 }
+            }
 
-                if let (Some(c), Some(s)) = (code, state) {
-                    if s == expected_state {
-                        // Send success HTML
-                        let html = r#"<!DOCTYPE html>
+            // Immediately handle user cancellation or denial without hanging for 3 minutes
+            if let Some(err) = oauth_error {
+                let desc = oauth_error_desc
+                    .unwrap_or_else(|| "Authorization was cancelled or denied by user".to_string());
+                let cancel_html = format!(
+                    r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>EVE Trade Scout - Authorization Cancelled</title><style>
+  body {{ background: #0c1424; color: #e0e8f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+  .card {{ background: #141f36; border: 1.5px solid #ff5555; border-radius: 12px; padding: 40px; text-align: center; max-width: 480px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }}
+  h1 {{ color: #ff5555; margin-top: 0; font-size: 24px; }}
+  p {{ color: #8ca5cb; line-height: 1.6; font-size: 15px; }}
+</style></head>
+<body>
+  <div class="card">
+    <h1>❌ Authorization Cancelled</h1>
+    <p>EVE Online SSO authorization was cancelled or denied.<br><br>{}<br><br>You can close this tab and return to the application.</p>
+  </div>
+</body>
+</html>"#,
+                    desc
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                     Content-Type: text/html; charset=utf-8\r\n\
+                     Content-Length: {}\r\n\
+                     X-Frame-Options: DENY\r\n\
+                     Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\n\
+                     X-Content-Type-Options: nosniff\r\n\
+                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                     Connection: close\r\n\r\n{}",
+                    cancel_html.len(),
+                    cancel_html
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+
+                bail!("EVE SSO authorization rejected by user: {} ({})", err, desc);
+            }
+
+            if let (Some(c), Some(s)) = (code, state) {
+                // Constant-time state comparison to mitigate timing side channels
+                if constant_time_eq(s.as_bytes(), expected_state.as_bytes()) {
+                    // Send success HTML with defensive security headers
+                    let html = r#"<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>EVE Trade Scout - Connected</title><style>
   body { background: #0c1424; color: #e0e8f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
@@ -449,23 +587,36 @@ pub async fn listen_for_auth_code(
   </div>
 </body>
 </html>"#;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            html.len(),
-                            html
-                        );
-                        let _ = socket.write_all(response.as_bytes()).await;
-                        let _ = socket.flush().await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\
+                         Content-Length: {}\r\n\
+                         X-Frame-Options: DENY\r\n\
+                         Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\n\
+                         X-Content-Type-Options: nosniff\r\n\
+                         Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                         Connection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
 
-                        return Ok(c);
-                    }
+                    return Ok(c);
                 }
             }
 
-            // Fallback 400 response for invalid requests
+            // Fallback 400 response for invalid requests or state mismatch with defensive security headers
             let err_body = "Invalid authorization callback or state mismatch.";
             let response = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 400 Bad Request\r\n\
+                 Content-Type: text/plain; charset=utf-8\r\n\
+                 Content-Length: {}\r\n\
+                 X-Frame-Options: DENY\r\n\
+                 Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+                 X-Content-Type-Options: nosniff\r\n\
+                 Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                 Connection: close\r\n\r\n{}",
                 err_body.len(),
                 err_body
             );
@@ -748,17 +899,18 @@ pub async fn push_waypoints_to_client(
 
         if !resp.status().is_success() && resp.status().as_u16() != 204 {
             let err = resp.text().await.unwrap_or_default();
+            let sanitized = sanitize_sso_error(&err);
             tracing::error!(
                 error_code = %ErrorCode::ErrSsoAutopilotFailed,
                 destination_id = dest_id,
-                error = %err,
+                error = %sanitized,
                 "ESI rejected waypoint injection into client HUD"
             );
             bail!(
                 "ESI rejected waypoint {} (destination {}): {}",
                 idx + 1,
                 dest_id,
-                err
+                sanitized
             );
         }
 
@@ -794,7 +946,7 @@ pub async fn authenticate_character_via_pkce(
     if let Err(e) = open_browser(&auth_url) {
         tracing::warn!(
             error = %e,
-            url = %auth_url,
+            url = %sanitize_auth_url(&auth_url),
             "Could not open system browser automatically; navigate to the URL manually in your browser"
         );
     }
@@ -858,17 +1010,17 @@ pub async fn fetch_character_location(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        let sanitized = sanitize_sso_error(&body);
         tracing::error!(
             error_code = %ErrorCode::ErrSsoLocationFailed,
             status = %status,
             character_id = token.character_id,
-            error = %body,
+            error = %sanitized,
             "Failed to query live character location from ESI"
         );
         if status.as_u16() == 403 {
             bail!("Missing required scope 'esi-location.read_location.v1'. Please re-connect character in Settings.");
         }
-        let sanitized = sanitize_sso_error(&body);
         bail!(
             "ESI character location request failed ({}): {}",
             status,

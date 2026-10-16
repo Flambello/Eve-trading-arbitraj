@@ -4,8 +4,9 @@ use eve_trade_scout::config::{SsoConfig, BIG_HAULER};
 use eve_trade_scout::esi::client::{MAX_NETWORK_RETRIES, MAX_PAGES_LIMIT};
 use eve_trade_scout::esi::models::MarketOrder;
 use eve_trade_scout::esi::sso::{
-    build_authorize_url, is_valid_client_id, parse_jwt_character_claims, sanitize_sso_error,
-    save_token, token_storage_path, urldecode_simple, SsoToken,
+    build_authorize_url, constant_time_eq, is_valid_client_id, parse_jwt_character_claims,
+    sanitize_auth_url, sanitize_sso_error, save_token, token_storage_path, urldecode_simple,
+    SsoToken,
 };
 use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::sde::loader::{
@@ -432,4 +433,107 @@ fn test_sso_config_validated_callback_port() {
         auto_sync_location: false,
     };
     assert_eq!(valid_cfg.validated_callback_port(), 8080);
+}
+
+#[test]
+fn test_sanitize_auth_url_redacts_state_parameter() {
+    let url = "https://login.eveonline.com/v2/oauth/authorize?response_type=code&client_id=my_client&redirect_uri=http%3A%2F%2Flocalhost%3A37373%2Fcallback&scope=esi-ui.write_waypoint.v1&state=super_secret_csrf_state_12345&code_challenge=xyz789&code_challenge_method=S256";
+    let sanitized = sanitize_auth_url(url);
+
+    assert!(!sanitized.contains("super_secret_csrf_state_12345"));
+    assert!(sanitized.contains("state=[REDACTED]"));
+    assert!(sanitized.contains("client_id=my_client"));
+    assert!(sanitized.contains("code_challenge=xyz789"));
+    assert!(sanitized.contains("code_challenge_method=S256"));
+
+    // URL without state remains unchanged
+    let no_state = "https://login.eveonline.com/v2/oauth/authorize?response_type=code";
+    assert_eq!(sanitize_auth_url(no_state), no_state);
+}
+
+#[test]
+fn test_sanitize_sso_error_case_insensitive_and_extended_keywords() {
+    // 1. Case-insensitive token detection
+    let mixed_case = "Server error with ACCESS_TOKEN=abcde in header";
+    assert_eq!(
+        sanitize_sso_error(mixed_case),
+        "OAuth token endpoint error (details withheld for security)"
+    );
+
+    let refresh_mixed = "Failed Refresh_Token verification";
+    assert_eq!(
+        sanitize_sso_error(refresh_mixed),
+        "OAuth token endpoint error (details withheld for security)"
+    );
+
+    // 2. Bearer and code_verifier detection
+    let bearer_leak = "Invalid Bearer eyJhbGciOiJSUzI1NiIs...";
+    assert_eq!(
+        sanitize_sso_error(bearer_leak),
+        "OAuth token endpoint error (details withheld for security)"
+    );
+
+    let verifier_leak = "Mismatched code_verifier parameter in payload";
+    assert_eq!(
+        sanitize_sso_error(verifier_leak),
+        "OAuth token endpoint error (details withheld for security)"
+    );
+
+    // 3. Bypass prevention: token keyword located after byte 256
+    let long_prefix = "A".repeat(300);
+    let overflow_leak = format!("{} and access_token=stolen", long_prefix);
+    assert_eq!(
+        sanitize_sso_error(&overflow_leak),
+        "OAuth token endpoint error (details withheld for security)",
+        "Must detect sensitive tokens occurring past byte 256"
+    );
+}
+
+#[test]
+fn test_sso_token_debug_redacts_secrets() {
+    let token = SsoToken {
+        access_token: "super_secret_access_jwt_value_12345".to_string(),
+        refresh_token: "super_secret_refresh_token_67890".to_string(),
+        token_type: "Bearer".to_string(),
+        expires_at: 1800000000,
+        character_id: 2112345678,
+        character_name: "Fleet Commander".to_string(),
+        client_id: Some("public_client_1".to_string()),
+    };
+
+    let debug_output = format!("{:?}", token);
+
+    // Ensure raw secrets are NEVER in debug representation
+    assert!(
+        !debug_output.contains("super_secret_access_jwt_value_12345"),
+        "access_token must not appear in Debug output"
+    );
+    assert!(
+        !debug_output.contains("super_secret_refresh_token_67890"),
+        "refresh_token must not appear in Debug output"
+    );
+
+    // Ensure redaction marker is present
+    assert!(debug_output.contains("access_token: \"[REDACTED]\""));
+    assert!(debug_output.contains("refresh_token: \"[REDACTED]\""));
+    assert!(debug_output.contains("character_name: \"Fleet Commander\""));
+    assert!(debug_output.contains("character_id: 2112345678"));
+}
+
+#[test]
+fn test_constant_time_eq_slices() {
+    let a = b"exact_secret_state_match_128bit";
+    let b = b"exact_secret_state_match_128bit";
+    let c = b"exact_secret_state_match_128biX";
+    let d = b"short";
+
+    assert!(constant_time_eq(a, b), "Identical slices must match");
+    assert!(
+        !constant_time_eq(a, c),
+        "Single differing byte must return false"
+    );
+    assert!(
+        !constant_time_eq(a, d),
+        "Differing lengths must return false"
+    );
 }

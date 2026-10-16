@@ -1226,3 +1226,177 @@ fn test_esi_user_agent_header_compliance() {
         "User-Agent must contain maintainer contact"
     );
 }
+
+#[tokio::test]
+async fn test_listen_for_auth_code_immediate_cancellation_on_oauth_error() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            port,
+            "test_expected_state",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+
+    let req = format!(
+        "GET /callback?error=access_denied&error_description=The+user+denied+the+request&state=test_expected_state HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+
+    let mut resp_buf = vec![0u8; 2048];
+    let n = stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+
+    // 1. Verify defensive HTTP security headers are present in response
+    assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp_str.contains("X-Frame-Options: DENY"));
+    assert!(resp_str.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(resp_str.contains("X-Content-Type-Options: nosniff"));
+    assert!(resp_str.contains("Cache-Control: no-store"));
+    assert!(resp_str.contains("Authorization Cancelled"));
+
+    // 2. Verify listener returned immediate error without timing out
+    let auth_res = auth_task.await.expect("Task panicked");
+    assert!(auth_res.is_err(), "Must return error on access_denied");
+    let err_msg = auth_res.unwrap_err().to_string();
+    assert!(err_msg.contains("access_denied"));
+    assert!(err_msg.contains("The user denied the request"));
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_defensive_http_headers_on_success() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            port,
+            "secret_csrf_state_123",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+
+    let req = format!(
+        "GET /callback?code=mock_success_code&state=secret_csrf_state_123 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+
+    let mut resp_buf = vec![0u8; 2048];
+    let n = stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+
+    assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp_str.contains("X-Frame-Options: DENY"));
+    assert!(resp_str.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(resp_str.contains("X-Content-Type-Options: nosniff"));
+    assert!(resp_str.contains("Cache-Control: no-store"));
+    assert!(resp_str.contains("Character Connected!"));
+
+    let code = auth_task
+        .await
+        .expect("Task panicked")
+        .expect("Must extract code");
+    assert_eq!(code, "mock_success_code");
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_rejects_invalid_host_and_non_get() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(port, "valid_state_abc", std::time::Duration::from_secs(5)).await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 1. Non-GET request should be rejected with 400 Bad Request
+    let mut bad_method_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let bad_method_req = format!(
+        "POST /callback?code=stolen_code&state=valid_state_abc HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    bad_method_stream
+        .write_all(bad_method_req.as_bytes())
+        .await
+        .unwrap();
+    let mut resp_buf = vec![0u8; 1024];
+    let n = bad_method_stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+    assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
+
+    // 2. DNS rebinding attempt with attacker Host header should be rejected
+    let mut rebinding_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let rebinding_req = format!(
+        "GET /callback?code=stolen_code&state=valid_state_abc HTTP/1.1\r\nHost: evil-attacker-domain.com:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    rebinding_stream
+        .write_all(rebinding_req.as_bytes())
+        .await
+        .unwrap();
+    let mut resp_buf2 = vec![0u8; 1024];
+    let n2 = rebinding_stream.read(&mut resp_buf2).await.unwrap();
+    let resp_str2 = String::from_utf8_lossy(&resp_buf2[..n2]);
+    assert!(resp_str2.starts_with("HTTP/1.1 400 Bad Request"));
+
+    // 3. Legitimate request should succeed after rejecting attacks
+    let mut legit_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let legit_req = format!(
+        "GET /callback?code=verified_code_xyz&state=valid_state_abc HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    legit_stream.write_all(legit_req.as_bytes()).await.unwrap();
+    let mut resp_buf3 = vec![0u8; 2048];
+    let n3 = legit_stream.read(&mut resp_buf3).await.unwrap();
+    let resp_str3 = String::from_utf8_lossy(&resp_buf3[..n3]);
+    assert!(resp_str3.starts_with("HTTP/1.1 200 OK"));
+
+    let code = auth_task
+        .await
+        .expect("Task panicked")
+        .expect("Must extract code");
+    assert_eq!(code, "verified_code_xyz");
+}

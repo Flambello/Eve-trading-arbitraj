@@ -53,6 +53,15 @@ pub fn parse_http_expires(resp: &Response, default_ttl_secs: i64) -> chrono::Dat
     parse_http_expires_str(header_val, default_ttl_secs)
 }
 
+/// Extracts the `x-esi-error-limit-reset` header duration from CCP ESI responses.
+pub fn extract_error_limit_reset(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get("x-esi-error-limit-reset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs.max(1) + 1))
+}
+
 #[derive(Clone)]
 pub struct EsiClient {
     client: Client,
@@ -77,9 +86,14 @@ impl EsiClient {
 
         let etags_file = cache_dir.join("etags.json");
         let etags = if etags_file.exists() {
-            let data = std::fs::read_to_string(&etags_file).unwrap_or_default();
-            let mut map: HashMap<String, StoredEtag> =
-                serde_json::from_str(&data).unwrap_or_default();
+            let file_res = std::fs::File::open(&etags_file);
+            let mut map: HashMap<String, StoredEtag> = match file_res {
+                Ok(file) => {
+                    let reader = std::io::BufReader::new(file);
+                    serde_json::from_reader(reader).unwrap_or_default()
+                }
+                Err(_) => HashMap::new(),
+            };
             // Prune expired or stale entries upon loading to avoid serving dead market orders
             map.retain(|_, entry| entry.is_fresh());
             map
@@ -101,8 +115,15 @@ impl EsiClient {
         let mut map = self.etags.lock().await;
         // Prune stale or expired entries before persisting to disk to prevent disk bloat
         map.retain(|_, entry| entry.is_fresh());
-        let serialized = serde_json::to_string(&*map)?;
-        tokio::fs::write(etags_file, serialized).await?;
+
+        let tmp_file = self.cache_dir.join("etags.json.tmp");
+        let file = std::fs::File::create(&tmp_file)?;
+        let mut writer = std::io::BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &*map)?;
+        use std::io::Write;
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(tmp_file, etags_file)?;
         Ok(())
     }
 
@@ -150,20 +171,29 @@ impl EsiClient {
             format!("{}:all?{}", url, q_str)
         };
 
-        if !force_refresh {
+        let cached_body = if !force_refresh {
             let mut map = self.etags.lock().await;
             if let Some(entry) = map.get(&cache_key) {
                 if entry.is_fresh() {
-                    let parsed: Vec<T> = serde_json::from_str(&entry.body_json)
-                        .context("Failed to deserialize cached paginated ESI response")?;
-                    return Ok(parsed);
+                    Some(entry.body_json.clone())
                 } else {
                     map.remove(&cache_key);
+                    None
                 }
+            } else {
+                None
             }
         } else {
             let mut map = self.etags.lock().await;
             map.remove(&cache_key);
+            None
+        };
+
+        // Parse cached JSON outside of mutex lock to prevent lock contention
+        if let Some(body_json) = cached_body {
+            let parsed: Vec<T> = serde_json::from_str(&body_json)
+                .context("Failed to deserialize cached paginated ESI response")?;
+            return Ok(parsed);
         }
 
         // Fetch page 1 fresh (no IF_NONE_MATCH to avoid false 304s from Page 1 alone)
@@ -184,6 +214,8 @@ impl EsiClient {
                 Ok(r) => {
                     let status = r.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
+                        let wait_dur =
+                            extract_error_limit_reset(r.headers()).unwrap_or(backoff);
                         if attempts > MAX_NETWORK_RETRIES {
                             tracing::error!(
                                 error_code = %ErrorCode::ErrEsiRateLimited,
@@ -202,13 +234,13 @@ impl EsiClient {
                             url = %url,
                             status = %status,
                             attempts = attempts,
-                            backoff = ?backoff,
+                            wait = ?wait_dur,
                             "ESI page 1 rate limited ({}). Backing off for {:?}...",
                             status,
-                            backoff
+                            wait_dur
                         );
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(Duration::from_secs(10));
+                        tokio::time::sleep(wait_dur).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(15));
                         continue;
                     } else if status.is_server_error() {
                         if attempts > MAX_NETWORK_RETRIES {
@@ -337,7 +369,7 @@ impl EsiClient {
             .with_context(|| format!("Failed to parse JSON array from {}", url))?;
 
         if total_pages > 1 {
-            let mut tasks = Vec::new();
+            let mut join_set = tokio::task::JoinSet::new();
             let owned_query: Vec<(String, String)> = extra_query
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
@@ -350,7 +382,7 @@ impl EsiClient {
                 let mut q = owned_query.clone();
                 q.push(("page".to_string(), page.to_string()));
 
-                tasks.push(tokio::spawn(async move {
+                join_set.spawn(async move {
                     let mut page_backoff = Duration::from_millis(500);
                     let mut attempts = 0u32;
                     let text = loop {
@@ -365,6 +397,8 @@ impl EsiClient {
                                 let status = r.status();
                                 if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420
                                 {
+                                    let wait_dur = extract_error_limit_reset(r.headers())
+                                        .unwrap_or(page_backoff);
                                     if attempts > MAX_NETWORK_RETRIES {
                                         tracing::error!(
                                             error_code = %ErrorCode::ErrEsiRateLimited,
@@ -383,11 +417,11 @@ impl EsiClient {
                                         error_code = %ErrorCode::ErrEsiRateLimited,
                                         page = page,
                                         status = %status,
-                                        backoff = ?page_backoff,
+                                        wait = ?wait_dur,
                                         "ESI page rate limited, backing off"
                                     );
-                                    tokio::time::sleep(page_backoff).await;
-                                    page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                    tokio::time::sleep(wait_dur).await;
+                                    page_backoff = (page_backoff * 2).min(Duration::from_secs(15));
                                     continue;
                                 } else if status.is_server_error() {
                                     if attempts > MAX_NETWORK_RETRIES {
@@ -464,12 +498,22 @@ impl EsiClient {
                         e
                     })?;
                     Ok::<Vec<T>, anyhow::Error>(page_items)
-                }));
+                });
             }
 
-            for task in tasks {
-                let page_items = task.await??;
-                all_items.extend(page_items);
+            while let Some(res) = join_set.join_next().await {
+                match res {
+                    Ok(Ok(page_items)) => {
+                        all_items.extend(page_items);
+                    }
+                    Ok(Err(e)) => {
+                        // join_set dropped on early exit aborts all remaining in-flight tasks
+                        return Err(e);
+                    }
+                    Err(join_err) => {
+                        return Err(join_err.into());
+                    }
+                }
             }
         }
 

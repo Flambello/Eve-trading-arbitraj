@@ -570,6 +570,7 @@ pub async fn listen_for_auth_code(
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
+                let _ = socket.shutdown().await;
 
                 bail!("EVE SSO authorization rejected by user: {} ({})", err, desc);
             }
@@ -607,6 +608,7 @@ pub async fn listen_for_auth_code(
                     );
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.flush().await;
+                    let _ = socket.shutdown().await;
 
                     return Ok(c);
                 }
@@ -627,6 +629,8 @@ pub async fn listen_for_auth_code(
                 err_body
             );
             let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            let _ = socket.shutdown().await;
         }
     };
 
@@ -895,13 +899,55 @@ pub async fn push_waypoints_to_client(
             ESI_WAYPOINT_URL, dest_id, is_first
         );
 
-        let resp = client
-            .post(&url)
-            .bearer_auth(access_token)
-            .header("User-Agent", USER_AGENT_VAL)
-            .send()
-            .await
-            .with_context(|| format!("Failed to send waypoint for destination_id {}", dest_id))?;
+        let mut attempts = 0u32;
+        let mut backoff = std::time::Duration::from_millis(500);
+        let resp = loop {
+            attempts += 1;
+            let resp_res = client
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("User-Agent", USER_AGENT_VAL)
+                .send()
+                .await;
+
+            match resp_res {
+                Ok(r) => {
+                    let status = r.status();
+                    if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420)
+                        && attempts <= 3
+                    {
+                        let wait_dur = r
+                            .headers()
+                            .get("x-esi-error-limit-reset")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
+                            .unwrap_or(backoff);
+                        tracing::warn!(
+                            error_code = %ErrorCode::ErrEsiRateLimited,
+                            destination_id = dest_id,
+                            wait = ?wait_dur,
+                            "Waypoint injection rate-limited (HTTP {}). Backing off...",
+                            status
+                        );
+                        tokio::time::sleep(wait_dur).await;
+                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                        continue;
+                    }
+                    break r;
+                }
+                Err(e) => {
+                    if attempts <= 3 {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                        continue;
+                    }
+                    return Err(e).with_context(|| {
+                        format!("Failed to send waypoint for destination_id {}", dest_id)
+                    });
+                }
+            }
+        };
 
         if !resp.status().is_success() && resp.status().as_u16() != 204 {
             let status = resp.status();

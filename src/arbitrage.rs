@@ -117,43 +117,66 @@ pub fn find_deals(
     graph: &SystemGraph,
     cfg: &ArbitrageConfig,
 ) -> Vec<ArbitrageDeal> {
-    // 1. Group all sell orders and buy orders across the queried regions by type_id
-    let mut all_sells: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
-    let mut all_buys: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    // 1. Find cheapest sell order and highest buy order per (type_id, station_id) directly
+    let mut best_sells_by_type_station: HashMap<(u32, u64), &MarketOrder> = HashMap::new();
+    let mut best_buys_by_type_station: HashMap<(u32, u64), &MarketOrder> = HashMap::new();
 
     for market in markets.values() {
         for (&type_id, orders) in &market.sell_orders {
-            let entry = all_sells.entry(type_id).or_default();
             for o in orders {
                 // Strictly exclude lowsec and nullsec systems: only highsec allowed
                 if !graph.is_highsec(o.system_id) {
                     continue;
                 }
                 if !cfg.npc_stations_only || is_npc_station(o.location_id) {
-                    entry.push(o);
+                    best_sells_by_type_station
+                        .entry((type_id, o.location_id))
+                        .and_modify(|best| {
+                            if o.price < best.price {
+                                *best = o;
+                            }
+                        })
+                        .or_insert(o);
                 }
             }
         }
 
         for (&type_id, orders) in &market.buy_orders {
-            let entry = all_buys.entry(type_id).or_default();
             for o in orders {
                 // Strictly exclude lowsec and nullsec systems: only highsec allowed
                 if !graph.is_highsec(o.system_id) {
                     continue;
                 }
                 if !cfg.npc_stations_only || is_npc_station(o.location_id) {
-                    entry.push(o);
+                    best_buys_by_type_station
+                        .entry((type_id, o.location_id))
+                        .and_modify(|best| {
+                            if o.price > best.price {
+                                *best = o;
+                            }
+                        })
+                        .or_insert(o);
                 }
             }
         }
     }
 
+    // 2. Group deduplicated station bests by type_id
+    let mut sells_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    for ((type_id, _), order) in best_sells_by_type_station {
+        sells_by_type.entry(type_id).or_default().push(order);
+    }
+
+    let mut buys_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    for ((type_id, _), order) in best_buys_by_type_station {
+        buys_by_type.entry(type_id).or_default().push(order);
+    }
+
     let mut deals = Vec::new();
 
-    // 2. For each type_id that exists in both buys and sells
-    for (&type_id, sell_list) in &all_sells {
-        let buy_list = match all_buys.get(&type_id) {
+    // 3. For each type_id that exists in both buys and sells
+    for (&type_id, sell_list) in &sells_by_type {
+        let buy_list = match buys_by_type.get(&type_id) {
             Some(b) => b,
             None => continue,
         };
@@ -163,37 +186,11 @@ pub fn find_deals(
             _ => continue,
         };
 
-        // For this item, find best sell price per station
-        let mut best_sell_by_station: HashMap<u64, &MarketOrder> = HashMap::new();
-        for &order in sell_list {
-            best_sell_by_station
-                .entry(order.location_id)
-                .and_modify(|best| {
-                    if order.price < best.price {
-                        *best = order;
-                    }
-                })
-                .or_insert(order);
-        }
-
-        // And best buy price per station
-        let mut best_buy_by_station: HashMap<u64, &MarketOrder> = HashMap::new();
-        for &order in buy_list {
-            best_buy_by_station
-                .entry(order.location_id)
-                .and_modify(|best| {
-                    if order.price > best.price {
-                        *best = order;
-                    }
-                })
-                .or_insert(order);
-        }
-
-        // 3. Test all (source_station, dest_station) pairs
-        for (&src_station, &src_order) in &best_sell_by_station {
-            for (&dst_station, &dst_order) in &best_buy_by_station {
+        // Test all (source_station, dest_station) pairs
+        for &src_order in sell_list {
+            for &dst_order in buy_list {
                 // Must be cross-station trade (not same station)
-                if src_station == dst_station {
+                if src_order.location_id == dst_order.location_id {
                     continue;
                 }
 

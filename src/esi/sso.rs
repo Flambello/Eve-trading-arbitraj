@@ -12,13 +12,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+pub const DEFAULT_PUBLIC_CLIENT_ID: &str = "5793fc7aa2cb49e385d3cfb5d52061c7";
 pub const DEFAULT_CALLBACK_PORT: u16 = 37373;
 const SSO_AUTH_URL: &str = "https://login.eveonline.com/v2/oauth/authorize";
 const SSO_TOKEN_URL: &str = "https://login.eveonline.com/v2/oauth/token";
 const ESI_WAYPOINT_URL: &str = "https://esi.evetech.net/v2/ui/autopilot/waypoint";
 const ESI_SCOPES: &str =
     "esi-ui.write_waypoint.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1";
-const USER_AGENT_VAL: &str = "eve-trade-scout/0.1.0 (EVE Online Arbitrage Scout)";
+pub const USER_AGENT_VAL: &str =
+    "eve-trade-scout/0.1.0 (https://github.com/Flambello/eve-traveling-merchant; contact: Flambello)";
 
 /// Persisted ESI SSO Character Token & Metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,10 +105,10 @@ pub fn load_saved_token() -> Option<SsoToken> {
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
     {
-        if let Some(dev_id) = get_developer_client_id() {
-            token.client_id = Some(dev_id);
-            let _ = save_token(&token);
-        }
+        let default_or_dev =
+            get_developer_client_id().unwrap_or_else(|| DEFAULT_PUBLIC_CLIENT_ID.to_string());
+        token.client_id = Some(default_or_dev);
+        let _ = save_token(&token);
     }
 
     Some(token)
@@ -239,7 +241,8 @@ pub fn sanitize_sso_error(raw: &str) -> String {
     }
 }
 
-/// Resolves the effective Client ID: if `custom` is non-empty, use it; otherwise check private local sources.
+/// Resolves the effective Client ID: if `custom` is non-empty, use it; otherwise check
+/// private local sources (env var, config file), falling back to the built-in public Client ID.
 pub fn resolve_client_id(custom: &str) -> Result<String> {
     let trimmed = custom.trim();
     if !trimmed.is_empty() {
@@ -254,9 +257,41 @@ pub fn resolve_client_id(custom: &str) -> Result<String> {
         }
         return Ok(id);
     }
-    bail!(
-        "No EVE Application Client ID configured for this build. Maintainer credentials are kept private to protect the developer account. Set the EVE_CLIENT_ID environment variable or create ~/.config/eve-trade-scout/developer_client_id to enable SSO."
-    )
+    Ok(DEFAULT_PUBLIC_CLIENT_ID.to_string())
+}
+
+/// Opens the specified URL in the system's default web browser across platforms.
+pub fn open_browser(url: &str) -> Result<()> {
+    tracing::info!(
+        url = %url,
+        "Opening browser for EVE SSO authentication (or navigate manually to this URL)"
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, 'start' is a cmd built-in. An empty window title string prevents cmd
+        // from interpreting a quoted URL as the window title.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .context("Failed to spawn Windows browser command (cmd /C start)")?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .context("Failed to spawn macOS browser command (open)")?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .context("Failed to spawn Linux browser command (xdg-open)")?;
+    }
+
+    Ok(())
 }
 
 /// Builds the browser authorization URL for CCP SSO.
@@ -460,6 +495,26 @@ pub async fn exchange_code_for_token(
     code_verifier: &str,
     callback_port: u16,
 ) -> Result<SsoToken> {
+    exchange_code_for_token_at_url(
+        client,
+        SSO_TOKEN_URL,
+        client_id,
+        code,
+        code_verifier,
+        callback_port,
+    )
+    .await
+}
+
+/// Exchanges the PKCE authorization code for an access token and refresh token against the specified token endpoint URL.
+pub async fn exchange_code_for_token_at_url(
+    client: &reqwest::Client,
+    token_url: &str,
+    client_id: &str,
+    code: &str,
+    code_verifier: &str,
+    callback_port: u16,
+) -> Result<SsoToken> {
     let redirect_uri = format!("http://localhost:{}/callback", callback_port);
 
     let params = [
@@ -471,7 +526,7 @@ pub async fn exchange_code_for_token(
     ];
 
     let resp = client
-        .post(SSO_TOKEN_URL)
+        .post(token_url)
         .header("User-Agent", USER_AGENT_VAL)
         .form(&params)
         .send()
@@ -544,11 +599,11 @@ pub async fn ensure_fresh_token_at_url(
     }
 
     let effective_client_id: String = if !client_id.trim().is_empty() {
-        client_id.trim().to_string()
-    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
-        cid.to_string()
-    } else {
         resolve_client_id(client_id)?
+    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        resolve_client_id(cid)?
+    } else {
+        resolve_client_id("")?
     };
 
     let params = [
@@ -735,10 +790,14 @@ pub async fn authenticate_character_via_pkce(
     let auth_url =
         build_authorize_url(&effective_client_id, callback_port, &state, &code_challenge);
 
-    // Attempt to open the default system browser via xdg-open (Linux/desktop)
-    let _ = std::process::Command::new("xdg-open")
-        .arg(&auth_url)
-        .spawn();
+    // Attempt to open the default system browser across platforms
+    if let Err(e) = open_browser(&auth_url) {
+        tracing::warn!(
+            error = %e,
+            url = %auth_url,
+            "Could not open system browser automatically; navigate to the URL manually in your browser"
+        );
+    }
 
     let code =
         listen_for_auth_code(callback_port, &state, std::time::Duration::from_secs(180)).await?;

@@ -92,7 +92,7 @@ Every non-trivial failure condition in the application emits a standardized `Err
 
 | Code ID | Constant Identifier | HTTP/Sys Equivalent | Description | Recommended Resolution |
 |---|---|---|---|---|
-| `3001` | `ERR_SSO_CONFIG_INVALID` | 400 | SSO configuration missing or client ID invalid. | Set valid `EVE_CLIENT_ID` in environment or configure in application settings. |
+| `3001` | `ERR_SSO_CONFIG_INVALID` | 400 | Custom client ID or SSO configuration invalid. | Verify custom client ID contains only alphanumeric characters or remove to use default public ID. |
 | `3002` | `ERR_SSO_AUTH_SERVER_FAILED` | `EADDRINUSE` | Loopback TCP listener could not bind for OAuth callback. | Free port `127.0.0.1:8080` or `127.0.0.1:37428` from conflicting processes. |
 | `3003` | `ERR_SSO_TOKEN_EXCHANGE` | HTTP 400 / 401 | OAuth authorization code exchange with `login.eveonline.com` failed. | Ensure authorization code hasn't expired and PKCE code verifier is valid. |
 | `3004` | `ERR_SSO_TOKEN_REFRESH` | HTTP 400 / 401 | Refresh token rejected or revoked by CCP SSO. | Re-authenticate character via desktop GUI SSO login button. |

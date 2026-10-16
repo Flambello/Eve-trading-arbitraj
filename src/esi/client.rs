@@ -11,7 +11,8 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 
 const ESI_BASE: &str = "https://esi.evetech.net/latest";
-const USER_AGENT_VAL: &str = "eve-trade-scout/0.1.0 (EVE Online Arbitrage Scout)";
+pub const USER_AGENT_VAL: &str =
+    "eve-trade-scout/0.1.0 (https://github.com/Flambello/eve-traveling-merchant; contact: Flambello)";
 pub const MAX_PAGES_LIMIT: u32 = 500;
 pub const MAX_NETWORK_RETRIES: u32 = 5;
 

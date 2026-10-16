@@ -560,7 +560,7 @@ fn test_developer_client_id_resolution() {
     let resolved_from_legacy = resolve_client_id("").unwrap();
     assert_eq!(resolved_from_legacy, "legacy_file_client_id_000");
 
-    // 5. Test unconfigured state when no credentials exist
+    // 5. Test unconfigured state when no credentials exist - falls back to DEFAULT_PUBLIC_CLIENT_ID
     std::fs::remove_file(&legacy_file_path).expect("Must remove legacy config file");
 
     let unconfigured = get_developer_client_id();
@@ -569,15 +569,20 @@ fn test_developer_client_id_resolution() {
         "Must return None when neither env var nor config file exists"
     );
 
-    let err = resolve_client_id("");
-    assert!(
-        err.is_err(),
-        "Must fail when no client ID is provided and no developer ID is configured"
+    use eve_trade_scout::esi::sso::DEFAULT_PUBLIC_CLIENT_ID;
+    let default_resolved = resolve_client_id("").unwrap();
+    assert_eq!(
+        default_resolved, DEFAULT_PUBLIC_CLIENT_ID,
+        "Must fall back to DEFAULT_PUBLIC_CLIENT_ID when no override exists"
     );
-    let err_msg = err.unwrap_err().to_string();
+
+    // 6. Test invalid custom client ID format is rejected
+    let bad_err = resolve_client_id("invalid client id with spaces!");
+    assert!(bad_err.is_err(), "Must reject invalid client ID format");
+    let err_msg = bad_err.unwrap_err().to_string();
     assert!(
-        err_msg.contains("No EVE Application Client ID configured"),
-        "Error message should explain missing client ID: {}",
+        err_msg.contains("Invalid EVE Application Client ID format"),
+        "Error message should explain invalid client ID format: {}",
         err_msg
     );
 
@@ -676,7 +681,7 @@ async fn test_ensure_fresh_token_unexpired_skips_network() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
+async fn test_ensure_fresh_token_expired_invalid_client_id_returns_error() {
     use eve_trade_scout::esi::sso::ensure_fresh_token;
 
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -697,13 +702,19 @@ async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
         client_id: None,
     };
 
-    let res = ensure_fresh_token(&client, "", &mut expired_token).await;
+    // Explicitly invalid client ID format must fail validation
+    let res = ensure_fresh_token(
+        &client,
+        "invalid client ID with spaces!",
+        &mut expired_token,
+    )
+    .await;
     assert!(
         res.is_err(),
-        "Must fail when token is expired and no client ID can be resolved"
+        "Must fail when custom client ID format is invalid"
     );
     let err_msg = res.unwrap_err().to_string();
-    assert!(err_msg.contains("No EVE Application Client ID configured"));
+    assert!(err_msg.contains("Invalid EVE Application Client ID format"));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -981,4 +992,237 @@ async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
 
     let _ = server_task.await;
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_dry_run_pkce_auth_flow_with_public_client_id() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_dry_run_pkce_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+    let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
+
+    use eve_trade_scout::esi::sso::{
+        exchange_code_for_token_at_url, listen_for_auth_code, DEFAULT_PUBLIC_CLIENT_ID,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // 1. Resolve client ID with zero configuration or overrides -> resolves public client ID
+    let client_id =
+        eve_trade_scout::esi::sso::resolve_client_id("").expect("Must resolve default public ID");
+    assert_eq!(client_id, DEFAULT_PUBLIC_CLIENT_ID);
+
+    // 2. Generate cryptographic PKCE verifier and S256 challenge
+    let (code_verifier, code_challenge) = generate_pkce_pair().expect("Must generate PKCE pair");
+    assert_eq!(code_verifier.len(), 64);
+
+    // 3. Construct authorization URL
+    let state = "test_dry_run_state_456";
+    let auth_url = build_authorize_url(&client_id, 37373, state, &code_challenge);
+    assert!(auth_url.contains(&format!("client_id={}", DEFAULT_PUBLIC_CLIENT_ID)));
+    assert!(auth_url.contains(&format!("code_challenge={}", code_challenge)));
+    assert!(auth_url.contains("code_challenge_method=S256"));
+    assert!(auth_url.contains("response_type=code"));
+
+    // 4. Bind ephemeral loopback listener and simulate browser callback
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let loopback_port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener); // Release so listen_for_auth_code can bind it
+
+    let auth_listen_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            loopback_port,
+            "test_dry_run_state_456",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    // Small delay to ensure listener is accepting
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Simulate browser redirect to localhost callback
+    let mut browser_stream = tokio::net::TcpStream::connect(("127.0.0.1", loopback_port))
+        .await
+        .expect("Must connect to loopback callback listener");
+    let callback_request = format!(
+        "GET /callback?code=mock_dry_run_auth_code_999&state=test_dry_run_state_456 HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        loopback_port
+    );
+    browser_stream
+        .write_all(callback_request.as_bytes())
+        .await
+        .expect("Write callback request failed");
+
+    let mut browser_resp_buf = vec![0u8; 2048];
+    let n = browser_stream
+        .read(&mut browser_resp_buf)
+        .await
+        .expect("Read callback response failed");
+    let browser_resp_str = String::from_utf8_lossy(&browser_resp_buf[..n]);
+    assert!(
+        browser_resp_str.starts_with("HTTP/1.1 200 OK"),
+        "Callback listener must return 200 OK HTML"
+    );
+    assert!(browser_resp_str.contains("Character Connected!"));
+
+    let received_auth_code = auth_listen_task
+        .await
+        .expect("Listener task panicked")
+        .expect("Listener must successfully extract code");
+    assert_eq!(received_auth_code, "mock_dry_run_auth_code_999");
+
+    // 5. Spin up mock CCP token endpoint to verify token exchange payload
+    let token_server_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind mock token server");
+    let token_server_addr = token_server_listener.local_addr().unwrap();
+    let mock_token_url = format!("http://{}/v2/oauth/token", token_server_addr);
+
+    let verifier_clone = code_verifier.clone();
+    let token_server_task = tokio::spawn(async move {
+        let (mut socket, _) = token_server_listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 4096];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        // Verify that the request uses POST /v2/oauth/token and compliant User-Agent
+        assert!(request_str.starts_with("POST /v2/oauth/token"));
+        assert!(request_str.contains("user-agent: eve-trade-scout/0.1.0"));
+        assert!(request_str.contains("https://github.com/Flambello/eve-traveling-merchant"));
+
+        // Verify PKCE token exchange form parameters
+        assert!(request_str.contains("grant_type=authorization_code"));
+        assert!(request_str.contains(&format!("client_id={}", DEFAULT_PUBLIC_CLIENT_ID)));
+        assert!(request_str.contains("code=mock_dry_run_auth_code_999"));
+        assert!(request_str.contains(&format!("code_verifier={}", verifier_clone)));
+
+        // In PKCE public client flow, NO client_secret must ever be present
+        assert!(
+            !request_str.contains("client_secret"),
+            "Public client flow must never send client_secret"
+        );
+
+        // Generate mock valid JWT with character name and character ID
+        let payload = serde_json::json!({
+            "name": "Public PKCE Explorer",
+            "sub": "CHARACTER:EVE:2119999999"
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"RS256\",\"typ\":\"JWT\"}");
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        let mock_jwt = format!("{}.{}.mock_signature_bytes", header_b64, payload_b64);
+
+        let body = serde_json::json!({
+            "access_token": mock_jwt,
+            "token_type": "Bearer",
+            "expires_in": 1200,
+            "refresh_token": "mock_refresh_token_xyz"
+        })
+        .to_string();
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write token response failed");
+    });
+
+    let client = reqwest::Client::new();
+    let token = exchange_code_for_token_at_url(
+        &client,
+        &mock_token_url,
+        &client_id,
+        &received_auth_code,
+        &code_verifier,
+        loopback_port,
+    )
+    .await
+    .expect("Token exchange must succeed without client secret");
+
+    assert_eq!(token.character_name, "Public PKCE Explorer");
+    assert_eq!(token.character_id, 2119999999);
+    assert_eq!(token.refresh_token, "mock_refresh_token_xyz");
+    assert_eq!(
+        token.client_id.as_deref(),
+        Some(DEFAULT_PUBLIC_CLIENT_ID),
+        "Saved token must retain the public Client ID"
+    );
+    assert!(
+        !token.is_expired(),
+        "Newly exchanged token with 1200s TTL must not be expired"
+    );
+
+    let _ = token_server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_cross_platform_browser_command_syntax() {
+    let test_url = "https://login.eveonline.com/v2/oauth/authorize?test=1&param=abc";
+
+    // Validate Windows command builder syntax: cmd.exe /C start "" "<url>"
+    let mut win_cmd = std::process::Command::new("cmd");
+    win_cmd.args(["/C", "start", "", test_url]);
+    let win_program = win_cmd.get_program().to_string_lossy();
+    assert_eq!(win_program, "cmd");
+    let win_args: Vec<String> = win_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(win_args, vec!["/C", "start", "", test_url]);
+
+    // Validate Linux command builder syntax: xdg-open "<url>"
+    let mut linux_cmd = std::process::Command::new("xdg-open");
+    linux_cmd.arg(test_url);
+    assert_eq!(linux_cmd.get_program().to_string_lossy(), "xdg-open");
+    let linux_args: Vec<String> = linux_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(linux_args, vec![test_url]);
+
+    // Validate macOS command builder syntax: open "<url>"
+    let mut mac_cmd = std::process::Command::new("open");
+    mac_cmd.arg(test_url);
+    assert_eq!(mac_cmd.get_program().to_string_lossy(), "open");
+    let mac_args: Vec<String> = mac_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(mac_args, vec![test_url]);
+}
+
+#[test]
+fn test_esi_user_agent_header_compliance() {
+    use eve_trade_scout::esi::client::USER_AGENT_VAL as CLIENT_UA;
+    use eve_trade_scout::esi::sso::USER_AGENT_VAL as SSO_UA;
+
+    // Both constants must match and identify app, version, repository, and maintainer contact
+    assert_eq!(CLIENT_UA, SSO_UA);
+    assert!(
+        CLIENT_UA.starts_with("eve-trade-scout/0.1.0"),
+        "User-Agent must start with app name and version"
+    );
+    assert!(
+        CLIENT_UA.contains("https://github.com/Flambello/eve-traveling-merchant"),
+        "User-Agent must contain repository link"
+    );
+    assert!(
+        CLIENT_UA.contains("contact: Flambello"),
+        "User-Agent must contain maintainer contact"
+    );
 }

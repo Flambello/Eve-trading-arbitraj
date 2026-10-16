@@ -85,8 +85,9 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
 
 #### Description & Root Causes
 - Expired refresh tokens where the client cannot contact `login.eveonline.com`.
-- Tampered local credentials file `~/.config/eve-trade-scout/sso_token.json`.
-- Missing or misconfigured `client_id` for developer credentials.
+- Tampered or inaccessible local credentials file `~/.config/eve-traveling-merchant/sso_token.json` (or `%APPDATA%\eve-traveling-merchant\sso_token.json` on Windows).
+- Port conflict binding local loopback listener on `127.0.0.1:37373`.
+- Misconfigured optional `client_id` (note: no client secret is needed or supported).
 
 #### Log Representation
 ```json
@@ -94,7 +95,7 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
   "timestamp": "2026-10-13T12:15:20.890Z",
   "level": "WARN",
   "fields": {
-    "error_code": "SSO_REFRESH_TOKEN_EXPIRED",
+    "error_code": "ERR_SSO_TOKEN_REFRESH",
     "character_id": 95123456,
     "error": "invalid_grant: refresh token expired or revoked"
   },
@@ -105,8 +106,10 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
 #### Step-by-Step Resolution
 1. Open Native GUI Settings tab (`Alt+S`).
 2. Click **Disconnect Pilot** to purge the expired token.
-3. Click **Authenticate Pilot via EVE SSO** to re-authorize through your default web browser.
-4. If using custom developer credentials, ensure callback URL matches `http://localhost:8080/callback`.
+3. Click **Authenticate Pilot via EVE SSO** to re-authorize through your default web browser (works out-of-the-box with embedded public Client ID).
+4. If using a custom developer Client ID via `EVE_CLIENT_ID` or config, ensure your CCP Developer Application callback URL is registered as `http://127.0.0.1:37373/callback` (or `http://localhost:37373/callback`).
+5. Ensure port `37373` is not occupied by another process (`ss -tulpn | grep 37373`).
+
 
 ---
 

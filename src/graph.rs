@@ -6,6 +6,30 @@ use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
+#[derive(Clone)]
+struct FastBitSet {
+    words: Vec<u64>,
+}
+
+impl FastBitSet {
+    #[inline]
+    fn new(size: usize) -> Self {
+        Self {
+            words: vec![0u64; size.div_ceil(64)],
+        }
+    }
+
+    #[inline]
+    fn get(&self, idx: usize) -> bool {
+        (self.words[idx / 64] & (1u64 << (idx % 64))) != 0
+    }
+
+    #[inline]
+    fn set(&mut self, idx: usize) {
+        self.words[idx / 64] |= 1u64 << (idx % 64);
+    }
+}
+
 /// Stargate graph representation of the EVE Online universe with memoized jump distances.
 pub struct SystemGraph {
     graph: UnGraph<SystemNode, f64>,
@@ -147,17 +171,17 @@ impl SystemGraph {
             None => return 9999,
         };
 
+        let node_count = self.graph.node_count();
+        let mut visited = FastBitSet::new(node_count);
+        let mut queue = VecDeque::new();
+        visited.set(origin_idx.index());
+        queue.push_back((origin_idx, 0u32));
+
         let result = if safe_only {
             // Strictly exclude lowsec and nullsec origin or destination
             if !self.is_highsec(origin) || !self.is_highsec(dest) {
                 return 9999;
             }
-
-            let node_count = self.graph.node_count();
-            let mut visited = vec![false; node_count];
-            let mut queue = VecDeque::new();
-            visited[origin_idx.index()] = true;
-            queue.push_back((origin_idx, 0u32));
 
             let mut found_dist = None;
             while let Some((curr, dist)) = queue.pop_front() {
@@ -167,8 +191,8 @@ impl SystemGraph {
                 }
                 for neighbor in self.graph.neighbors(curr) {
                     let n_idx = neighbor.index();
-                    if !visited[n_idx] && self.graph[neighbor].security_status >= 0.45 {
-                        visited[n_idx] = true;
+                    if !visited.get(n_idx) && self.graph[neighbor].security_status >= 0.45 {
+                        visited.set(n_idx);
                         queue.push_back((neighbor, dist + 1));
                     }
                 }
@@ -176,12 +200,6 @@ impl SystemGraph {
 
             found_dist.unwrap_or(9999)
         } else {
-            let node_count = self.graph.node_count();
-            let mut visited = vec![false; node_count];
-            let mut queue = VecDeque::new();
-            visited[origin_idx.index()] = true;
-            queue.push_back((origin_idx, 0u32));
-
             let mut found_dist = None;
             while let Some((curr, dist)) = queue.pop_front() {
                 if curr == dest_idx {
@@ -190,8 +208,8 @@ impl SystemGraph {
                 }
                 for neighbor in self.graph.neighbors(curr) {
                     let n_idx = neighbor.index();
-                    if !visited[n_idx] {
-                        visited[n_idx] = true;
+                    if !visited.get(n_idx) {
+                        visited.set(n_idx);
                         queue.push_back((neighbor, dist + 1));
                     }
                 }
@@ -231,11 +249,11 @@ impl SystemGraph {
         };
 
         let node_count = self.graph.node_count();
-        let mut visited = vec![false; node_count];
+        let mut visited = FastBitSet::new(node_count);
         let mut parent = vec![None; node_count];
         let mut queue = VecDeque::new();
 
-        visited[origin_idx.index()] = true;
+        visited.set(origin_idx.index());
         queue.push_back(origin_idx);
 
         let mut found = false;
@@ -246,11 +264,11 @@ impl SystemGraph {
             }
             for neighbor in self.graph.neighbors(curr) {
                 let n_idx = neighbor.index();
-                if !visited[n_idx] {
+                if !visited.get(n_idx) {
                     if safe_only && self.graph[neighbor].security_status < 0.45 {
                         continue;
                     }
-                    visited[n_idx] = true;
+                    visited.set(n_idx);
                     parent[n_idx] = Some(curr);
                     queue.push_back(neighbor);
                 }

@@ -7,13 +7,13 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-green.svg)](https://github.com/Flambello/eve-traveling-merchant/releases)
 
 > **Location-Centric Cross-Station Arbitrage Engine & Multi-Item Corridor Route Planner for EVE Online**  
-> Pure compiled Rust binary (`eve-merchant`) with zero runtime dependencies, maximum performance, and native desktop GUI / TUI interfaces.
+> Pure compiled Rust binary (`eve-merchant`) with zero runtime dependencies, maximum performance, and a native desktop graphical interface.
 
 ---
 
 ## What is EVE Traveling Merchant?
 
-Traditional trade finders often force you to haul single items, leave your hold mostly empty, or plan routes based on global galaxy spreads that require 40+ jumps through dangerous lowsec.
+Traditional trade finders often force you to haul single items, leave your cargo hold mostly empty, or plan routes based on global galaxy spreads that require 40+ jumps through dangerous lowsec.
 
 **EVE Traveling Merchant** solves this by:
 1. **Scanning from where you actually are**: Analyzes your home solar system plus all **stargate-connected adjacent neighbor regions** via CCP's live EVE Swagger Interface (ESI) API.
@@ -36,13 +36,14 @@ Traditional trade finders often force you to haul single items, leave your hold 
 - 🏛️ **Station Docking Pool Toggle**: Choose between **NPC Stations Only** (guaranteed 100% public docking access) or include **Player Citadels / Upwell Structures**.
 - 💡 **Real-Time SDE Autocomplete**: Type any solar system name for instant prefix/substring search, security rating pills, and parent region tags from the embedded universe SQLite export.
 - 🔔 **Audible Sound Alerts**: Freedesktop audio alerts and desktop notifications when deals yielding $\ge 100\%$ ROI are detected.
-- 🖥️ **Native Desktop GUI (Universal Default)**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting. Launches automatically by default on all platforms.
-- 💻 **Terminal Dashboard (TUI) [DEPRECATED]**: Keyboard-driven `ratatui` terminal interface. Deprecated across all platforms; will be removed in a future release.
-- 📊 **Headless Scripting & CSV Export [DEPRECATED]**: Console table output (deprecated) or direct CSV data export via `--export`.
+- 🖥️ **Native Desktop GUI**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting.
+- 📊 **Built-in CSV & Flight Sheet Export**: Export filtered deals, packed corridor manifests, and multi-leg chain routes directly to CSV files and clipboard via dedicated GUI buttons.
 
 ---
 
-## Installation
+## Installation & Getting Started
+
+EVE Traveling Merchant runs **completely out-of-the-box with zero initial configuration**. Both pre-compiled binaries and source builds use an embedded public Client ID (`5793fc7aa2cb49e385d3cfb5d52061c7`) registered with CCP. **Zero developer portal registration or API secret setup is required.**
 
 ### Option 1: Standalone Linux Release Binary (.tar.gz)
 
@@ -54,7 +55,7 @@ wget https://github.com/Flambello/eve-traveling-merchant/releases/latest/downloa
 
 # Extract archive
 tar -xzf eve-traveling-merchant-linux-x86_64.tar.gz
-cd eve-traveling-merchant-linux-x86_64
+cd eve-traveling-merchant
 
 # Launch the desktop GUI interface directly (launches GUI by default)
 ./eve-merchant      # or via launcher: ./start-gui.sh
@@ -66,7 +67,7 @@ Download the latest standalone `.zip` bundle for Windows x86_64 from [GitHub Rel
 
 1. Download `eve-traveling-merchant-windows-x86_64.zip`.
 2. Extract the archive into a folder of your choice.
-3. Double-click `eve-merchant.exe` (or `start-gui.bat`) to launch the native desktop GUI. No command-line flags required.
+3. Double-click `eve-merchant.exe` (or `start-gui.bat`) to launch the native desktop GUI. No command-line arguments or console windows are required.
 
 ### Option 3: Install via Cargo
 
@@ -77,13 +78,13 @@ eve-merchant
 
 ### Option 4: Build from Source
 
-**Prerequisites:** Rust 1.78+ (via [rustup](https://rustup.rs/)) and GCC/pkg-config headers:
+**Prerequisites:** Rust 1.78+ (via [rustup](https://rustup.rs/)) and standard C build tools:
 
 ```bash
-# Fedora Linux:
+# Fedora / RHEL Linux:
 sudo dnf install gcc pkg-config git -y
 
-# Ubuntu / Debian:
+# Ubuntu / Debian Linux:
 sudo apt install build-essential pkg-config git -y
 
 # Arch Linux:
@@ -96,121 +97,135 @@ sudo pacman -S base-devel git
 git clone https://github.com/Flambello/eve-traveling-merchant.git
 cd eve-traveling-merchant
 
-# Verify tests pass
+# Run test suites
 make test
 
 # Build optimized release binary
 make release
 
 # Run desktop GUI
-./target/release/eve-merchant --gui
+./target/release/eve-merchant
 ```
+
+---
+
+## 🔐 EVE Online SSO & Autopilot (Zero-Registration)
+
+EVE Traveling Merchant features direct in-game integration with the official CCP EVE Single Sign-On (SSO) v2 API:
+- 🛰️ **Live Pilot Location Sync**: Automatically queries your active character's solar system on startup and deal calculation.
+- 🎯 **1-Click Autopilot Waypoint Injection**: Transmits planned trade stops and multi-hop routes directly to your active in-game autopilot.
+
+### Works Out-of-the-Box (No Developer Registration Required)
+You **do not** need to register as a third-party developer on `developers.eveonline.com`. The application comes pre-configured with a public Client ID using the **OAuth 2.0 PKCE flow (RFC 7636)**:
+1. Open the **Settings** tab in the desktop GUI (`Alt+S`).
+2. Click **Authenticate Pilot via EVE SSO**.
+3. Your default web browser will open CCP's official login page (`login.eveonline.com`).
+4. Select your character and authorize access.
+5. The local application loopback listener (`http://127.0.0.1:37373/callback`) securely receives the authorization code, exchanges it for character tokens, and your pilot profile connects instantly.
+
+### Optional Developer Override (`EVE_CLIENT_ID`)
+Advanced users who prefer running their own registered CCP application can override the default public Client ID without modifying source code:
+- **Environment Variable**: `export EVE_CLIENT_ID="your_custom_client_id"` (see [.env.example](.env.example))
+- **Settings Tab**: Enter your custom Client ID directly into the GUI Settings panel.
+- **Local Config File**: Save your ID to `~/.config/eve-traveling-merchant/developer_client_id`.
+
+*(Note: In accordance with RFC 7636 for public desktop clients, **no client secret is required, supported, or used**).*
+
+---
+
+## 🛡️ Security, Privacy & Token Storage
+
+Your character credentials and New Eden assets are protected by design:
+- **Zero Secrets in Binaries**: No private API secrets, developer passwords, or client secrets are compiled into the binary or stored in git.
+- **Secure Local Storage**:
+  - **Linux**: OAuth tokens are saved strictly on your local machine at `~/.config/eve-traveling-merchant/sso_token.json` protected by restricted file permissions (`chmod 0600` on the file and `chmod 0700` on the directory).
+  - **Windows**: Tokens are saved at `%APPDATA%\eve-traveling-merchant\sso_token.json` within your protected Windows user profile.
+- **Ephemeral PKCE Derivation**: Cryptographic code verifiers and SHA-256 challenges are generated in-memory per session using system CSPRNG (`ring`) and never logged.
+- **In-Memory Credential Redaction**: Access tokens and refresh tokens are masked as `[REDACTED]` in internal debugging representations and structured application logs.
+- **Minimal Read-Only Scopes**: The application requests only the minimum permissions necessary:
+  - `esi-location.read_location.v1` (reads current system)
+  - `esi-location.read_ship_type.v1` (reads current active ship)
+  - `esi-ui.write_waypoint.v1` (injects autopilot destination)
+- The application **never** requests or accesses wallet balances, asset registries, character skills, private EveMail, or market placement scopes.
 
 ---
 
 ## Usage Guide
 
-### 1. Native Desktop GUI (Default)
+### Launching the Desktop GUI
 
-Launch via desktop application launcher or terminal:
+Launch via your desktop application launcher, application menu, or terminal:
 
 ```bash
 ./start-gui.sh
-# or: eve-merchant --gui
+# or simply:
+./eve-merchant
 ```
 
 - **Top Bar Controls**: Select Ship profile (Big / Small), type starting system with real-time autocomplete, toggle adjacent regions, and click **⚡ SCAN MARKET NOW**.
 - **Interactive Dossier**: Click any deal row to expand exact buy/sell stations, volume, capital required, and 1-click copy buttons (`📋 Item`, `📋 Buy Station`, `📋 Sell Station`).
 - **📦 Packed Manifests Tab**: View knapsack cargo lists grouping multiple items into unified origin-destination flights. Use `📋 Shopping List` to copy item names and quantities for in-game multi-buy.
 - **🔗 Chain Route Plotter**: Configure maximum legs (1–8) and detour tolerance (0–5 jumps) to plot multi-hop trading expeditions. Click `📋 Autopilot Trail` to paste the waypoint sequence directly into EVE chat.
-
-### 2. Terminal Interactive Mode (TUI)
-
-```bash
-eve-merchant --tui
-```
-
-**Keybindings:**
-- `[Tab]` — Switch between Deals Table, Planned Route, and Settings
-- `[↑] / [k]` — Select previous deal
-- `[↓] / [j]` — Select next deal
-- `[q] / [Esc]` — Quit
-
-### 3. Headless Scripting & Automation
-
-```bash
-# Scan starting from Jita with Big Hauler (outputs formatted table)
-eve-merchant --ship big --system Jita --no-ui
-
-# Scan safe highsec routes with Small Hauler starting from Amarr
-eve-merchant --ship small --system Amarr --safe --no-ui
-
-# Scan specific regions (The Forge + Domain) and show top 50 deals
-eve-merchant --regions 10000002,10000043 --top 50 --no-ui
-
-# Export ranked deals to CSV file
-eve-merchant --ship big --system Jita --export deals.csv
-```
+- **📊 CSV Export**: Dedicated 1-click buttons to export filtered deals and manifests to CSV files with clipboard integration.
 
 ---
 
-## CLI Reference
+## Configuration Files & Templates
 
-| Flag | Default | Description |
-|---|---|---|
-| `--gui` | `true` | Force desktop GUI window mode (`egui` native window; default on all platforms) |
-| `--tui` | `false` | **[DEPRECATED]** Force terminal TUI mode (`ratatui`) |
-| `--no-ui` | `false` | **[DEPRECATED]** Disable interactive interfaces (GUI & TUI) and output directly to console |
-| `--no-tui` | `false` | **[DEPRECATED]** Disable interactive TUI and output directly to console |
-| `--auto-refresh` | `false` | Automatically refresh market data every 5 minutes in GUI mode |
-| `-s, --ship <SHIP>` | `big` | Ship profile (`big`: 60k m³/500M or `small`: 30k m³/50M) |
-| `--system <SYSTEM>` | `Jita` | Starting solar system name |
-| `--adjacent-regions` | `true` | Automatically scan stargate-connected neighbor regions |
-| `--regions <IDS>` | `auto` | Comma-separated region IDs (overrides adjacent region scan) |
-| `--safe` | `true` | Avoid lowsec/nullsec gates (Highsec only) |
-| `--unsafe-routes` | `false` | Allow lowsec and nullsec routes |
-| `--npc-only` | `true` | Restrict search strictly to NPC stations (preferred) |
-| `--allow-structures` | `false` | Include player-owned Citadels / Upwell structures |
-| `--min-profit <ISK>` | `1,000,000` | Minimum net profit in ISK |
-| `--min-spread <PCT>` | `3.0` | Minimum gross price spread (%) |
-| `--min-roi <PCT>` | `10.0` | Enforced minimum net ROI % after taxes |
-| `-t, --top <N>` | `25` | Number of deals in CLI summary |
-| `--max-stops <N>` | `5` | Maximum stops in planned route |
-| `--route` | `false` | Print planned multi-stop route in CLI mode |
-| `--export <PATH>` | — | Export discovered deals to CSV file |
-| `--update-sde` | — | Force re-download / update of SDE SQLite database |
+The application creates its configuration file automatically upon first launch:
+- **Linux**: `~/.config/eve-traveling-merchant/config.toml` (with legacy fallback to `~/.config/eve-trade-scout/config.toml`)
+- **Windows**: `%APPDATA%\eve-traveling-merchant\config.toml`
+
+Reference templates are included in the repository:
+- **[.env.example](.env.example)**: Environment variable template documenting optional overrides such as `EVE_CLIENT_ID` and `RUST_LOG`.
+- **[config.example.toml](config.example.toml)**: Fully annotated TOML configuration template detailing ship profiles, scan settings, tax rates, and SSO callback options.
 
 ---
 
-## Packaging & Distribution
+## 🛠️ Build & Distribution Guide
 
-### Building the Standalone Linux Tarball Locally
+### Linux Compilation & Bundling
 
 ```bash
-# Compile optimized release binary and assemble distribution bundle
+# Prerequisites (Fedora / RHEL):
+sudo dnf install -y gcc pkg-config git rust cargo desktop-file-utils tar gzip
+
+# Prerequisites (Ubuntu / Debian):
+sudo apt install -y build-essential pkg-config git desktop-file-utils tar gzip
+
+# Build optimized release binary
+cargo build --release --bin eve-merchant
+
+# Assemble standalone distributable Linux tarball (.tar.gz) and SHA256 checksums
 make dist
 
 # Inspect created archive
 tar -ztvf eve-traveling-merchant-linux-x86_64.tar.gz
 ```
 
-### Building the Windows Standalone Bundle Locally
+### Windows Compilation & Bundling
 
-Using Windows PowerShell:
+#### Native Windows Build (PowerShell)
 ```powershell
-# Compile optimized binary
+# Build optimized release binary (compiled with windows_subsystem = "windows" to prevent console popup)
 cargo build --release --bin eve-merchant
 
-# Assemble portable zip
+# Assemble portable standalone zip archive
 $Dist = "eve-traveling-merchant-windows-x86_64"
 New-Item -ItemType Directory -Force -Path $Dist
-Copy-Item "target\release\eve-merchant.exe", "README.md", "LICENSE", "CHANGELOG.md" -Destination $Dist
+Copy-Item "target\release\eve-merchant.exe", "README.md", "LICENSE", "CHANGELOG.md", "start-gui.bat" -Destination $Dist
 Compress-Archive -Path "$Dist\*" -DestinationPath "$Dist.zip" -Force
 ```
 
-Cross-compiling from Linux using MinGW-w64:
+#### Cross-Compiling for Windows from Linux (MinGW-w64)
 ```bash
+# Install MinGW toolchain (Fedora)
+sudo dnf install mingw64-gcc -y
+
+# Add Windows Rust target
 rustup target add x86_64-pc-windows-gnu
+
+# Compile Windows binary with embedded SQLite
 cargo build --release --target x86_64-pc-windows-gnu --bin eve-merchant
 ```
 

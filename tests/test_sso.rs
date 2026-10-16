@@ -560,7 +560,7 @@ fn test_developer_client_id_resolution() {
     let resolved_from_legacy = resolve_client_id("").unwrap();
     assert_eq!(resolved_from_legacy, "legacy_file_client_id_000");
 
-    // 5. Test unconfigured state when no credentials exist
+    // 5. Test unconfigured state when no credentials exist - falls back to DEFAULT_PUBLIC_CLIENT_ID
     std::fs::remove_file(&legacy_file_path).expect("Must remove legacy config file");
 
     let unconfigured = get_developer_client_id();
@@ -569,15 +569,20 @@ fn test_developer_client_id_resolution() {
         "Must return None when neither env var nor config file exists"
     );
 
-    let err = resolve_client_id("");
-    assert!(
-        err.is_err(),
-        "Must fail when no client ID is provided and no developer ID is configured"
+    use eve_trade_scout::esi::sso::DEFAULT_PUBLIC_CLIENT_ID;
+    let default_resolved = resolve_client_id("").unwrap();
+    assert_eq!(
+        default_resolved, DEFAULT_PUBLIC_CLIENT_ID,
+        "Must fall back to DEFAULT_PUBLIC_CLIENT_ID when no override exists"
     );
-    let err_msg = err.unwrap_err().to_string();
+
+    // 6. Test invalid custom client ID format is rejected
+    let bad_err = resolve_client_id("invalid client id with spaces!");
+    assert!(bad_err.is_err(), "Must reject invalid client ID format");
+    let err_msg = bad_err.unwrap_err().to_string();
     assert!(
-        err_msg.contains("No EVE Application Client ID configured"),
-        "Error message should explain missing client ID: {}",
+        err_msg.contains("Invalid EVE Application Client ID format"),
+        "Error message should explain invalid client ID format: {}",
         err_msg
     );
 
@@ -676,7 +681,7 @@ async fn test_ensure_fresh_token_unexpired_skips_network() {
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
+async fn test_ensure_fresh_token_expired_invalid_client_id_returns_error() {
     use eve_trade_scout::esi::sso::ensure_fresh_token;
 
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -697,20 +702,55 @@ async fn test_ensure_fresh_token_expired_without_client_id_returns_error() {
         client_id: None,
     };
 
-    let res = ensure_fresh_token(&client, "", &mut expired_token).await;
+    // Explicitly invalid client ID format must fail validation
+    let res = ensure_fresh_token(
+        &client,
+        "invalid client ID with spaces!",
+        &mut expired_token,
+    )
+    .await;
     assert!(
         res.is_err(),
-        "Must fail when token is expired and no client ID can be resolved"
+        "Must fail when custom client ID format is invalid"
     );
     let err_msg = res.unwrap_err().to_string();
-    assert!(err_msg.contains("No EVE Application Client ID configured"));
+    assert!(err_msg.contains("Invalid EVE Application Client ID format"));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
-    use eve_trade_scout::esi::sso::ensure_fresh_token;
+    use eve_trade_scout::esi::sso::ensure_fresh_token_at_url;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let req_str = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(req_str.contains("grant_type=refresh_token"));
+        assert!(req_str.contains("refresh_token=invalid_refresh_token_payload"));
+
+        let body =
+            r#"{"error":"invalid_request","error_description":"Invalid refresh token payload"}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
+    });
 
     let client = reqwest::Client::new();
     let mut expired_token = SsoToken {
@@ -723,11 +763,21 @@ async fn test_ensure_fresh_token_expired_invalid_refresh_fails() {
         client_id: Some("mock_client_id".to_string()),
     };
 
-    let res = ensure_fresh_token(&client, "mock_client_id", &mut expired_token).await;
+    let res =
+        ensure_fresh_token_at_url(&client, &mock_url, "mock_client_id", &mut expired_token).await;
     assert!(
         res.is_err(),
         "Refreshing expired token with invalid credentials must return Err"
     );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Invalid refresh token payload"),
+        "Error message must contain CCP error description: {}",
+        err_msg
+    );
+    assert_eq!(expired_token.access_token, "expired_access");
+
+    server_task.await.unwrap();
 }
 
 #[test]
@@ -978,6 +1028,918 @@ async fn test_ensure_fresh_token_at_url_handles_invalid_grant_error() {
     assert!(res.is_err(), "Must return error on invalid_grant");
     let err_msg = res.unwrap_err().to_string();
     assert!(err_msg.contains("EVE SSO session has expired or was revoked"));
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_dry_run_pkce_auth_flow_with_public_client_id() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_dry_run_pkce_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+    let _env_unset = EnvGuard::remove("EVE_CLIENT_ID");
+
+    use eve_trade_scout::esi::sso::{
+        exchange_code_for_token_at_url, listen_for_auth_code, DEFAULT_PUBLIC_CLIENT_ID,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // 1. Resolve client ID with zero configuration or overrides -> resolves public client ID
+    let client_id =
+        eve_trade_scout::esi::sso::resolve_client_id("").expect("Must resolve default public ID");
+    assert_eq!(client_id, DEFAULT_PUBLIC_CLIENT_ID);
+
+    // 2. Generate cryptographic PKCE verifier and S256 challenge
+    let (code_verifier, code_challenge) = generate_pkce_pair().expect("Must generate PKCE pair");
+    assert_eq!(code_verifier.len(), 64);
+
+    // 3. Construct authorization URL
+    let state = "test_dry_run_state_456";
+    let auth_url = build_authorize_url(&client_id, 37373, state, &code_challenge);
+    assert!(auth_url.contains(&format!("client_id={}", DEFAULT_PUBLIC_CLIENT_ID)));
+    assert!(auth_url.contains(&format!("code_challenge={}", code_challenge)));
+    assert!(auth_url.contains("code_challenge_method=S256"));
+    assert!(auth_url.contains("response_type=code"));
+
+    // 4. Bind ephemeral loopback listener and simulate browser callback
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let loopback_port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener); // Release so listen_for_auth_code can bind it
+
+    let auth_listen_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            loopback_port,
+            "test_dry_run_state_456",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    // Small delay to ensure listener is accepting
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Simulate browser redirect to localhost callback
+    let mut browser_stream = tokio::net::TcpStream::connect(("127.0.0.1", loopback_port))
+        .await
+        .expect("Must connect to loopback callback listener");
+    let callback_request = format!(
+        "GET /callback?code=mock_dry_run_auth_code_999&state=test_dry_run_state_456 HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        loopback_port
+    );
+    browser_stream
+        .write_all(callback_request.as_bytes())
+        .await
+        .expect("Write callback request failed");
+
+    let mut browser_resp_buf = vec![0u8; 2048];
+    let n = browser_stream
+        .read(&mut browser_resp_buf)
+        .await
+        .expect("Read callback response failed");
+    let browser_resp_str = String::from_utf8_lossy(&browser_resp_buf[..n]);
+    assert!(
+        browser_resp_str.starts_with("HTTP/1.1 200 OK"),
+        "Callback listener must return 200 OK HTML"
+    );
+    assert!(browser_resp_str.contains("Character Connected!"));
+
+    let received_auth_code = auth_listen_task
+        .await
+        .expect("Listener task panicked")
+        .expect("Listener must successfully extract code");
+    assert_eq!(received_auth_code, "mock_dry_run_auth_code_999");
+
+    // 5. Spin up mock CCP token endpoint to verify token exchange payload
+    let token_server_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind mock token server");
+    let token_server_addr = token_server_listener.local_addr().unwrap();
+    let mock_token_url = format!("http://{}/v2/oauth/token", token_server_addr);
+
+    let verifier_clone = code_verifier.clone();
+    let challenge_clone = code_challenge.clone();
+    let token_server_task = tokio::spawn(async move {
+        let (mut socket, _) = token_server_listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 4096];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        // Verify that the request uses POST /v2/oauth/token and compliant User-Agent
+        assert!(request_str.starts_with("POST /v2/oauth/token"));
+        assert!(request_str.contains("user-agent: eve-trade-scout/0.1.0"));
+        assert!(request_str.contains("https://github.com/Flambello/eve-traveling-merchant"));
+
+        // Verify PKCE token exchange form parameters
+        assert!(request_str.contains("grant_type=authorization_code"));
+        assert!(request_str.contains(&format!("client_id={}", DEFAULT_PUBLIC_CLIENT_ID)));
+        assert!(request_str.contains("code=mock_dry_run_auth_code_999"));
+
+        // Extract code_verifier parameter from HTTP POST body
+        let body_part = request_str.split("\r\n\r\n").nth(1).unwrap_or("");
+        let mut received_verifier = None;
+        for pair in body_part.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == "code_verifier" {
+                    received_verifier = Some(v.to_string());
+                }
+            }
+        }
+        let verifier = received_verifier.expect("POST body must contain code_verifier parameter");
+        assert_eq!(verifier, verifier_clone);
+
+        // Core RFC 7636 PKCE S256 Cryptographic Verification:
+        // Hash received code_verifier with SHA-256 and Base64URL-encode without padding
+        let computed_challenge =
+            URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()).as_ref());
+        assert_eq!(
+            computed_challenge, challenge_clone,
+            "Mock server must cryptographically verify that BASE64URL(SHA256(code_verifier)) matches authorization code_challenge"
+        );
+
+        // In PKCE public client flow, NO client_secret must ever be present
+        assert!(
+            !request_str.contains("client_secret"),
+            "Public client flow must never send client_secret"
+        );
+
+        // Generate mock valid JWT with character name and character ID
+        let payload = serde_json::json!({
+            "name": "Public PKCE Explorer",
+            "sub": "CHARACTER:EVE:2119999999"
+        });
+        let header_b64 = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"RS256\",\"typ\":\"JWT\"}");
+        let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+        let mock_jwt = format!("{}.{}.mock_signature_bytes", header_b64, payload_b64);
+
+        let body = serde_json::json!({
+            "access_token": mock_jwt,
+            "token_type": "Bearer",
+            "expires_in": 1200,
+            "refresh_token": "mock_refresh_token_xyz"
+        })
+        .to_string();
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write token response failed");
+    });
+
+    let client = reqwest::Client::new();
+    let token = exchange_code_for_token_at_url(
+        &client,
+        &mock_token_url,
+        &client_id,
+        &received_auth_code,
+        &code_verifier,
+        loopback_port,
+    )
+    .await
+    .expect("Token exchange must succeed without client secret");
+
+    assert_eq!(token.character_name, "Public PKCE Explorer");
+    assert_eq!(token.character_id, 2119999999);
+    assert_eq!(token.refresh_token, "mock_refresh_token_xyz");
+    assert_eq!(
+        token.client_id.as_deref(),
+        Some(DEFAULT_PUBLIC_CLIENT_ID),
+        "Saved token must retain the public Client ID"
+    );
+    assert!(
+        !token.is_expired(),
+        "Newly exchanged token with 1200s TTL must not be expired"
+    );
+
+    let _ = token_server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_pkce_token_exchange_rejects_invalid_code_verifier() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_pkce_mismatch_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::{exchange_code_for_token_at_url, DEFAULT_PUBLIC_CLIENT_ID};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (_, valid_challenge) = generate_pkce_pair().expect("Must generate valid PKCE pair");
+
+    let token_server_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind mock token server");
+    let token_server_addr = token_server_listener.local_addr().unwrap();
+    let mock_token_url = format!("http://{}/v2/oauth/token", token_server_addr);
+
+    let expected_challenge = valid_challenge.clone();
+    let token_server_task = tokio::spawn(async move {
+        let (mut socket, _) = token_server_listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 4096];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        let body_part = request_str.split("\r\n\r\n").nth(1).unwrap_or("");
+        let mut received_verifier = None;
+        for pair in body_part.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                if k == "code_verifier" {
+                    received_verifier = Some(v.to_string());
+                }
+            }
+        }
+        let verifier = received_verifier.expect("POST body must contain code_verifier parameter");
+
+        // Compute hash of received verifier
+        let computed = URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()).as_ref());
+        if computed != expected_challenge {
+            let body = r#"{"error":"invalid_grant","error_description":"PKCE code verifier does not match challenge"}"#;
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("Write error response failed");
+        } else {
+            panic!("Mock server expected mismatched verifier in negative test case!");
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let tampered_verifier = "tampered_code_verifier_1234567890123456789012345678901234567890";
+    let res = exchange_code_for_token_at_url(
+        &client,
+        &mock_token_url,
+        DEFAULT_PUBLIC_CLIENT_ID,
+        "mock_auth_code_123",
+        tampered_verifier,
+        37373,
+    )
+    .await;
+
+    assert!(
+        res.is_err(),
+        "Exchange must fail when verifier does not match challenge"
+    );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("PKCE code verifier does not match challenge"),
+        "Error message must specify PKCE challenge mismatch: {}",
+        err_msg
+    );
+
+    let _ = token_server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_cross_platform_browser_command_syntax() {
+    use eve_trade_scout::esi::sso::build_browser_command_for_os;
+
+    let test_url = "https://login.eveonline.com/v2/oauth/authorize?test=1&param=abc";
+
+    // Validate Windows command builder syntax from production function
+    let win_cmd = build_browser_command_for_os("windows", test_url)
+        .expect("Must build windows browser command");
+    assert_eq!(win_cmd.get_program().to_string_lossy(), "rundll32");
+    let win_args: Vec<String> = win_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(win_args, vec!["url.dll,FileProtocolHandler", test_url]);
+
+    // Validate Linux command builder syntax from production function
+    let linux_cmd =
+        build_browser_command_for_os("linux", test_url).expect("Must build linux browser command");
+    assert_eq!(linux_cmd.get_program().to_string_lossy(), "xdg-open");
+    let linux_args: Vec<String> = linux_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(linux_args, vec![test_url]);
+
+    // Validate macOS command builder syntax from production function
+    let mac_cmd =
+        build_browser_command_for_os("macos", test_url).expect("Must build macos browser command");
+    assert_eq!(mac_cmd.get_program().to_string_lossy(), "open");
+    let mac_args: Vec<String> = mac_cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(mac_args, vec![test_url]);
+
+    // Validate unsupported OS returns actionable Err
+    let unsupported = build_browser_command_for_os("solaris", test_url);
+    assert!(unsupported.is_err());
+    assert!(unsupported
+        .unwrap_err()
+        .to_string()
+        .contains("Unsupported target operating system"));
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_addr_in_use_actionable_error() {
+    // Bind a real socket on loopback to occupy an ephemeral port
+    let occupying_socket =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("Must bind ephemeral port");
+    let occupied_port = occupying_socket
+        .local_addr()
+        .expect("Must have local addr")
+        .port();
+
+    let res = eve_trade_scout::esi::sso::listen_for_auth_code(
+        occupied_port,
+        "dummy_state",
+        std::time::Duration::from_millis(50),
+    )
+    .await;
+
+    assert!(res.is_err(), "Must fail when port is already bound");
+    let err_str = res.unwrap_err().to_string();
+    assert!(
+        err_str.contains(&format!(
+            "Local port {} is already in use by another application",
+            occupied_port
+        )),
+        "Error message must be actionable and specify the conflicting port, got: {}",
+        err_str
+    );
+    assert!(
+        err_str.contains(
+            "Please close conflicting applications or configure an alternate callback port"
+        ),
+        "Error message must provide user guidance on how to resolve the collision, got: {}",
+        err_str
+    );
+}
+
+#[tokio::test]
+async fn test_esi_user_agent_header_compliance() {
+    use eve_trade_scout::esi::client::USER_AGENT_VAL as CLIENT_UA;
+    use eve_trade_scout::esi::sso::USER_AGENT_VAL as SSO_UA;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Both constants must match and identify app, version, repository, and maintainer contact
+    assert_eq!(CLIENT_UA, SSO_UA);
+    assert!(
+        CLIENT_UA.starts_with("eve-trade-scout/0.1.0"),
+        "User-Agent must start with app name and version"
+    );
+    assert!(
+        CLIENT_UA.contains("https://github.com/Flambello/eve-traveling-merchant"),
+        "User-Agent must contain repository link"
+    );
+    assert!(
+        CLIENT_UA.contains("contact: Flambello"),
+        "User-Agent must contain maintainer contact"
+    );
+
+    // Wire verification: verify that outgoing HTTP requests transmit the User-Agent header
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind listener");
+    let addr = listener.local_addr().unwrap();
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let req_str = String::from_utf8_lossy(&buf[..n]);
+
+        let has_expected_ua = req_str.lines().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("user-agent:") && line.contains(SSO_UA)
+        });
+        assert!(
+            has_expected_ua,
+            "Wire request must transmit CCP-compliant User-Agent header: {}",
+            req_str
+        );
+
+        let body = r#"{"error":"invalid_request"}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = socket.write_all(resp.as_bytes()).await;
+    });
+
+    let client = reqwest::Client::new();
+    let _ = eve_trade_scout::esi::sso::exchange_code_for_token_at_url(
+        &client,
+        &mock_url,
+        "dummy_client",
+        "dummy_code",
+        "dummy_verifier",
+        37373,
+    )
+    .await;
+
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_immediate_cancellation_on_oauth_error() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            port,
+            "test_expected_state",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+
+    let req = format!(
+        "GET /callback?error=access_denied&error_description=The+user+denied+the+request&state=test_expected_state HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+
+    let mut resp_buf = vec![0u8; 2048];
+    let n = stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+
+    // 1. Verify defensive HTTP security headers are present in response
+    assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp_str.contains("X-Frame-Options: DENY"));
+    assert!(resp_str.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(resp_str.contains("X-Content-Type-Options: nosniff"));
+    assert!(resp_str.contains("Cache-Control: no-store"));
+    assert!(resp_str.contains("Authorization Cancelled"));
+
+    // 2. Verify listener returned immediate error without timing out
+    let auth_res = auth_task.await.expect("Task panicked");
+    assert!(auth_res.is_err(), "Must return error on access_denied");
+    let err_msg = auth_res.unwrap_err().to_string();
+    assert!(err_msg.contains("access_denied"));
+    assert!(err_msg.contains("The user denied the request"));
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_defensive_http_headers_on_success() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            port,
+            "secret_csrf_state_123",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+
+    let req = format!(
+        "GET /callback?code=mock_success_code&state=secret_csrf_state_123 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+
+    let mut resp_buf = vec![0u8; 2048];
+    let n = stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+
+    assert!(resp_str.starts_with("HTTP/1.1 200 OK"));
+    assert!(resp_str.contains("X-Frame-Options: DENY"));
+    assert!(resp_str.contains("Content-Security-Policy: default-src 'none'"));
+    assert!(resp_str.contains("X-Content-Type-Options: nosniff"));
+    assert!(resp_str.contains("Cache-Control: no-store"));
+    assert!(resp_str.contains("Character Connected!"));
+
+    let code = auth_task
+        .await
+        .expect("Task panicked")
+        .expect("Must extract code");
+    assert_eq!(code, "mock_success_code");
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_rejects_invalid_host_and_non_get() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(port, "valid_state_abc", std::time::Duration::from_secs(5)).await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 1. Non-GET request should be rejected with 400 Bad Request
+    let mut bad_method_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let bad_method_req = format!(
+        "POST /callback?code=stolen_code&state=valid_state_abc HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    bad_method_stream
+        .write_all(bad_method_req.as_bytes())
+        .await
+        .unwrap();
+    let mut resp_buf = vec![0u8; 1024];
+    let n = bad_method_stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+    assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
+
+    // 2. DNS rebinding attempt with attacker Host header should be rejected
+    let mut rebinding_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let rebinding_req = format!(
+        "GET /callback?code=stolen_code&state=valid_state_abc HTTP/1.1\r\nHost: evil-attacker-domain.com:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    rebinding_stream
+        .write_all(rebinding_req.as_bytes())
+        .await
+        .unwrap();
+    let mut resp_buf2 = vec![0u8; 1024];
+    let n2 = rebinding_stream.read(&mut resp_buf2).await.unwrap();
+    let resp_str2 = String::from_utf8_lossy(&resp_buf2[..n2]);
+    assert!(resp_str2.starts_with("HTTP/1.1 400 Bad Request"));
+
+    // 3. Legitimate request should succeed after rejecting attacks
+    let mut legit_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let legit_req = format!(
+        "GET /callback?code=verified_code_xyz&state=valid_state_abc HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    legit_stream.write_all(legit_req.as_bytes()).await.unwrap();
+    let mut resp_buf3 = vec![0u8; 2048];
+    let n3 = legit_stream.read(&mut resp_buf3).await.unwrap();
+    let resp_str3 = String::from_utf8_lossy(&resp_buf3[..n3]);
+    assert!(resp_str3.starts_with("HTTP/1.1 200 OK"));
+
+    let code = auth_task
+        .await
+        .expect("Task panicked")
+        .expect("Must extract code");
+    assert_eq!(code, "verified_code_xyz");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_ensure_fresh_token_opts_force_bypasses_expiration_check() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_force_refresh_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::ensure_fresh_token_opts;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let request_str = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(request_str.starts_with("POST /v2/oauth/token"));
+        assert!(request_str.contains("grant_type=refresh_token"));
+        assert!(request_str.contains("refresh_token=my_valid_refresh_token"));
+
+        let body =
+            r#"{"access_token":"forced_fresh_access_jwt","token_type":"Bearer","expires_in":1200}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
+    });
+
+    let client = reqwest::Client::new();
+    let mut token = SsoToken {
+        access_token: "existing_valid_token".to_string(),
+        refresh_token: "my_valid_refresh_token".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+
+    assert!(!token.needs_refresh(), "Token must not need normal refresh");
+
+    let res =
+        ensure_fresh_token_opts(&client, &mock_url, "test_client_id_val", &mut token, true).await;
+    assert!(
+        res.is_ok(),
+        "Forced token refresh must succeed: {:?}",
+        res.err()
+    );
+    assert_eq!(token.access_token, "forced_fresh_access_jwt");
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_get_character_location_recovers_from_401_via_transparent_token_refresh() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_location_401_retry_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::{get_character_location_with_token_opts, save_token};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Save initial token with unexpired timestamp to disk
+    let initial_token = SsoToken {
+        access_token: "stale_access_jwt_that_will_401".to_string(),
+        refresh_token: "valid_refresh_secret".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+    save_token(&initial_token).expect("Must save initial token");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_token_url = format!("http://{}/v2/oauth/token", addr);
+    let mock_esi_base = format!("http://{}", addr);
+
+    // Mock server handles 3 sequential requests:
+    // 1. GET /v1/characters/2112345678/location/ with stale token -> responds HTTP 401
+    // 2. POST /v2/oauth/token with refresh token -> responds HTTP 200 with new access token
+    // 3. GET /v1/characters/2112345678/location/ with new token -> responds HTTP 200 with location
+    let server_task = tokio::spawn(async move {
+        // Request 1: ESI returns 401
+        let (mut socket1, _) = listener.accept().await.expect("Accept 1 failed");
+        let mut buf1 = vec![0u8; 2048];
+        let n1 = socket1.read(&mut buf1).await.expect("Read 1 failed");
+        let req1 = String::from_utf8_lossy(&buf1[..n1]);
+        assert!(req1.starts_with("GET /v1/characters/2112345678/location/"));
+        assert!(req1.contains("stale_access_jwt_that_will_401"));
+
+        let resp1 = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"token expired\"}";
+        socket1
+            .write_all(resp1.as_bytes())
+            .await
+            .expect("Write 1 failed");
+        drop(socket1);
+
+        // Request 2: Token refresh
+        let (mut socket2, _) = listener.accept().await.expect("Accept 2 failed");
+        let mut buf2 = vec![0u8; 2048];
+        let n2 = socket2.read(&mut buf2).await.expect("Read 2 failed");
+        let req2 = String::from_utf8_lossy(&buf2[..n2]);
+        assert!(req2.starts_with("POST /v2/oauth/token"));
+        assert!(req2.contains("valid_refresh_secret"));
+
+        let token_body = r#"{"access_token":"brand_new_refreshed_access_jwt","token_type":"Bearer","expires_in":1200}"#;
+        let resp2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            token_body.len(),
+            token_body
+        );
+        socket2
+            .write_all(resp2.as_bytes())
+            .await
+            .expect("Write 2 failed");
+        drop(socket2);
+
+        // Request 3: ESI retried with new token
+        let (mut socket3, _) = listener.accept().await.expect("Accept 3 failed");
+        let mut buf3 = vec![0u8; 2048];
+        let n3 = socket3.read(&mut buf3).await.expect("Read 3 failed");
+        let req3 = String::from_utf8_lossy(&buf3[..n3]);
+        assert!(req3.starts_with("GET /v1/characters/2112345678/location/"));
+        assert!(req3.contains("brand_new_refreshed_access_jwt"));
+
+        let loc_body = r#"{"solar_system_id":30000142,"station_id":60003760}"#;
+        let resp3 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            loc_body.len(),
+            loc_body
+        );
+        socket3
+            .write_all(resp3.as_bytes())
+            .await
+            .expect("Write 3 failed");
+        drop(socket3);
+    });
+
+    let client = reqwest::Client::new();
+    let location_res = get_character_location_with_token_opts(
+        &client,
+        &mock_token_url,
+        &mock_esi_base,
+        "test_client_id_val",
+    )
+    .await;
+
+    assert!(
+        location_res.is_ok(),
+        "Must transparently recover from 401 and succeed on retry: {:?}",
+        location_res.err()
+    );
+    let location = location_res.unwrap();
+    assert_eq!(location.solar_system_id, 30000142);
+    assert_eq!(location.station_id, Some(60003760));
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_push_waypoints_recovers_from_401_via_transparent_token_refresh() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_push_401_retry_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    use eve_trade_scout::esi::sso::{push_waypoints_with_token_opts, save_token};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let initial_token = SsoToken {
+        access_token: "stale_token_before_autopilot".to_string(),
+        refresh_token: "valid_autopilot_refresh".to_string(),
+        expires_at: now_secs() + 1000,
+        token_type: "Bearer".to_string(),
+        character_id: 2112345678,
+        character_name: "Captain Trader".to_string(),
+        client_id: Some("test_client_id_val".to_string()),
+    };
+    save_token(&initial_token).expect("Must save initial token");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().expect("Must get local addr");
+    let mock_token_url = format!("http://{}/v2/oauth/token", addr);
+    let mock_waypoint_base = format!("http://{}/v2/user/ui/autopilot/waypoint/", addr);
+
+    let server_task = tokio::spawn(async move {
+        // Request 1: Waypoint injection returns 401
+        let (mut socket1, _) = listener.accept().await.expect("Accept 1 failed");
+        let mut buf1 = vec![0u8; 2048];
+        let n1 = socket1.read(&mut buf1).await.expect("Read 1 failed");
+        let req1 = String::from_utf8_lossy(&buf1[..n1]);
+        assert!(req1.starts_with("POST /v2/user/ui/autopilot/waypoint/"));
+        assert!(req1.contains("stale_token_before_autopilot"));
+
+        let resp1 = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"error\":\"token expired\"}";
+        socket1
+            .write_all(resp1.as_bytes())
+            .await
+            .expect("Write 1 failed");
+        drop(socket1);
+
+        // Request 2: Token refresh
+        let (mut socket2, _) = listener.accept().await.expect("Accept 2 failed");
+        let mut buf2 = vec![0u8; 2048];
+        let n2 = socket2.read(&mut buf2).await.expect("Read 2 failed");
+        let req2 = String::from_utf8_lossy(&buf2[..n2]);
+        assert!(req2.starts_with("POST /v2/oauth/token"));
+        assert!(req2.contains("valid_autopilot_refresh"));
+
+        let token_body =
+            r#"{"access_token":"renewed_autopilot_token","token_type":"Bearer","expires_in":1200}"#;
+        let resp2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            token_body.len(),
+            token_body
+        );
+        socket2
+            .write_all(resp2.as_bytes())
+            .await
+            .expect("Write 2 failed");
+        drop(socket2);
+
+        // Request 3: Waypoint injection retried with new token
+        let (mut socket3, _) = listener.accept().await.expect("Accept 3 failed");
+        let mut buf3 = vec![0u8; 2048];
+        let n3 = socket3.read(&mut buf3).await.expect("Read 3 failed");
+        let req3 = String::from_utf8_lossy(&buf3[..n3]);
+        assert!(req3.starts_with("POST /v2/user/ui/autopilot/waypoint/"));
+        assert!(req3.contains("renewed_autopilot_token"));
+
+        let resp3 = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+        socket3
+            .write_all(resp3.as_bytes())
+            .await
+            .expect("Write 3 failed");
+        drop(socket3);
+    });
+
+    let client = reqwest::Client::new();
+    let push_res = push_waypoints_with_token_opts(
+        &client,
+        &mock_token_url,
+        &mock_waypoint_base,
+        "test_client_id_val",
+        &[60003760],
+    )
+    .await;
+
+    assert!(
+        push_res.is_ok(),
+        "Must transparently recover from 401 and inject waypoint: {:?}",
+        push_res.err()
+    );
+    assert_eq!(push_res.unwrap(), 1);
 
     let _ = server_task.await;
     let _ = std::fs::remove_dir_all(&temp_dir);

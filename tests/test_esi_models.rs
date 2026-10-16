@@ -315,3 +315,129 @@ fn test_parse_http_expires_header() {
     assert!(invalid_fallback >= before + chrono::Duration::seconds(299));
     assert!(invalid_fallback <= after + chrono::Duration::seconds(301));
 }
+
+#[test]
+fn test_corrupted_etags_file_on_disk_graceful_recovery() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_corrupted_etags_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let etags_file = temp_dir.join("etags.json");
+    // Write corrupted non-JSON garbage to disk
+    std::fs::write(&etags_file, b"{{{{ corrupted invalid json payload !!!").unwrap();
+
+    // Initializing EsiClient must not crash or fail with deserialization error
+    let client_res = eve_trade_scout::esi::client::EsiClient::new(&temp_dir);
+    assert!(
+        client_res.is_ok(),
+        "EsiClient must gracefully handle corrupted etags.json on disk"
+    );
+
+    let client = client_res.unwrap();
+    // Saving cache should overwrite the corrupted file cleanly
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(client.save_cache())
+        .expect("save_cache must succeed");
+
+    let saved_content = std::fs::read_to_string(&etags_file).unwrap();
+    assert_eq!(
+        saved_content.trim(),
+        "{}",
+        "Corrupted etags.json must be replaced with valid empty JSON object"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_corrupted_cached_body_purged_on_fetch() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "eve_test_corrupt_body_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // Start a mock HTTP server to simulate the fresh ESI endpoint
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind test listener");
+    let addr = listener.local_addr().unwrap();
+    let mock_url = format!("http://{}/v1/markets/10000002/orders/", addr);
+
+    // Seed etags.json with a fresh TTL entry whose body_json is corrupted (wrong schema for MarketOrder)
+    let cache_key = format!("{}:all", mock_url);
+    let corrupted_stored = serde_json::json!({
+        cache_key: {
+            "etag": "\"corrupt-etag\"",
+            "expires": (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            "body_json": "[{\"order_id\": \"not_a_number\", \"type_id\": 34}]"
+        }
+    });
+    std::fs::write(
+        temp_dir.join("etags.json"),
+        serde_json::to_string(&corrupted_stored).unwrap(),
+    )
+    .unwrap();
+
+    let client = eve_trade_scout::esi::client::EsiClient::new(&temp_dir).unwrap();
+
+    // Mock server task returns a valid MarketOrder JSON array
+    let server_task = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 2048];
+        let n = socket.read(&mut buf).await.expect("Read failed");
+        let req_str = String::from_utf8_lossy(&buf[..n]);
+        assert!(req_str.starts_with("GET "));
+
+        let body = r#"[{"order_id":999888,"type_id":34,"location_id":60003760,"system_id":30000142,"volume_total":100,"volume_remain":100,"min_volume":1,"price":5.5,"is_buy_order":false,"duration":90,"issued":"2026-03-01T12:00:00Z","range":"region"}]"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Pages: 1\r\nETag: \"new-etag\"\r\nExpires: Tue, 13 Oct 2027 12:30:00 GMT\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("Write failed");
+    });
+
+    // Calling get_all_pages_opts will hit the corrupted cached entry, catch the deserialization error,
+    // purge it, and fetch from the mock server!
+    let orders: Vec<MarketOrder> = client
+        .get_all_pages_opts(&mock_url, &[], false)
+        .await
+        .expect(
+            "get_all_pages_opts must succeed by falling through to fresh fetch on corrupted cache",
+        );
+
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].order_id, 999888);
+    assert_eq!(orders[0].price, 5.5);
+
+    server_task.await.unwrap();
+
+    // Now save cache and verify etags.json no longer has the corrupted body
+    client.save_cache().await.unwrap();
+    let saved_content = std::fs::read_to_string(temp_dir.join("etags.json")).unwrap();
+    assert!(
+        !saved_content.contains("not_a_number"),
+        "Corrupted body must be evicted from cache"
+    );
+    assert!(
+        saved_content.contains("999888"),
+        "Fresh valid order must be saved in cache"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

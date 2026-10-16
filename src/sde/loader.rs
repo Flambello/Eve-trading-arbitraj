@@ -1,7 +1,6 @@
 use crate::error::ErrorCode;
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
-use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use rusqlite::{params, Connection, OpenFlags};
 use std::collections::HashMap;
@@ -473,7 +472,10 @@ impl SdeLoader {
             std::fs::create_dir_all(parent)?;
         }
 
-        println!(" [SDE] Downloading EVE Static Data Export from Fuzzwork...");
+        tracing::info!(
+            target: "eve_trade_scout",
+            "Downloading EVE Static Data Export from Fuzzwork..."
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
@@ -508,15 +510,6 @@ impl SdeLoader {
             }
         }
 
-        let total_size = resp.content_length().unwrap_or(150_000_000);
-        let pb = ProgressBar::new(total_size);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                .unwrap_or_else(|_| ProgressStyle::default_bar())
-                .progress_chars("#>-"),
-        );
-
         let temp_gz_path = dest_path.with_extension("sqlite.gz.part");
         let mut file = File::create(&temp_gz_path)?;
 
@@ -531,12 +524,13 @@ impl SdeLoader {
                 );
             }
             file.write_all(&chunk)?;
-            pb.inc(chunk.len() as u64);
         }
         file.flush()?;
-        pb.finish_with_message("Download complete! Decompressing...");
 
-        println!(" [SDE] Decompressing gzip archive into SQLite database...");
+        tracing::info!(
+            target: "eve_trade_scout",
+            "Decompressing gzip archive into SQLite database..."
+        );
         let compressed_file = File::open(&temp_gz_path)?;
         let decomp_res =
             Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
@@ -546,7 +540,11 @@ impl SdeLoader {
         }
         let _ = std::fs::remove_file(&temp_gz_path);
 
-        println!(" [SDE] Ready: {:?}", dest_path);
+        tracing::info!(
+            target: "eve_trade_scout",
+            path = ?dest_path,
+            "SDE database ready"
+        );
         Ok(())
     }
 

@@ -3,7 +3,7 @@
 All calls use base URL: `https://esi.evetech.net/latest/`
 
 No authentication is required for public market & universe endpoints.
-Always set header: `User-Agent: eve-trade-scout/1.0 (contact@yourname)` — CCP may block unidentified clients.
+Always set header: `User-Agent: eve-trade-scout/0.1.0 (https://github.com/Flambello/eve-traveling-merchant; contact: Flambello)` — CCP requires client identification and maintainer contact.
 
 ---
 
@@ -184,3 +184,20 @@ The `mapSolarSystemJumps` table is used to build the system graph for offline pa
 - **Max concurrent requests:** Keep to ≤ 10 parallel requests.
 - **Poll interval:** Never re-fetch a cached endpoint before its `Expires` time.
 - **ETag caching:** Store the `ETag` from each response; on next fetch send `If-None-Match: <etag>`. A `304 Not Modified` means data unchanged — reuse the cached data and don't count against rate limit.
+
+---
+
+## 8. Single Sign-On (SSO) v2 PKCE & Autopilot
+
+For live in-game character tracking and autopilot waypoint injection (`POST /v2/ui/autopilot/waypoint/`), authentication is performed via official CCP SSO v2 Public Client PKCE flow (RFC 7636).
+
+- **Embedded Public Client ID:** `5793fc7aa2cb49e385d3cfb5d52061c7` (works out-of-the-box, zero developer registration required)
+- **Optional Override:** `EVE_CLIENT_ID` environment variable or local config file (`~/.config/eve-traveling-merchant/developer_client_id`)
+- **Zero Client Secret:** RFC 7636 PKCE public client architecture requires **NO `CLIENT_SECRET`**; secrets are never required, accepted, or stored.
+- **Authorize URL:** `https://login.eveonline.com/v2/oauth/authorize` (`response_type=code`, `code_challenge_method=S256`)
+- **Token URL:** `https://login.eveonline.com/v2/oauth/token` (`grant_type=authorization_code` / `grant_type=refresh_token`)
+- **Callback Listener:** Loopback `http://127.0.0.1:37373/callback`
+- **Scopes:** `esi-ui.write_waypoint.v1`, `esi-location.read_location.v1`, `esi-location.read_ship_type.v1`
+- **Local Token Storage:** Persisted to `~/.config/eve-traveling-merchant/sso_token.json` with POSIX `0600`/`0700` permissions (or `%APPDATA%\eve-traveling-merchant\sso_token.json` on Windows). Tokens are masked as `[REDACTED]` in debug representations.
+
+

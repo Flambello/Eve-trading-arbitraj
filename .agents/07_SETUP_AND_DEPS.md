@@ -181,6 +181,11 @@ home_system = "Jita"
 [scan]
 regions = [10000002]     # The Forge; add more region IDs
 safe_route_only = true
+npc_stations_only = true
+scan_adjacent_regions = true
+auto_refresh = false
+sound_alerts = true
+sound_min_roi_pct = 100.0
 
 [filters]
 min_profit_isk     = 1_000_000.0
@@ -194,7 +199,21 @@ sales_tax_pct  = 8.0
 [cache]
 directory        = "cache"
 sde_max_age_days = 30
+
+[sso]
+client_id          = ""           # Optional custom Client ID override (empty = built-in public ID)
+callback_port      = 37373        # Loopback callback port
+auto_sync_location = false        # Automatically query character location on startup
 ```
+
+### Out-of-the-Box EVE SSO Configuration (Zero Registration)
+
+EVE Traveling Merchant uses the official CCP OAuth 2.0 PKCE flow (RFC 7636).
+- **Public Client ID**: Built-in `5793fc7aa2cb49e385d3cfb5d52061c7` requires zero developer registration for pilots.
+- **Zero Secrets**: No `CLIENT_SECRET` is used, accepted, or needed.
+- **Optional Override**: Advanced users can override the Client ID via `EVE_CLIENT_ID` environment variable (see `.env.example`) or `developer_client_id` file.
+- **Token Storage**: Saved to `~/.config/eve-traveling-merchant/sso_token.json` with POSIX `0600`/`0700` restricted permissions.
+
 
 ---
 

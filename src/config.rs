@@ -99,12 +99,19 @@ pub struct CacheConfig {
     pub sde_max_age_days: u32,
 }
 
+/// EVE Single Sign-On (SSO) v2 PKCE OAuth2 settings.
+///
+/// Public client flow: No client secret is required or used. The public Client ID
+/// is embedded in the application binary by default (`DEFAULT_PUBLIC_CLIENT_ID`).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SsoConfig {
+    /// Optional custom Client ID override. When empty, defaults to the embedded public Client ID.
     #[serde(default)]
     pub client_id: String,
+    /// Loopback TCP callback port for browser authorization (default: 37373).
     #[serde(default = "default_callback_port")]
     pub callback_port: u16,
+    /// Whether to automatically query character location on startup and Deal calculation.
     #[serde(default)]
     pub auto_sync_location: bool,
 }
@@ -279,4 +286,22 @@ impl UserConfig {
     pub fn ship_profile(&self) -> Result<ShipProfile> {
         profile_from_str(&self.ship.profile)
     }
+}
+
+/// Parses and validates a comma-separated list of numeric region IDs.
+///
+/// Returns `Ok(Vec<u32>)` if valid numeric IDs were parsed, or an error if the input
+/// is empty, whitespace-only, or contains no valid numeric IDs.
+pub fn parse_region_ids(input: &str) -> Result<Vec<u32>> {
+    let parsed: Vec<u32> = input
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .collect();
+    if parsed.is_empty() {
+        anyhow::bail!(
+            "Invalid regions argument '{}'. Expected comma-separated numeric region IDs (e.g. '10000002, 10000043').",
+            input
+        );
+    }
+    Ok(parsed)
 }

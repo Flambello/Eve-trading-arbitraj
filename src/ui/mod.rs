@@ -1,9 +1,6 @@
 pub mod gui;
-pub mod tui;
 
 pub use gui::{run_desktop_gui, DesktopApp, StartupMsg, StartupProgress};
-#[allow(deprecated)]
-pub use tui::run_tui;
 
 /// Formats an ISK unit price into a human-readable abbreviation (e.g. 1.25B, 45.00M, 500.00k, 12.50).
 pub fn format_unit_price(val: f64) -> String {

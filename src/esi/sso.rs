@@ -12,16 +12,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+pub const DEFAULT_PUBLIC_CLIENT_ID: &str = "5793fc7aa2cb49e385d3cfb5d52061c7";
 pub const DEFAULT_CALLBACK_PORT: u16 = 37373;
 const SSO_AUTH_URL: &str = "https://login.eveonline.com/v2/oauth/authorize";
 const SSO_TOKEN_URL: &str = "https://login.eveonline.com/v2/oauth/token";
 const ESI_WAYPOINT_URL: &str = "https://esi.evetech.net/v2/ui/autopilot/waypoint";
 const ESI_SCOPES: &str =
     "esi-ui.write_waypoint.v1 esi-location.read_location.v1 esi-location.read_ship_type.v1";
-const USER_AGENT_VAL: &str = "eve-trade-scout/0.1.0 (EVE Online Arbitrage Scout)";
+pub const USER_AGENT_VAL: &str =
+    "eve-trade-scout/0.1.0 (https://github.com/Flambello/eve-traveling-merchant; contact: Flambello)";
 
 /// Persisted ESI SSO Character Token & Metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SsoToken {
     pub access_token: String,
     pub refresh_token: String,
@@ -31,6 +33,20 @@ pub struct SsoToken {
     pub character_name: String,
     #[serde(default)]
     pub client_id: Option<String>,
+}
+
+impl std::fmt::Debug for SsoToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SsoToken")
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_at", &self.expires_at)
+            .field("character_id", &self.character_id)
+            .field("character_name", &self.character_name)
+            .field("client_id", &self.client_id)
+            .finish()
+    }
 }
 
 impl SsoToken {
@@ -103,10 +119,10 @@ pub fn load_saved_token() -> Option<SsoToken> {
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
     {
-        if let Some(dev_id) = get_developer_client_id() {
-            token.client_id = Some(dev_id);
-            let _ = save_token(&token);
-        }
+        let default_or_dev =
+            get_developer_client_id().unwrap_or_else(|| DEFAULT_PUBLIC_CLIENT_ID.to_string());
+        token.client_id = Some(default_or_dev);
+        let _ = save_token(&token);
     }
 
     Some(token)
@@ -229,17 +245,46 @@ pub fn is_valid_client_id(client_id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Sanitizes an upstream error response from the SSO token endpoint by truncating and stripping tokens.
+/// Sanitizes an upstream error response from the SSO token endpoint by stripping tokens and credentials.
 pub fn sanitize_sso_error(raw: &str) -> String {
-    let truncated: String = raw.chars().take(256).collect();
-    if truncated.contains("access_token") || truncated.contains("refresh_token") {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("access_token")
+        || lower.contains("refresh_token")
+        || lower.contains("code_verifier")
+        || lower.contains("bearer")
+    {
         "OAuth token endpoint error (details withheld for security)".to_string()
     } else {
+        let truncated: String = raw.chars().take(256).collect();
         truncated.replace(['\r', '\n'], " ")
     }
 }
 
-/// Resolves the effective Client ID: if `custom` is non-empty, use it; otherwise check private local sources.
+/// Sanitizes an authorization URL for safe logging by masking the sensitive CSRF state parameter.
+pub fn sanitize_auth_url(url: &str) -> String {
+    if let Some(state_idx) = url.find("state=") {
+        let rest = &url[state_idx + 6..];
+        let end_idx = rest.find('&').unwrap_or(rest.len());
+        format!("{}state=[REDACTED]{}", &url[..state_idx], &rest[end_idx..])
+    } else {
+        url.to_string()
+    }
+}
+
+/// Constant-time byte slice equality comparison to mitigate timing side-channel attacks.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Resolves the effective Client ID: if `custom` is non-empty, use it; otherwise check
+/// private local sources (env var, config file), falling back to the built-in public Client ID.
 pub fn resolve_client_id(custom: &str) -> Result<String> {
     let trimmed = custom.trim();
     if !trimmed.is_empty() {
@@ -254,9 +299,63 @@ pub fn resolve_client_id(custom: &str) -> Result<String> {
         }
         return Ok(id);
     }
-    bail!(
-        "No EVE Application Client ID configured for this build. Maintainer credentials are kept private to protect the developer account. Set the EVE_CLIENT_ID environment variable or create ~/.config/eve-trade-scout/developer_client_id to enable SSO."
-    )
+    Ok(DEFAULT_PUBLIC_CLIENT_ID.to_string())
+}
+
+/// Builds the system command to open a URL in the browser on the target OS.
+pub fn build_browser_command_for_os(os: &str, url: &str) -> Result<std::process::Command> {
+    match os {
+        "windows" => {
+            // On Windows, use rundll32 url.dll,FileProtocolHandler to directly invoke ShellExecuteEx
+            // without cmd.exe shell interpretation stripping query parameters (&).
+            let mut cmd = std::process::Command::new("rundll32");
+            cmd.args(["url.dll,FileProtocolHandler", url]);
+            Ok(cmd)
+        }
+        "macos" => {
+            let mut cmd = std::process::Command::new("open");
+            cmd.arg(url);
+            Ok(cmd)
+        }
+        "linux" => {
+            let mut cmd = std::process::Command::new("xdg-open");
+            cmd.arg(url);
+            Ok(cmd)
+        }
+        other => anyhow::bail!("Unsupported target operating system for browser: {}", other),
+    }
+}
+
+/// Builds the system command to open a URL in the default browser for the current runtime platform.
+pub fn build_browser_command(url: &str) -> Result<std::process::Command> {
+    #[cfg(target_os = "windows")]
+    let os = "windows";
+    #[cfg(target_os = "macos")]
+    let os = "macos";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let os = "linux";
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    let os = "unknown";
+
+    build_browser_command_for_os(os, url)
+}
+
+/// Opens the specified URL in the system's default web browser across platforms.
+pub fn open_browser(url: &str) -> Result<()> {
+    tracing::info!(
+        url = %sanitize_auth_url(url),
+        "Opening browser for EVE SSO authentication (or navigate manually to this URL)"
+    );
+
+    let mut cmd = build_browser_command(url)?;
+    cmd.spawn().with_context(|| {
+        format!(
+            "Failed to spawn browser command for {}",
+            sanitize_auth_url(url)
+        )
+    })?;
+
+    Ok(())
 }
 
 /// Builds the browser authorization URL for CCP SSO.
@@ -335,6 +434,12 @@ pub async fn listen_for_auth_code(
                 error = %e,
                 "Failed to bind local loopback listener for SSO OAuth callback"
             );
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                bail!(
+                    "Local port {} is already in use by another application (e.g. another instance of EVE Trade Scout). Please close conflicting applications or configure an alternate callback port.",
+                    port
+                );
+            }
             return Err(e).with_context(|| {
                 format!("Failed to bind local loopback listener on port {}", port)
             });
@@ -352,54 +457,154 @@ pub async fn listen_for_auth_code(
             };
 
             let mut request_buf = Vec::with_capacity(2048);
-            let mut temp_buf = [0u8; 1024];
             const MAX_REQUEST_SIZE: usize = 8192;
 
-            loop {
-                let n = match socket.read(&mut temp_buf).await {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                request_buf.extend_from_slice(&temp_buf[..n]);
-                if request_buf.windows(4).any(|w| w == b"\r\n\r\n")
-                    || request_buf.len() >= MAX_REQUEST_SIZE
-                {
-                    break;
+            // Bounded per-connection read timeout to prevent slowloris connection starvation
+            let read_fut = async {
+                let mut temp_buf = [0u8; 1024];
+                loop {
+                    let n = match socket.read(&mut temp_buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    request_buf.extend_from_slice(&temp_buf[..n]);
+                    if request_buf.windows(4).any(|w| w == b"\r\n\r\n")
+                        || request_buf.len() >= MAX_REQUEST_SIZE
+                    {
+                        break;
+                    }
                 }
-            }
+                Some(())
+            };
 
-            if request_buf.is_empty() {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), read_fut)
+                .await
+                .is_err()
+                || request_buf.is_empty()
+            {
                 continue;
             }
 
             let request_str = String::from_utf8_lossy(&request_buf);
             let first_line = request_str.lines().next().unwrap_or_default();
 
-            // Expected format: GET /callback?code=XYZ&state=ABC HTTP/1.1
-            if let Some(query_start) = first_line.find("/callback?") {
-                let query = &first_line[query_start + 10..];
-                let query_end = query.find(' ').unwrap_or(query.len());
-                let query_str = &query[..query_end];
+            // RFC 8252: Ensure request starts strictly with GET /callback?
+            if !first_line.starts_with("GET /callback?") {
+                let err_body = "Invalid callback path or HTTP method.";
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\n\
+                     Content-Type: text/plain; charset=utf-8\r\n\
+                     Content-Length: {}\r\n\
+                     X-Frame-Options: DENY\r\n\
+                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+                     X-Content-Type-Options: nosniff\r\n\
+                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                     Connection: close\r\n\r\n{}",
+                    err_body.len(),
+                    err_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                continue;
+            }
 
-                let mut code = None;
-                let mut state = None;
+            // RFC 8252 Section 8.8: Validate Host header targets localhost or 127.0.0.1 to mitigate DNS rebinding
+            let has_valid_host = request_str.lines().any(|l| {
+                let lower = l.to_ascii_lowercase();
+                lower.starts_with("host: localhost") || lower.starts_with("host: 127.0.0.1")
+            });
+            if !has_valid_host {
+                let err_body = "Invalid Host header.";
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\n\
+                     Content-Type: text/plain; charset=utf-8\r\n\
+                     Content-Length: {}\r\n\
+                     X-Frame-Options: DENY\r\n\
+                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+                     X-Content-Type-Options: nosniff\r\n\
+                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                     Connection: close\r\n\r\n{}",
+                    err_body.len(),
+                    err_body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                continue;
+            }
 
-                for pair in query_str.split('&') {
-                    let mut parts = pair.split('=');
-                    if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
-                        if k == "code" {
-                            code = Some(urldecode_simple(v));
-                        } else if k == "state" {
-                            state = Some(urldecode_simple(v));
-                        }
+            let query_start = match first_line.find("/callback?") {
+                Some(idx) => idx,
+                None => continue,
+            };
+            let query = &first_line[query_start + 10..];
+            let query_end = query.find(' ').unwrap_or(query.len());
+            let query_str = &query[..query_end];
+
+            let mut code = None;
+            let mut state = None;
+            let mut oauth_error = None;
+            let mut oauth_error_desc = None;
+
+            for pair in query_str.split('&') {
+                let mut parts = pair.split('=');
+                if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+                    if k == "code" {
+                        code = Some(urldecode_simple(v));
+                    } else if k == "state" {
+                        state = Some(urldecode_simple(v));
+                    } else if k == "error" {
+                        oauth_error = Some(urldecode_simple(v));
+                    } else if k == "error_description" {
+                        oauth_error_desc = Some(urldecode_simple(v));
                     }
                 }
+            }
 
-                if let (Some(c), Some(s)) = (code, state) {
-                    if s == expected_state {
-                        // Send success HTML
-                        let html = r#"<!DOCTYPE html>
+            // Immediately handle user cancellation or denial without hanging for 3 minutes
+            if let Some(err) = oauth_error {
+                let desc = oauth_error_desc
+                    .unwrap_or_else(|| "Authorization was cancelled or denied by user".to_string());
+                let cancel_html = format!(
+                    r#"<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>EVE Trade Scout - Authorization Cancelled</title><style>
+  body {{ background: #0c1424; color: #e0e8f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+  .card {{ background: #141f36; border: 1.5px solid #ff5555; border-radius: 12px; padding: 40px; text-align: center; max-width: 480px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }}
+  h1 {{ color: #ff5555; margin-top: 0; font-size: 24px; }}
+  p {{ color: #8ca5cb; line-height: 1.6; font-size: 15px; }}
+</style></head>
+<body>
+  <div class="card">
+    <h1>❌ Authorization Cancelled</h1>
+    <p>EVE Online SSO authorization was cancelled or denied.<br><br>{}<br><br>You can close this tab and return to the application.</p>
+  </div>
+</body>
+</html>"#,
+                    desc
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                     Content-Type: text/html; charset=utf-8\r\n\
+                     Content-Length: {}\r\n\
+                     X-Frame-Options: DENY\r\n\
+                     Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\n\
+                     X-Content-Type-Options: nosniff\r\n\
+                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                     Connection: close\r\n\r\n{}",
+                    cancel_html.len(),
+                    cancel_html
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                let _ = socket.shutdown().await;
+
+                bail!("EVE SSO authorization rejected by user: {} ({})", err, desc);
+            }
+
+            if let (Some(c), Some(s)) = (code, state) {
+                // Constant-time state comparison to mitigate timing side channels
+                if constant_time_eq(s.as_bytes(), expected_state.as_bytes()) {
+                    // Send success HTML with defensive security headers
+                    let html = r#"<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>EVE Trade Scout - Connected</title><style>
   body { background: #0c1424; color: #e0e8f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
@@ -414,27 +619,43 @@ pub async fn listen_for_auth_code(
   </div>
 </body>
 </html>"#;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            html.len(),
-                            html
-                        );
-                        let _ = socket.write_all(response.as_bytes()).await;
-                        let _ = socket.flush().await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\
+                         Content-Length: {}\r\n\
+                         X-Frame-Options: DENY\r\n\
+                         Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\n\
+                         X-Content-Type-Options: nosniff\r\n\
+                         Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                         Connection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
+                    let _ = socket.shutdown().await;
 
-                        return Ok(c);
-                    }
+                    return Ok(c);
                 }
             }
 
-            // Fallback 400 response for invalid requests
+            // Fallback 400 response for invalid requests or state mismatch with defensive security headers
             let err_body = "Invalid authorization callback or state mismatch.";
             let response = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 400 Bad Request\r\n\
+                 Content-Type: text/plain; charset=utf-8\r\n\
+                 Content-Length: {}\r\n\
+                 X-Frame-Options: DENY\r\n\
+                 Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+                 X-Content-Type-Options: nosniff\r\n\
+                 Cache-Control: no-store, no-cache, must-revalidate\r\n\
+                 Connection: close\r\n\r\n{}",
                 err_body.len(),
                 err_body
             );
             let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            let _ = socket.shutdown().await;
         }
     };
 
@@ -460,6 +681,26 @@ pub async fn exchange_code_for_token(
     code_verifier: &str,
     callback_port: u16,
 ) -> Result<SsoToken> {
+    exchange_code_for_token_at_url(
+        client,
+        SSO_TOKEN_URL,
+        client_id,
+        code,
+        code_verifier,
+        callback_port,
+    )
+    .await
+}
+
+/// Exchanges the PKCE authorization code for an access token and refresh token against the specified token endpoint URL.
+pub async fn exchange_code_for_token_at_url(
+    client: &reqwest::Client,
+    token_url: &str,
+    client_id: &str,
+    code: &str,
+    code_verifier: &str,
+    callback_port: u16,
+) -> Result<SsoToken> {
     let redirect_uri = format!("http://localhost:{}/callback", callback_port);
 
     let params = [
@@ -471,7 +712,7 @@ pub async fn exchange_code_for_token(
     ];
 
     let resp = client
-        .post(SSO_TOKEN_URL)
+        .post(token_url)
         .header("User-Agent", USER_AGENT_VAL)
         .form(&params)
         .send()
@@ -529,7 +770,16 @@ pub async fn ensure_fresh_token(
     client_id: &str,
     token: &mut SsoToken,
 ) -> Result<()> {
-    ensure_fresh_token_at_url(client, SSO_TOKEN_URL, client_id, token).await
+    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, false).await
+}
+
+/// Force-refreshes the access token unconditionally using the refresh token.
+pub async fn ensure_fresh_token_force(
+    client: &reqwest::Client,
+    client_id: &str,
+    token: &mut SsoToken,
+) -> Result<()> {
+    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, true).await
 }
 
 /// Refreshes the access token using the refresh token against the specified token endpoint URL.
@@ -539,16 +789,27 @@ pub async fn ensure_fresh_token_at_url(
     client_id: &str,
     token: &mut SsoToken,
 ) -> Result<()> {
-    if !token.needs_refresh() {
+    ensure_fresh_token_opts(client, token_url, client_id, token, false).await
+}
+
+/// Refreshes the access token with optional force flag (bypasses expiration check when force is true).
+pub async fn ensure_fresh_token_opts(
+    client: &reqwest::Client,
+    token_url: &str,
+    client_id: &str,
+    token: &mut SsoToken,
+    force: bool,
+) -> Result<()> {
+    if !force && !token.needs_refresh() {
         return Ok(());
     }
 
     let effective_client_id: String = if !client_id.trim().is_empty() {
-        client_id.trim().to_string()
-    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
-        cid.to_string()
-    } else {
         resolve_client_id(client_id)?
+    } else if let Some(cid) = token.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        resolve_client_id(cid)?
+    } else {
+        resolve_client_id("")?
     };
 
     let params = [
@@ -613,16 +874,25 @@ pub async fn refresh_saved_token_if_needed(
     client: &reqwest::Client,
     client_id: &str,
 ) -> Result<Option<SsoToken>> {
+    refresh_saved_token_opts(client, client_id, false).await
+}
+
+/// Refreshes the saved token with optional force override (bypasses expiration check when force is true).
+pub async fn refresh_saved_token_opts(
+    client: &reqwest::Client,
+    client_id: &str,
+    force: bool,
+) -> Result<Option<SsoToken>> {
     let mut token = match load_saved_token() {
         Some(t) => t,
         None => return Ok(None),
     };
 
-    if !token.needs_refresh() {
+    if !force && !token.needs_refresh() {
         return Ok(Some(token));
     }
 
-    ensure_fresh_token(client, client_id, &mut token).await?;
+    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, &mut token, force).await?;
     Ok(Some(token))
 }
 
@@ -665,8 +935,9 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
 ///
 /// For the first waypoint: `clear_other_waypoints = true`
 /// For subsequent waypoints: `clear_other_waypoints = false, add_to_beginning = false`
-pub async fn push_waypoints_to_client(
+pub async fn push_waypoints_to_client_at_url(
     client: &reqwest::Client,
+    waypoint_base_url: &str,
     access_token: &str,
     destination_ids: &[u64],
 ) -> Result<usize> {
@@ -680,30 +951,77 @@ pub async fn push_waypoints_to_client(
         let is_first = idx == 0;
         let url = format!(
             "{}?destination_id={}&add_to_beginning=false&clear_other_waypoints={}",
-            ESI_WAYPOINT_URL, dest_id, is_first
+            waypoint_base_url, dest_id, is_first
         );
 
-        let resp = client
-            .post(&url)
-            .bearer_auth(access_token)
-            .header("User-Agent", USER_AGENT_VAL)
-            .send()
-            .await
-            .with_context(|| format!("Failed to send waypoint for destination_id {}", dest_id))?;
+        let mut attempts = 0u32;
+        let mut backoff = std::time::Duration::from_millis(500);
+        let resp = loop {
+            attempts += 1;
+            let resp_res = client
+                .post(&url)
+                .bearer_auth(access_token)
+                .header("User-Agent", USER_AGENT_VAL)
+                .send()
+                .await;
+
+            match resp_res {
+                Ok(r) => {
+                    let status = r.status();
+                    if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420)
+                        && attempts <= 3
+                    {
+                        let wait_dur = r
+                            .headers()
+                            .get("x-esi-error-limit-reset")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
+                            .unwrap_or(backoff);
+                        tracing::warn!(
+                            error_code = %ErrorCode::ErrEsiRateLimited,
+                            destination_id = dest_id,
+                            wait = ?wait_dur,
+                            "Waypoint injection rate-limited (HTTP {}). Backing off...",
+                            status
+                        );
+                        tokio::time::sleep(wait_dur).await;
+                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                        continue;
+                    }
+                    break r;
+                }
+                Err(e) => {
+                    if attempts <= 3 {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                        continue;
+                    }
+                    return Err(e).with_context(|| {
+                        format!("Failed to send waypoint for destination_id {}", dest_id)
+                    });
+                }
+            }
+        };
 
         if !resp.status().is_success() && resp.status().as_u16() != 204 {
+            let status = resp.status();
             let err = resp.text().await.unwrap_or_default();
+            let sanitized = sanitize_sso_error(&err);
             tracing::error!(
                 error_code = %ErrorCode::ErrSsoAutopilotFailed,
                 destination_id = dest_id,
-                error = %err,
+                error = %sanitized,
                 "ESI rejected waypoint injection into client HUD"
             );
+            if status.as_u16() == 401 {
+                bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+            }
             bail!(
                 "ESI rejected waypoint {} (destination {}): {}",
                 idx + 1,
                 dest_id,
-                err
+                sanitized
             );
         }
 
@@ -716,6 +1034,15 @@ pub async fn push_waypoints_to_client(
     }
 
     Ok(injected_count)
+}
+
+/// Injects an ordered sequence of waypoints directly into the running EVE client using default ESI endpoint.
+pub async fn push_waypoints_to_client(
+    client: &reqwest::Client,
+    access_token: &str,
+    destination_ids: &[u64],
+) -> Result<usize> {
+    push_waypoints_to_client_at_url(client, ESI_WAYPOINT_URL, access_token, destination_ids).await
 }
 
 /// Orchestrates full PKCE login flow: generates keys, launches browser, listens on localhost, exchanges code.
@@ -735,10 +1062,14 @@ pub async fn authenticate_character_via_pkce(
     let auth_url =
         build_authorize_url(&effective_client_id, callback_port, &state, &code_challenge);
 
-    // Attempt to open the default system browser via xdg-open (Linux/desktop)
-    let _ = std::process::Command::new("xdg-open")
-        .arg(&auth_url)
-        .spawn();
+    // Attempt to open the default system browser across platforms
+    if let Err(e) = open_browser(&auth_url) {
+        tracing::warn!(
+            error = %e,
+            url = %sanitize_auth_url(&auth_url),
+            "Could not open system browser automatically; navigate to the URL manually in your browser"
+        );
+    }
 
     let code =
         listen_for_auth_code(callback_port, &state, std::time::Duration::from_secs(180)).await?;
@@ -755,17 +1086,65 @@ pub async fn authenticate_character_via_pkce(
     Ok(token)
 }
 
-/// Loads the saved token, refreshes it if needed, and pushes waypoints to the live EVE client HUD.
-pub async fn push_waypoints_with_token(
+/// Loads the saved token, refreshes it if needed, and pushes waypoints to the live EVE client HUD with custom URLs.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn push_waypoints_with_token_opts(
     client: &reqwest::Client,
+    token_url: &str,
+    waypoint_base_url: &str,
     client_id: &str,
     destination_ids: &[u64],
 ) -> Result<usize> {
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, client_id, &mut token).await?;
-    push_waypoints_to_client(client, &token.access_token, destination_ids).await
+    ensure_fresh_token_opts(client, token_url, client_id, &mut token, false).await?;
+    match push_waypoints_to_client_at_url(
+        client,
+        waypoint_base_url,
+        &token.access_token,
+        destination_ids,
+    )
+    .await
+    {
+        Ok(count) => Ok(count),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("401") || err_str.contains("expired") {
+                tracing::info!(
+                    character_id = token.character_id,
+                    "Access token expired during waypoint injection; executing automatic refresh and retry"
+                );
+                ensure_fresh_token_opts(client, token_url, client_id, &mut token, true).await?;
+                push_waypoints_to_client_at_url(
+                    client,
+                    waypoint_base_url,
+                    &token.access_token,
+                    destination_ids,
+                )
+                .await
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Loads the saved token, refreshes it if needed, and pushes waypoints to the live EVE client HUD.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn push_waypoints_with_token(
+    client: &reqwest::Client,
+    client_id: &str,
+    destination_ids: &[u64],
+) -> Result<usize> {
+    push_waypoints_with_token_opts(
+        client,
+        SSO_TOKEN_URL,
+        ESI_WAYPOINT_URL,
+        client_id,
+        destination_ids,
+    )
+    .await
 }
 
 /// Live character location returned by ESI GET /v1/characters/{character_id}/location/
@@ -778,13 +1157,15 @@ pub struct CharacterLocation {
     pub structure_id: Option<u64>,
 }
 
-/// Queries the live character location from ESI for an authenticated character.
-pub async fn fetch_character_location(
+/// Queries the live character location from ESI for an authenticated character at custom base URL.
+pub async fn fetch_character_location_at_url(
     client: &reqwest::Client,
+    base_url: &str,
     token: &SsoToken,
 ) -> Result<CharacterLocation> {
     let url = format!(
-        "https://esi.evetech.net/v1/characters/{}/location/",
+        "{}/v1/characters/{}/location/",
+        base_url.trim_end_matches('/'),
         token.character_id
     );
 
@@ -799,17 +1180,20 @@ pub async fn fetch_character_location(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        let sanitized = sanitize_sso_error(&body);
         tracing::error!(
             error_code = %ErrorCode::ErrSsoLocationFailed,
             status = %status,
             character_id = token.character_id,
-            error = %body,
+            error = %sanitized,
             "Failed to query live character location from ESI"
         );
+        if status.as_u16() == 401 {
+            bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+        }
         if status.as_u16() == 403 {
             bail!("Missing required scope 'esi-location.read_location.v1'. Please re-connect character in Settings.");
         }
-        let sanitized = sanitize_sso_error(&body);
         bail!(
             "ESI character location request failed ({}): {}",
             status,
@@ -825,14 +1209,55 @@ pub async fn fetch_character_location(
     Ok(loc)
 }
 
-/// Loads the saved token, refreshes it if needed, and fetches the character's live location.
-pub async fn get_character_location_with_token(
+/// Queries the live character location from ESI for an authenticated character.
+pub async fn fetch_character_location(
     client: &reqwest::Client,
+    token: &SsoToken,
+) -> Result<CharacterLocation> {
+    fetch_character_location_at_url(client, "https://esi.evetech.net", token).await
+}
+
+/// Loads the saved token, refreshes it if needed, and fetches the character's live location with custom URLs.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn get_character_location_with_token_opts(
+    client: &reqwest::Client,
+    token_url: &str,
+    location_base_url: &str,
     client_id: &str,
 ) -> Result<CharacterLocation> {
     let mut token = load_saved_token()
         .context("No EVE SSO character authorization found. Please connect your character in Settings first.")?;
 
-    ensure_fresh_token(client, client_id, &mut token).await?;
-    fetch_character_location(client, &token).await
+    ensure_fresh_token_opts(client, token_url, client_id, &mut token, false).await?;
+    match fetch_character_location_at_url(client, location_base_url, &token).await {
+        Ok(loc) => Ok(loc),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("401") || err_str.contains("expired") {
+                tracing::info!(
+                    character_id = token.character_id,
+                    "Access token expired during location fetch; executing automatic refresh and retry"
+                );
+                ensure_fresh_token_opts(client, token_url, client_id, &mut token, true).await?;
+                fetch_character_location_at_url(client, location_base_url, &token).await
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Loads the saved token, refreshes it if needed, and fetches the character's live location.
+/// Automatically recovers and retries if access token expired mid-operation.
+pub async fn get_character_location_with_token(
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<CharacterLocation> {
+    get_character_location_with_token_opts(
+        client,
+        SSO_TOKEN_URL,
+        "https://esi.evetech.net",
+        client_id,
+    )
+    .await
 }

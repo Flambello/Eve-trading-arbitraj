@@ -25,7 +25,7 @@ jobs:
         dnf install -y git gcc pkg-config rust cargo clippy rustfmt desktop-file-utils
 
     - name: Checkout Source Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Verify Environment Toolchains
       run: |
@@ -59,7 +59,7 @@ jobs:
 
     steps:
     - name: Checkout Source Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Setup Rust Stable Toolchain
       uses: dtolnay/rust-toolchain@stable

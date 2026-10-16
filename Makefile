@@ -37,7 +37,7 @@ dist: release
 	rm -rf dist-tmp eve-traveling-merchant-linux-x86_64.tar.gz
 	mkdir -p dist-tmp/eve-traveling-merchant
 	cp target/release/eve-merchant dist-tmp/eve-traveling-merchant/
-	cp README.md LICENSE CHANGELOG.md dist-tmp/eve-traveling-merchant/
+	cp README.md LICENSE CHANGELOG.md .env.example config.example.toml dist-tmp/eve-traveling-merchant/
 	cp eve-trade.desktop dist-tmp/eve-traveling-merchant/
 	cp assets/icons/io.github.flambello.eve_merchant.svg dist-tmp/eve-traveling-merchant/
 	cp assets/icons/io.github.flambello.eve_merchant.png dist-tmp/eve-traveling-merchant/

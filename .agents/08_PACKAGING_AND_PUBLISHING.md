@@ -209,11 +209,32 @@ The project ships zero-dependency standalone release archives for Linux and Wind
 - Shell launcher script (`start-gui.sh`)
 - Full documentation and license files
 
+**Assembly Command:**
+```bash
+make dist
+# Outputs eve-traveling-merchant-linux-x86_64.tar.gz and SHA256SUMS
+```
+
 ### Windows Bundle (`eve-traveling-merchant-windows-x86_64.zip`)
 - Pre-compiled optimized release executable (`eve-merchant.exe`) compiled with Windows GUI subsystem (`windows_subsystem = "windows"`), launching the native GUI window directly without background console prompts
 - Batch launcher helper (`start-gui.bat`)
 - Embedded assets, application icons, and documentation
 - Portable zero-install execution directly on Windows 10/11
+
+**Assembly Command (Windows PowerShell):**
+```powershell
+cargo build --release --bin eve-merchant
+$Dist = "eve-traveling-merchant-windows-x86_64"
+New-Item -ItemType Directory -Force -Path $Dist
+Copy-Item "target\release\eve-merchant.exe", "README.md", "LICENSE", "CHANGELOG.md", "start-gui.bat" -Destination $Dist
+Compress-Archive -Path "$Dist\*" -DestinationPath "$Dist.zip" -Force
+```
+
+**Cross-Compiling for Windows from Linux (MinGW-w64):**
+```bash
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu --bin eve-merchant
+```
 
 ---
 
@@ -222,51 +243,44 @@ The project ships zero-dependency standalone release archives for Linux and Wind
 The README is the storefront. It should include:
 
 ```markdown
-# EVE Trade Scout 🚀
+# EVE Traveling Merchant 🚀
 
 > Find the most profitable arbitrage trades in EVE Online, route-planned
-> by profit per jump.
+> by profit per jump. Works out-of-the-box with zero developer registration.
 
 ## Features
-- 🏷️ Live market data via official ESI API
-- 🗺️ Multi-stop route planner (maximise profit per jump)
+- 🏷️ Live market data via official ESI API (public endpoints, no auth required)
+- 🔐 Official CCP SSO v2 PKCE login (works out-of-the-box, no developer registration or secret)
+- 🗺️ Multi-stop route planner (maximize profit per jump)
 - 🚢 Big Hauler (60 000 m³ / 500 M ISK) and Small Hauler (30 000 m³ / 50 M ISK) profiles
-- 🔒 Safe-route mode (highsec only)
-- 💻 Single compiled binary — no dependencies, just run it
-- 🐧 Linux native (Fedora, Ubuntu, Arch, etc.)
+- 🔒 Safe-route mode (highsec only, avoids dangerous gate networks)
+- 💻 Single compiled binary — no runtime dependencies, just run it
+- 🖥️ Native dark-mode desktop GUI (Windows & Linux)
 
 ## Install
 
 ### Option 1 — Download binary (no Rust required)
-[Download latest release](https://github.com/YOUR_USERNAME/eve-trade-scout/releases/latest)
+[Download latest release](https://github.com/Flambello/eve-traveling-merchant/releases/latest)
 
 ### Option 2 — Install via cargo
 \`\`\`bash
 cargo install eve-trade-scout
+eve-merchant
 \`\`\`
 
 ### Option 3 — Build from source
 \`\`\`bash
-git clone https://github.com/YOUR_USERNAME/eve-trade-scout
-cd eve-trade-scout
-cargo build --release
-./target/release/eve-trade
-\`\`\`
-
-## Usage
-\`\`\`bash
-eve-trade                    # interactive TUI
-eve-trade --ship big --system Jita --safe
-eve-trade --route --top 10
+git clone https://github.com/Flambello/eve-traveling-merchant.git
+cd eve-traveling-merchant
+make test
+make release
+./target/release/eve-merchant
 \`\`\`
 
 ## License
 GPL-3.0 — see [LICENSE](LICENSE)
-
-## Disclaimer
-This tool is a read-only market analysis aid. It does not automate in-game actions
-and complies with the EVE Online EULA and ESI Developer Licence.
 ```
+
 
 ---
 

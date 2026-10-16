@@ -1,0 +1,36 @@
+# EVE Traveling Merchant - User Configuration Template
+# Saved automatically to ~/.config/eve-traveling-merchant/config.toml (Linux)
+# or %APPDATA%\eve-traveling-merchant\config.toml (Windows).
+
+[ship]
+profile = "big"                      # "big" (60,000 m³ / 500M ISK) or "small" (30,000 m³ / 50M ISK)
+
+[location]
+home_system = "Jita"                 # Starting solar system for jump distance calculations
+
+[scan]
+regions = [10000002]                 # Active scan region IDs (10000002 = The Forge)
+safe_route_only = true               # Avoid lowsec and nullsec space (security < 0.45)
+npc_stations_only = true             # Restrict trade search strictly to NPC stations (guaranteed docking)
+scan_adjacent_regions = true         # Automatically scan stargate-connected neighbor regions
+auto_refresh = false                 # Auto-refresh market data every 5 minutes in GUI
+sound_alerts = true                  # Play sound notifications for high-ROI opportunities
+sound_min_roi_pct = 100.0            # Minimum ROI threshold for sound notifications
+
+[filters]
+min_profit_isk = 1000000.0           # Minimum net profit in ISK per deal
+min_spread_pct = 3.0                 # Minimum gross price spread percentage
+min_net_profit_pct = 10.0            # Enforced minimum net ROI % after taxes (domain invariant: >= 10.0%)
+
+[fees]
+broker_fee_pct = 3.0                 # Buy-side broker fee % (reduces with Broker Relations skill)
+sales_tax_pct = 8.0                  # Sell-side sales tax % (reduces with Accounting skill)
+
+[cache]
+directory = "cache"                  # Local HTTP ETag cache directory
+sde_max_age_days = 30                # Maximum age before re-downloading SDE SQLite database
+
+[sso]
+client_id = ""                       # Optional custom Client ID override (empty = built-in public ID)
+callback_port = 37373                # Local TCP port for OAuth callback (default: 37373)
+auto_sync_location = false           # Automatically update starting system from active character

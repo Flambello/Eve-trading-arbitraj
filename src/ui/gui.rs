@@ -600,6 +600,9 @@ impl DesktopApp {
 
         if app.sso_character_name.is_some() {
             app.check_and_refresh_sso_token(false);
+            if app.sso_auto_sync_location {
+                app.fetch_live_character_location(true);
+            }
         }
 
         app
@@ -840,10 +843,14 @@ impl DesktopApp {
                 }
             };
 
-            let http_client = reqwest::Client::new();
-            let res = rt.block_on(crate::esi::sso::refresh_saved_token_if_needed(
+            let http_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
+            let res = rt.block_on(crate::esi::sso::refresh_saved_token_opts(
                 &http_client,
                 &client_id,
+                force,
             ));
             match res {
                 Ok(Some(token)) => {
@@ -927,7 +934,9 @@ impl DesktopApp {
         let (tx, rx) = channel();
         self.sso_auth_rx = Some(rx);
 
-        let callback_port = crate::esi::sso::DEFAULT_CALLBACK_PORT;
+        let callback_port = crate::config::UserConfig::load()
+            .map(|c| c.sso.validated_callback_port())
+            .unwrap_or(crate::esi::sso::DEFAULT_CALLBACK_PORT);
         thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -940,7 +949,10 @@ impl DesktopApp {
                 }
             };
 
-            let http_client = reqwest::Client::new();
+            let http_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let res = rt.block_on(crate::esi::sso::authenticate_character_via_pkce(
                 &http_client,
                 &client_id,
@@ -1002,7 +1014,10 @@ impl DesktopApp {
                 }
             };
 
-            let http_client = reqwest::Client::new();
+            let http_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let res = rt.block_on(crate::esi::sso::push_waypoints_with_token(
                 &http_client,
                 &client_id,
@@ -1048,7 +1063,10 @@ impl DesktopApp {
                 }
             };
 
-            let http_client = reqwest::Client::new();
+            let http_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let res = rt.block_on(crate::esi::sso::get_character_location_with_token(
                 &http_client,
                 &client_id,
@@ -1292,6 +1310,9 @@ impl eframe::App for DesktopApp {
                     self.deals.len(),
                     self.manifests.len()
                 );
+                if self.sso_character_name.is_some() && self.sso_auto_sync_location {
+                    self.fetch_live_character_location(true);
+                }
                 ctx.request_repaint();
             }
 
@@ -1449,7 +1470,16 @@ impl eframe::App for DesktopApp {
                             error = %err,
                             "SSO waypoint injection worker reported failure: {err}"
                         );
-                        self.set_toast(format!("Autopilot injection failed: {}", err));
+                        if err.contains("invalid_grant") || err.contains("revoked") {
+                            self.sso_character_name = None;
+                            self.sso_character_id = None;
+                            self.sso_token_expires_at = None;
+                            self.set_toast(
+                                "EVE SSO session expired or was revoked. Please connect character in Settings.",
+                            );
+                        } else {
+                            self.set_toast(format!("Autopilot injection failed: {}", err));
+                        }
                     }
                 }
                 self.sso_push_rx = None;
@@ -1501,7 +1531,16 @@ impl eframe::App for DesktopApp {
                             error = %err,
                             "SSO character location sync worker reported failure: {err}"
                         );
-                        self.set_toast(format!("Location sync error: {}", err));
+                        if err.contains("invalid_grant") || err.contains("revoked") {
+                            self.sso_character_name = None;
+                            self.sso_character_id = None;
+                            self.sso_token_expires_at = None;
+                            self.set_toast(
+                                "EVE SSO session expired or was revoked. Please connect character in Settings.",
+                            );
+                        } else {
+                            self.set_toast(format!("Location sync error: {}", err));
+                        }
                     }
                 }
                 self.sso_location_rx = None;
@@ -7568,6 +7607,25 @@ impl DesktopApp {
 
                             if self.sso_is_fetching_location {
                                 ui.spinner();
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .checkbox(
+                                    &mut self.sso_auto_sync_location,
+                                    "Auto-sync character location on launch",
+                                )
+                                .on_hover_text(
+                                    "Automatically query CCP ESI on application launch to detect your active solar system and set it as the starting hub.",
+                                )
+                                .changed()
+                            {
+                                if let Ok(mut cfg) = crate::config::UserConfig::load() {
+                                    cfg.sso.auto_sync_location = self.sso_auto_sync_location;
+                                    let _ = cfg.save();
+                                }
                             }
                         });
                     }

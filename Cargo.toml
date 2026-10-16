@@ -9,7 +9,7 @@ readme = "README.md"
 repository = "https://github.com/Flambello/eve-traveling-merchant"
 homepage = "https://github.com/Flambello/eve-traveling-merchant"
 keywords = ["eve-online", "trading", "arbitrage", "route-planner", "cross-platform"]
-categories = ["games", "gui", "command-line-utilities"]
+categories = ["games", "gui"]
 exclude = [".agents/", "data/", "cache/", "*.sqlite*", "*.bz2", ".github/"]
 
 [lib]
@@ -29,10 +29,6 @@ toml = "0.8"
 rusqlite = { version = "0.31", features = ["bundled"] }
 petgraph = "0.6"
 lru = "0.12"
-ratatui = "0.28"
-crossterm = "0.28"
-clap = { version = "4.5", features = ["derive"] }
-indicatif = "0.17"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 flate2 = "1.0"

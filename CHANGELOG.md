@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-16
+
+### Removed
+- **CLI & Argument Parsers**: Fully decommissioned `clap` and removed all command-line argument parsers, flags, and `src/cli.rs`.
+- **Terminal UI (TUI) & Console Outputs**: Completely removed `ratatui` and `crossterm` terminal interfaces (`src/ui/tui.rs`), terminal progress bars (`indicatif`), console table formatters, and redundant CLI-only CSV exporters.
+- **Dependency Manifest Pruning**: Pruned `clap`, `ratatui`, `crossterm`, and `indicatif` from `Cargo.toml` and lockfile, reducing compilation overhead and binary footprint.
+
+### Changed
+- **Pure Desktop GUI Architecture**: `eve-merchant` now directly executes the native Desktop GUI window on all platforms with zero CLI overhead.
+- **Logging Integration**: Replaced terminal progress bars in `src/sde/loader.rs` with structured `tracing::info!` events.
+
 ## [0.1.1] - 2026-10-15
 
 ### Changed

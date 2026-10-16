@@ -287,3 +287,21 @@ impl UserConfig {
         profile_from_str(&self.ship.profile)
     }
 }
+
+/// Parses and validates a comma-separated list of numeric region IDs.
+///
+/// Returns `Ok(Vec<u32>)` if valid numeric IDs were parsed, or an error if the input
+/// is empty, whitespace-only, or contains no valid numeric IDs.
+pub fn parse_region_ids(input: &str) -> Result<Vec<u32>> {
+    let parsed: Vec<u32> = input
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .collect();
+    if parsed.is_empty() {
+        anyhow::bail!(
+            "Invalid regions argument '{}'. Expected comma-separated numeric region IDs (e.g. '10000002, 10000043').",
+            input
+        );
+    }
+    Ok(parsed)
+}

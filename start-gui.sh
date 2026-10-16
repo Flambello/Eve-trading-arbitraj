@@ -33,5 +33,5 @@ else
 fi
 
 # Launch the native desktop graphical interface (GUI window)
-exec "$BINARY" --gui "$@"
+exec "$BINARY" "$@"
 

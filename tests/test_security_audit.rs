@@ -561,42 +561,23 @@ fn test_constant_time_eq_slices() {
 }
 
 #[test]
-fn test_cli_and_config_rejects_empty_or_malformed_regions() {
-    use clap::Parser;
-    use eve_trade_scout::Args;
+fn test_config_rejects_empty_or_malformed_regions() {
+    use eve_trade_scout::config::parse_region_ids;
 
     // 1. Valid comma-separated region IDs
-    let valid_args = Args::parse_from(["eve-merchant", "--regions", "10000002, 10000043,10000032"]);
-    let parsed = valid_args
-        .parse_regions()
+    let parsed = parse_region_ids("10000002, 10000043,10000032")
         .expect("Valid regions must parse successfully");
-    assert_eq!(parsed, Some(vec![10000002, 10000043, 10000032]));
+    assert_eq!(parsed, vec![10000002, 10000043, 10000032]);
 
-    // 2. Empty string --regions ""
-    let empty_args = Args::parse_from(["eve-merchant", "--regions", ""]);
-    let err = empty_args
-        .parse_regions()
-        .expect_err("Empty regions must return an error");
-    assert!(err.to_string().contains("Invalid --regions argument"));
+    // 2. Empty string ""
+    let err = parse_region_ids("").expect_err("Empty regions must return an error");
+    assert!(err.to_string().contains("Invalid regions argument"));
 
-    // 3. Whitespace-only string --regions "   "
-    let whitespace_args = Args::parse_from(["eve-merchant", "--regions", "   "]);
-    let err = whitespace_args
-        .parse_regions()
-        .expect_err("Whitespace-only regions must return an error");
-    assert!(err.to_string().contains("Invalid --regions argument"));
+    // 3. Whitespace-only string "   "
+    let err = parse_region_ids("   ").expect_err("Whitespace-only regions must return an error");
+    assert!(err.to_string().contains("Invalid regions argument"));
 
-    // 4. Non-numeric alphanumeric garbage --regions "the_forge,domain"
-    let alpha_args = Args::parse_from(["eve-merchant", "--regions", "the_forge,domain"]);
-    let err = alpha_args
-        .parse_regions()
-        .expect_err("Alpha regions must return an error");
-    assert!(err.to_string().contains("Invalid --regions argument"));
-
-    // 5. Default omitted --regions
-    let default_args = Args::parse_from(["eve-merchant"]);
-    let parsed_default = default_args
-        .parse_regions()
-        .expect("Omitted regions must succeed");
-    assert_eq!(parsed_default, None);
+    // 4. Non-numeric alphanumeric garbage "the_forge,domain"
+    let err = parse_region_ids("the_forge,domain").expect_err("Alpha regions must return an error");
+    assert!(err.to_string().contains("Invalid regions argument"));
 }

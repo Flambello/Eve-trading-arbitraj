@@ -36,9 +36,8 @@ Traditional trade finders often force you to haul single items, leave your hold 
 - 🏛️ **Station Docking Pool Toggle**: Choose between **NPC Stations Only** (guaranteed 100% public docking access) or include **Player Citadels / Upwell Structures**.
 - 💡 **Real-Time SDE Autocomplete**: Type any solar system name for instant prefix/substring search, security rating pills, and parent region tags from the embedded universe SQLite export.
 - 🔔 **Audible Sound Alerts**: Freedesktop audio alerts and desktop notifications when deals yielding $\ge 100\%$ ROI are detected.
-- 🖥️ **Native Desktop GUI (Universal Default)**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting. Launches automatically by default on all platforms.
-- 💻 **Terminal Dashboard (TUI) [DEPRECATED]**: Keyboard-driven `ratatui` terminal interface. Deprecated across all platforms; will be removed in a future release.
-- 📊 **Headless Scripting & CSV Export [DEPRECATED]**: Console table output (deprecated) or direct CSV data export via `--export`.
+- 🖥️ **Native Desktop GUI**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting.
+- 📊 **Built-in CSV & Flight Sheet Export**: Export filtered deals, packed corridor manifests, and multi-leg chain routes directly to CSV files and clipboard via dedicated GUI buttons.
 
 ---
 
@@ -110,75 +109,22 @@ make release
 
 ## Usage Guide
 
-### 1. Native Desktop GUI (Default)
+### Launching the Desktop GUI
 
-Launch via desktop application launcher or terminal:
+Launch via desktop application launcher, application menu, or terminal:
 
 ```bash
 ./start-gui.sh
-# or: eve-merchant --gui
+# or simply:
+./eve-merchant
 ```
 
 - **Top Bar Controls**: Select Ship profile (Big / Small), type starting system with real-time autocomplete, toggle adjacent regions, and click **⚡ SCAN MARKET NOW**.
 - **Interactive Dossier**: Click any deal row to expand exact buy/sell stations, volume, capital required, and 1-click copy buttons (`📋 Item`, `📋 Buy Station`, `📋 Sell Station`).
 - **📦 Packed Manifests Tab**: View knapsack cargo lists grouping multiple items into unified origin-destination flights. Use `📋 Shopping List` to copy item names and quantities for in-game multi-buy.
 - **🔗 Chain Route Plotter**: Configure maximum legs (1–8) and detour tolerance (0–5 jumps) to plot multi-hop trading expeditions. Click `📋 Autopilot Trail` to paste the waypoint sequence directly into EVE chat.
+- **📊 CSV Export**: Dedicated 1-click buttons to export filtered deals and manifests to CSV files with clipboard integration.
 
-### 2. Terminal Interactive Mode (TUI)
-
-```bash
-eve-merchant --tui
-```
-
-**Keybindings:**
-- `[Tab]` — Switch between Deals Table, Planned Route, and Settings
-- `[↑] / [k]` — Select previous deal
-- `[↓] / [j]` — Select next deal
-- `[q] / [Esc]` — Quit
-
-### 3. Headless Scripting & Automation
-
-```bash
-# Scan starting from Jita with Big Hauler (outputs formatted table)
-eve-merchant --ship big --system Jita --no-ui
-
-# Scan safe highsec routes with Small Hauler starting from Amarr
-eve-merchant --ship small --system Amarr --safe --no-ui
-
-# Scan specific regions (The Forge + Domain) and show top 50 deals
-eve-merchant --regions 10000002,10000043 --top 50 --no-ui
-
-# Export ranked deals to CSV file
-eve-merchant --ship big --system Jita --export deals.csv
-```
-
----
-
-## CLI Reference
-
-| Flag | Default | Description |
-|---|---|---|
-| `--gui` | `true` | Force desktop GUI window mode (`egui` native window; default on all platforms) |
-| `--tui` | `false` | **[DEPRECATED]** Force terminal TUI mode (`ratatui`) |
-| `--no-ui` | `false` | **[DEPRECATED]** Disable interactive interfaces (GUI & TUI) and output directly to console |
-| `--no-tui` | `false` | **[DEPRECATED]** Disable interactive TUI and output directly to console |
-| `--auto-refresh` | `false` | Automatically refresh market data every 5 minutes in GUI mode |
-| `-s, --ship <SHIP>` | `big` | Ship profile (`big`: 60k m³/500M or `small`: 30k m³/50M) |
-| `--system <SYSTEM>` | `Jita` | Starting solar system name |
-| `--adjacent-regions` | `true` | Automatically scan stargate-connected neighbor regions |
-| `--regions <IDS>` | `auto` | Comma-separated region IDs (overrides adjacent region scan) |
-| `--safe` | `true` | Avoid lowsec/nullsec gates (Highsec only) |
-| `--unsafe-routes` | `false` | Allow lowsec and nullsec routes |
-| `--npc-only` | `true` | Restrict search strictly to NPC stations (preferred) |
-| `--allow-structures` | `false` | Include player-owned Citadels / Upwell structures |
-| `--min-profit <ISK>` | `1,000,000` | Minimum net profit in ISK |
-| `--min-spread <PCT>` | `3.0` | Minimum gross price spread (%) |
-| `--min-roi <PCT>` | `10.0` | Enforced minimum net ROI % after taxes |
-| `-t, --top <N>` | `25` | Number of deals in CLI summary |
-| `--max-stops <N>` | `5` | Maximum stops in planned route |
-| `--route` | `false` | Print planned multi-stop route in CLI mode |
-| `--export <PATH>` | — | Export discovered deals to CSV file |
-| `--update-sde` | — | Force re-download / update of SDE SQLite database |
 
 ---
 

@@ -257,6 +257,10 @@ pub fn format_donation_instructions(amount_millions: Option<u64>) -> String {
     }
 }
 
+/// Embedded application window icon PNG bytes (256x256 RGBA).
+pub const APP_ICON_PNG_BYTES: &[u8] =
+    include_bytes!("../../assets/icons/io.github.flambello.eve_merchant.png");
+
 /// Embedded Expandabliss corporation crest PNG bytes (124x124 RGBA).
 pub const CORP_ICON_PNG_BYTES: &[u8] = include_bytes!("../../assets/icons/expandabliss.png");
 
@@ -8205,11 +8209,19 @@ impl DesktopApp {
 }
 
 pub fn run_desktop_gui(app: DesktopApp) -> Result<(), eframe::Error> {
+    let icon_data = eframe::icon_data::from_png_bytes(APP_ICON_PNG_BYTES).ok();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("EVE Traveling Merchant — Arbitrage & Multi-Stop Route Planner")
+        .with_inner_size([1280.0, 768.0])
+        .with_min_inner_size([800.0, 480.0]);
+
+    if let Some(icon) = icon_data {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("EVE Traveling Merchant — Arbitrage & Multi-Stop Route Planner")
-            .with_inner_size([1280.0, 768.0])
-            .with_min_inner_size([800.0, 480.0]),
+        viewport,
         ..Default::default()
     };
 

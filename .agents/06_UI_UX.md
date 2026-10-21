@@ -77,6 +77,11 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
   - 1-Click `📋 Copy Autopilot Route` button for immediate in-game trail navigation.
 
 ### F. Settings & Tax Skill Customizer
+- **Cockpit Theme Switcher**:
+  - Interactive selection cards with live preview color chips (surface fill, primary accent, secondary accent).
+  - Displays theme name, descriptive caption, and active status tag (`[ACTIVE]`).
+  - Supports quick 1-click selection via interactive card clicks or radio buttons.
+  - Automatically persists the selected theme to `config.toml` (`theme = "..."`) upon selection.
 - **Skill Sliders**:
   - Broker Fee % (default 3.0%, adjustable down to 1.0% for pilots with *Broker Relations*).
   - Sales Tax % (default 8.0%, adjustable down to 3.6% for pilots with *Accounting*).
@@ -86,7 +91,37 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
   - Sinq Laison (Dodixie IX-20) — Region 10000032
   - Heimatar (Rens VI-8) — Region 10000030
   - Metropolis (Hek VIII-12) — Region 10000042
-- **Feedback Toasts**: Temporary cyan status banners providing tactile confirmation when items/systems/manifests/chains are copied.
+- **Feedback Toasts**: Temporary status banners providing tactile confirmation when items/systems/manifests/chains are copied.
+
+### G. Visual Theme System & Cockpit Color Schemes
+The desktop GUI architecture features a centralized, tokenized design system ([`src/ui/theme.rs`](file:///mnt/Projects/Eve%20trading%20arbitraj/src/ui/theme.rs)) offering four finely tuned cockpit color schemes:
+
+1. **Sci-Fi Void (Default)** (`AppTheme::SciFiVoid` / `"sci_fi_void"`):
+   - **Chassis & Surfaces**: Deep obsidian space navy (`#050712` app background, `#0a0e1e` cards, `#070b18` sidebars).
+   - **Accents**: Neon telemetry cyan (`#00d2ff` primary) and Caldari/EVE gold (`#ffcd00` secondary).
+   - **Aesthetic**: Immersive dark cockpit optimized for long trading sessions in low-light environments.
+2. **Neutral Black** (`AppTheme::NeutralBlack` / `"neutral_black"`):
+   - **Chassis & Surfaces**: True OLED pitch black (`#080808` app background, `#141414` cards, `#1c1c1c` strokes).
+   - **Accents**: Crisp monochrome slate (`#e0e0e0` primary, `#a0a0a0` secondary).
+   - **Aesthetic**: Minimalist, distraction-free stealth interface maximizing screen contrast on modern OLED displays.
+3. **Black & Red** (`AppTheme::BlackRed` / `"black_red"`):
+   - **Chassis & Surfaces**: Triglavian/pirate obsidian surfaces (`#050505` app background, `#101010` cards, `#2a0c10` strokes).
+   - **Accents**: High-saturation combat crimson red (`#ff1e37` primary, `#ff4455` secondary).
+   - **Aesthetic**: Aggressive tactical combat styling tailored for pirate faction and nullsec/lowsec haulers.
+4. **Solar Light** (`AppTheme::SolarLight` / `"solar_light"`):
+   - **Chassis & Surfaces**: Clean daylight workstation (`#f1f5f9` app background, `#ffffff` pure white cards, `#e2e8f0` borders).
+   - **Accents**: Electric enterprise cobalt blue (`#0284c7` primary, `#38bdf8` secondary).
+   - **Aesthetic & Typography**: High-clarity ergonomics featuring pure black-on-white text (`#000000` primary text on `#ffffff` cards) with crisp contrast for high-ambient-light trading.
+
+#### Design System Architecture & Theme Tokens
+All UI rendering dynamically references the active `ThemePalette`:
+- **Dynamic Per-Frame Application (`apply_to_ctx`)**: Injects widget frame colors, selection fills, panel backgrounds, rounding, and text colors directly into `egui::Context` at the beginning of each frame.
+- **Card & Panel Frame Helpers**: `palette.card_frame()`, `palette.sub_card_frame()`, `palette.top_panel_frame()`, `palette.central_panel_frame()`.
+- **Button Helpers**: `palette.primary_button(text)` and `palette.secondary_button(text)` enforce theme-appropriate contrast, padding, and text colors without hardcoding.
+- **Adaptive Semantic Badges**:
+  - `palette.rank_silver()`: Adaptive silver badge ensuring $\ge 0.35$ contrast against both dark and pure white card backgrounds.
+  - `palette.hub_badge_color(hub)`: Tailored trade hub indicator tags (Jita blue, Amarr gold, Dodixie green, Rens orange, Hek purple).
+  - Semantic indicators: `success_green`, `warning_yellow`, `error_red`, `info_blue` maintain $\ge 0.30$ contrast across all 4 themes.
 
 ---
 

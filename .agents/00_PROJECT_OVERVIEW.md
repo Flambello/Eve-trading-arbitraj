@@ -93,12 +93,13 @@ Eve trading arbitraj/
 │   └── ui/
 │       ├── mod.rs                  ← UI dispatcher (GUI vs TUI vs CLI)
 │       ├── gui.rs                  ← native desktop GUI (egui / eframe, universal default)
+│       ├── theme.rs                ← 4 cockpit themes, tokenized ThemePalette & contrast system
 │       └── tui.rs                  ← terminal interface (ratatui / crossterm, deprecated)
 │
 ├── data/                           ← cached SDE SQLite database
 │   └── .gitkeep
 │
-├── tests/                          ← comprehensive automated test suites (11 suites, 105 tests)
+├── tests/                          ← comprehensive automated test suites (14 suites)
 │   ├── test_arbitrage.rs           ← 10% ROI, station filter, highsec filter, PPJ, hauler limits
 │   ├── test_config.rs              ← ship profile parser, user config defaults & TOML roundtrip
 │   ├── test_graph.rs               ← highsec security tags, safe route bypass, Dijkstra jumps
@@ -109,7 +110,10 @@ Eve trading arbitraj/
 │   ├── test_sde_search.rs          ← Roman numerals, autocomplete, SQL escaping resilience
 │   ├── test_security_audit.rs      ← decompression bomb guard, SSO validation, CSV escaping
 │   ├── test_sso.rs                 ← PKCE derivation, token lifecycle, claims validation
-│   └── test_donation_branding.rs   ← in-game donation recipient & branding formatting
+│   ├── test_donation_branding.rs   ← in-game donation recipient & branding formatting
+│   ├── test_error_codes.rs         ← centralized error code taxonomy & formatting
+│   ├── test_logging.rs             ← structured logging, file rotation & redacting
+│   └── test_theme.rs               ← 4 cockpit themes, contrast tokens, frames & indicators
 │
 ├── Cargo.toml
 ├── Cargo.lock
@@ -130,7 +134,7 @@ Eve trading arbitraj/
 | JSON parsing | `serde` + `serde_json` | Zero-copy deserialization |
 | SQLite (SDE) | `rusqlite` (bundled) | Zero dynamic dependencies, embedded C SQLite |
 | Graph / pathfinding | `petgraph` | Dijkstra, efficient adjacency list |
-| Desktop GUI | `eframe` + `egui` | Native Linux window (Wayland & X11), dark theme |
+| Desktop GUI | `eframe` + `egui` | Native Linux window (Wayland & X11), 4 selectable cockpit themes |
 | Terminal UI | `ratatui` + `crossterm` | Rich interactive TUI, tables, spinners |
 | CLI argument parsing | `clap` | Derive-macro based, flags and headless mode |
 | Config files | `toml` crate | Read/write `config.toml` |

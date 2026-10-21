@@ -28,14 +28,53 @@ pub const SMALL_HAULER: ShipProfile = ShipProfile {
 pub fn profile_from_str(s: &str) -> anyhow::Result<ShipProfile>;
 // Returns BIG_HAULER for "big", SMALL_HAULER for "small", else error.
 
+// ── Cockpit Themes ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppTheme {
+    #[default]
+    SciFiVoid,
+    NeutralBlack,
+    BlackRed,
+    SolarLight,
+}
+
+impl AppTheme {
+    pub const ALL: &'static [AppTheme] = &[
+        AppTheme::SciFiVoid,
+        AppTheme::NeutralBlack,
+        AppTheme::BlackRed,
+        AppTheme::SolarLight,
+    ];
+
+    pub fn display_name(&self) -> &'static str;
+    pub fn description(&self) -> &'static str;
+    pub fn is_dark(&self) -> bool;
+    pub fn as_str(&self) -> &'static str;
+    pub fn palette(&self) -> crate::ui::theme::ThemePalette;
+}
+
+impl std::fmt::Display for AppTheme { /* prints display_name() */ }
+impl std::str::FromStr for AppTheme { /* parses canonical and alias strings */ }
+
 // ── User config ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct UserConfig { /* see 02_DATA_MODEL.md */ }
+pub struct UserConfig {
+    pub ship: ShipConfig,
+    pub location: LocationConfig,
+    pub scan: ScanConfig,
+    pub filters: FilterConfig,
+    pub fees: FeeConfig,
+    pub cache: CacheConfig,
+    pub sso: SsoConfig,
+    pub theme: AppTheme,
+}
 
 impl UserConfig {
     pub fn load() -> anyhow::Result<Self>;
-    // Reads ~/.config/eve-trade-scout/config.toml.
+    // Reads ~/.config/eve-traveling-merchant/config.toml (or legacy eve-trade-scout).
     // If missing, writes and returns Self::default().
 
     pub fn save(&self) -> anyhow::Result<()>;
@@ -45,7 +84,7 @@ impl UserConfig {
     // Delegates to profile_from_str(&self.ship.profile).
 }
 
-impl Default for UserConfig { /* sensible defaults */ }
+impl Default for UserConfig { /* sensible defaults: Big Hauler, Jita, SciFiVoid theme */ }
 ```
 
 ---
@@ -482,7 +521,7 @@ pub fn format_unit_price(val: f64) -> String;
 ```
 
 ### Desktop GUI Features (`src/ui/gui.rs`)
-- **Theme**: Dark space sci-fi theme with custom palettes (dark slate panels, gold accents, neon cyan highlights, green profit tags).
+- **Theme**: 4 selectable cockpit themes (Sci-Fi Void, Neutral Black, Black & Red, Solar Light) driven by `ThemePalette`.
 - **Background Worker**: Multi-threaded non-blocking startup progress and market scanning using `mpsc::channel`.
 - **Tabs**:
   - `Deals`: Live filterable arbitrage deals table with item search, sorting, and clipboard copying.
@@ -490,7 +529,57 @@ pub fn format_unit_price(val: f64) -> String;
   - `Route`: Greedy multi-stop route planner with EVE flight sheet generation.
   - `ChainRoute`: Multi-leg knapsack chain planner.
   - `HubArbitrage`: Inter-hub trading matrix across Jita, Amarr, Dodixie, Rens, and Hek.
-  - `Settings`: Live configuration editor and EVE Online SSO v2 PKCE connection.
+  - `Settings`: Live configuration editor, interactive Cockpit Theme Switcher, and EVE Online SSO v2 PKCE connection.
+
+---
+
+## `src/ui/theme.rs`
+
+```rust
+use eframe::egui::{Color32, Context, Frame, Stroke};
+use crate::config::AppTheme;
+use crate::hub_arbitrage::CoreHub;
+
+pub struct ThemePalette {
+    pub dark_mode: bool,
+    pub bg_app: Color32,
+    pub bg_panel: Color32,
+    pub bg_panel_stroke: Stroke,
+    pub bg_central: Color32,
+    pub card_bg: Color32,
+    pub card_stroke: Stroke,
+    pub card_sub_bg: Color32,
+    pub card_sub_stroke: Stroke,
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub text_muted: Color32,
+    pub accent_primary: Color32,
+    pub accent_primary_text: Color32,
+    pub accent_secondary: Color32,
+    pub accent_secondary_text: Color32,
+    pub success_green: Color32,
+    pub warning_yellow: Color32,
+    pub error_red: Color32,
+    pub info_blue: Color32,
+    pub kpi_card_bg: Color32,
+}
+
+impl ThemePalette {
+    pub fn preview_swatches(&self) -> (Color32, Color32, Color32);
+    pub fn card_frame(&self) -> Frame;
+    pub fn sub_card_frame(&self) -> Frame;
+    pub fn top_panel_frame(&self) -> Frame;
+    pub fn bottom_panel_frame(&self) -> Frame;
+    pub fn central_panel_frame(&self) -> Frame;
+    pub fn rank_silver(&self) -> Color32;
+    pub fn hub_badge_color(&self, hub: Option<CoreHub>) -> Color32;
+    pub fn primary_button<'a>(&self, text: impl Into<egui::WidgetText>) -> egui::Button<'a>;
+    pub fn secondary_button<'a>(&self, text: impl Into<egui::WidgetText>) -> egui::Button<'a>;
+    pub fn apply_to_ctx(&self, ctx: &Context);
+}
+
+pub fn theme_palette(theme: AppTheme) -> ThemePalette;
+```
 
 ---
 

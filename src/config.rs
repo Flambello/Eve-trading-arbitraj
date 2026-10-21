@@ -131,6 +131,102 @@ impl SsoConfig {
     }
 }
 
+/// Available cockpit color scheme themes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppTheme {
+    /// Deep dark navy space void with neon cyan telemetry highlights and EVE gold accents.
+    #[default]
+    SciFiVoid,
+    /// Minimalist dark charcoal and OLED pitch black with crisp silver/white contrast.
+    NeutralBlack,
+    /// Obsidian black palette with aggressive crimson red highlights and tactical amber accents.
+    BlackRed,
+    /// Clean, high-contrast daylight theme with crisp off-white panels and cobalt blue accents.
+    SolarLight,
+}
+
+impl AppTheme {
+    pub const ALL: &'static [AppTheme] = &[
+        AppTheme::SciFiVoid,
+        AppTheme::NeutralBlack,
+        AppTheme::BlackRed,
+        AppTheme::SolarLight,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            AppTheme::SciFiVoid => "Sci-Fi Void",
+            AppTheme::NeutralBlack => "Neutral Black",
+            AppTheme::BlackRed => "Black & Red",
+            AppTheme::SolarLight => "Solar Light",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            AppTheme::SciFiVoid => "Deep navy void with neon cyan telemetry & gold accents",
+            AppTheme::NeutralBlack => "Minimalist charcoal & OLED black with crisp monochrome contrast",
+            AppTheme::BlackRed => "Obsidian void with tactical crimson red & combat pirate aesthetics",
+            AppTheme::SolarLight => "High-contrast clean daylight workstation theme with cobalt accents",
+        }
+    }
+
+    pub fn is_dark(&self) -> bool {
+        !matches!(self, AppTheme::SolarLight)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AppTheme::SciFiVoid => "sci_fi_void",
+            AppTheme::NeutralBlack => "neutral_black",
+            AppTheme::BlackRed => "black_red",
+            AppTheme::SolarLight => "solar_light",
+        }
+    }
+}
+
+impl std::fmt::Display for AppTheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+impl std::str::FromStr for AppTheme {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let normalized = s
+            .trim()
+            .to_lowercase()
+            .replace('&', "and")
+            .replace(['-', ' '], "_");
+        let cleaned = normalized.replace("__", "_");
+        match cleaned.as_str() {
+            "sci_fi_void" | "scifi" | "sci_fi" | "void" | "default" | "navy" | "dark" => {
+                Ok(AppTheme::SciFiVoid)
+            }
+            "neutral_black" | "neutral" | "black" | "oled" | "stealth" | "charcoal" => {
+                Ok(AppTheme::NeutralBlack)
+            }
+            "black_red"
+            | "black_and_red"
+            | "black_&_red"
+            | "black&red"
+            | "blackandred"
+            | "crimson"
+            | "red"
+            | "blood_raider"
+            | "triglavian" => Ok(AppTheme::BlackRed),
+            "solar_light" | "light" | "daylight" | "solar" | "white" => Ok(AppTheme::SolarLight),
+            other => anyhow::bail!(
+                "Unknown theme '{}'. Valid choices: 'sci_fi_void', 'neutral_black', 'black_red', 'solar_light'.",
+                other
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserConfig {
     pub ship: ShipConfig,
@@ -141,6 +237,8 @@ pub struct UserConfig {
     pub cache: CacheConfig,
     #[serde(default)]
     pub sso: SsoConfig,
+    #[serde(default)]
+    pub theme: AppTheme,
 }
 
 impl Default for UserConfig {
@@ -176,6 +274,7 @@ impl Default for UserConfig {
                 sde_max_age_days: 30,
             },
             sso: SsoConfig::default(),
+            theme: AppTheme::default(),
         }
     }
 }

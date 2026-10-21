@@ -91,6 +91,9 @@ fn test_user_config_defaults_and_invariants() {
     // Fees defaults
     assert_eq!(cfg.fees.broker_fee_pct, 3.0);
     assert_eq!(cfg.fees.sales_tax_pct, 8.0);
+
+    // Theme default: Sci-Fi Void
+    assert_eq!(cfg.theme, eve_trade_scout::config::AppTheme::SciFiVoid);
 }
 
 #[test]
@@ -103,6 +106,7 @@ fn test_user_config_toml_roundtrip() {
     cfg.scan.sound_alerts = true;
     cfg.scan.sound_min_roi_pct = 150.0;
     cfg.filters.min_net_profit_pct = 20.0;
+    cfg.theme = eve_trade_scout::config::AppTheme::NeutralBlack;
 
     let toml_str = toml::to_string(&cfg).expect("Serialization to TOML must succeed");
     let parsed: UserConfig =
@@ -115,6 +119,84 @@ fn test_user_config_toml_roundtrip() {
     assert!(parsed.scan.sound_alerts);
     assert_eq!(parsed.scan.sound_min_roi_pct, 150.0);
     assert_eq!(parsed.filters.min_net_profit_pct, 20.0);
+    assert_eq!(parsed.theme, eve_trade_scout::config::AppTheme::NeutralBlack);
+}
+
+#[test]
+fn test_theme_parsing_and_all_variants() {
+    use eve_trade_scout::config::AppTheme;
+    use std::str::FromStr;
+
+    // Verify all 4 themes in ALL constant
+    assert_eq!(AppTheme::ALL.len(), 4);
+    assert!(AppTheme::ALL.contains(&AppTheme::SciFiVoid));
+    assert!(AppTheme::ALL.contains(&AppTheme::NeutralBlack));
+    assert!(AppTheme::ALL.contains(&AppTheme::BlackRed));
+    assert!(AppTheme::ALL.contains(&AppTheme::SolarLight));
+
+    // Test string parsing and aliases
+    assert_eq!(AppTheme::from_str("sci_fi_void").unwrap(), AppTheme::SciFiVoid);
+    assert_eq!(AppTheme::from_str("scifi").unwrap(), AppTheme::SciFiVoid);
+    assert_eq!(AppTheme::from_str("default").unwrap(), AppTheme::SciFiVoid);
+    assert_eq!(AppTheme::from_str("dark").unwrap(), AppTheme::SciFiVoid);
+
+    assert_eq!(AppTheme::from_str("neutral_black").unwrap(), AppTheme::NeutralBlack);
+    assert_eq!(AppTheme::from_str("neutral").unwrap(), AppTheme::NeutralBlack);
+    assert_eq!(AppTheme::from_str("black").unwrap(), AppTheme::NeutralBlack);
+    assert_eq!(AppTheme::from_str("oled").unwrap(), AppTheme::NeutralBlack);
+    assert_eq!(AppTheme::from_str("stealth").unwrap(), AppTheme::NeutralBlack);
+
+    assert_eq!(AppTheme::from_str("black_red").unwrap(), AppTheme::BlackRed);
+    assert_eq!(AppTheme::from_str("crimson").unwrap(), AppTheme::BlackRed);
+    assert_eq!(AppTheme::from_str("red").unwrap(), AppTheme::BlackRed);
+    assert_eq!(AppTheme::from_str("blood_raider").unwrap(), AppTheme::BlackRed);
+    assert_eq!(AppTheme::from_str("triglavian").unwrap(), AppTheme::BlackRed);
+
+    assert_eq!(AppTheme::from_str("solar_light").unwrap(), AppTheme::SolarLight);
+    assert_eq!(AppTheme::from_str("light").unwrap(), AppTheme::SolarLight);
+    assert_eq!(AppTheme::from_str("daylight").unwrap(), AppTheme::SolarLight);
+    assert_eq!(AppTheme::from_str("solar").unwrap(), AppTheme::SolarLight);
+    assert_eq!(AppTheme::from_str("white").unwrap(), AppTheme::SolarLight);
+
+    // Invalid theme string rejection
+    assert!(AppTheme::from_str("neon_cyberpunk").is_err());
+    assert!(AppTheme::from_str("").is_err());
+
+    // Legacy TOML backwards compatibility: missing theme field defaults to SciFiVoid
+    let legacy_toml = r#"
+[ship]
+profile = "big"
+[location]
+home_system = "Jita"
+[scan]
+regions = [10000002]
+safe_route_only = true
+npc_stations_only = true
+scan_adjacent_regions = true
+[filters]
+min_profit_isk = 1000000.0
+min_spread_pct = 3.0
+min_net_profit_pct = 10.0
+[fees]
+broker_fee_pct = 3.0
+sales_tax_pct = 8.0
+[cache]
+directory = "cache"
+sde_max_age_days = 30
+"#;
+    let legacy_cfg: UserConfig = toml::from_str(legacy_toml).expect("Legacy TOML without theme must parse");
+    assert_eq!(legacy_cfg.theme, AppTheme::SciFiVoid);
+
+    // Roundtrip all 4 themes through TOML
+    for &theme in AppTheme::ALL {
+        let cfg = UserConfig {
+            theme,
+            ..UserConfig::default()
+        };
+        let serialized = toml::to_string(&cfg).expect("Serialization must succeed");
+        let deserialized: UserConfig = toml::from_str(&serialized).expect("Deserialization must succeed");
+        assert_eq!(deserialized.theme, theme);
+    }
 }
 
 #[test]
@@ -198,4 +280,15 @@ fn test_config_base_dir_resolution_and_precedence() {
     } else {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
+}
+
+#[test]
+fn test_config_example_template_is_valid() {
+    let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.toml");
+    let content = std::fs::read_to_string(&example_path).expect("config.example.toml must exist");
+    let cfg: UserConfig = toml::from_str(&content).expect("config.example.toml must be valid TOML deserializing into UserConfig");
+    assert_eq!(cfg.theme, eve_trade_scout::config::AppTheme::SciFiVoid);
+    assert_eq!(cfg.ship.profile, "big");
+    assert_eq!(cfg.location.home_system, "Jita");
+    assert!(cfg.filters.min_net_profit_pct >= 10.0);
 }

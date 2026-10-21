@@ -2,6 +2,8 @@
 # Saved automatically to ~/.config/eve-traveling-merchant/config.toml (Linux)
 # or %APPDATA%\eve-traveling-merchant\config.toml (Windows).
 
+theme = "sci_fi_void"                # Cockpit theme: "sci_fi_void" (default), "neutral_black", "black_red", or "solar_light"
+
 [ship]
 profile = "big"                      # "big" (60,000 m³ / 500M ISK) or "small" (30,000 m³ / 50M ISK)
 

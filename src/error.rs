@@ -87,6 +87,8 @@ pub enum ErrorCode {
     ErrUiAudioPlayback,
     /// Failed to export deals or manifests to CSV file on disk.
     ErrUiCsvExport,
+    /// Application startup initialization sequence failed across one or more subsystems.
+    ErrUiStartupFailed,
 
     // ── 9000..9999: System & Panic Handling ────────────────────────────────
     /// Unhandled application panic caught by the global panic hook.
@@ -135,6 +137,7 @@ impl ErrorCode {
             Self::ErrUiWorkerChannel => "ERR_UI_WORKER_CHANNEL",
             Self::ErrUiAudioPlayback => "ERR_UI_AUDIO_PLAYBACK",
             Self::ErrUiCsvExport => "ERR_UI_CSV_EXPORT",
+            Self::ErrUiStartupFailed => "ERR_UI_STARTUP_FAILED",
 
             Self::ErrSysPanic => "ERR_SYS_PANIC",
         }
@@ -181,6 +184,7 @@ impl ErrorCode {
             Self::ErrUiWorkerChannel => 7002,
             Self::ErrUiAudioPlayback => 7003,
             Self::ErrUiCsvExport => 7004,
+            Self::ErrUiStartupFailed => 7005,
 
             Self::ErrSysPanic => 9001,
         }
@@ -229,6 +233,9 @@ impl ErrorCode {
             Self::ErrUiWorkerChannel => "Worker thread channel disconnected or panicked",
             Self::ErrUiAudioPlayback => "Audio alert playback failed",
             Self::ErrUiCsvExport => "Failed to write CSV export to disk",
+            Self::ErrUiStartupFailed => {
+                "Application startup initialization sequence failed across one or more subsystems"
+            }
 
             Self::ErrSysPanic => "Unhandled application panic",
         }

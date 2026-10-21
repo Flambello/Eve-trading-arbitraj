@@ -34,6 +34,7 @@ const ALL_ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::ErrUiWorkerChannel,
     ErrorCode::ErrUiAudioPlayback,
     ErrorCode::ErrUiCsvExport,
+    ErrorCode::ErrUiStartupFailed,
     ErrorCode::ErrSysPanic,
 ];
 

@@ -129,6 +129,7 @@ Every non-trivial failure condition in the application emits a standardized `Err
 | `7002` | `ERR_UI_WORKER_CHANNEL` | Background worker thread channel disconnected or thread panicked. | Check logs for preceding panic or worker thread termination. |
 | `7003` | `ERR_UI_AUDIO_PLAYBACK` | Sound alert audio output failed (ALSA / PulseAudio / PipeWire). | Verify sound device configuration or disable sound alerts in settings. |
 | `7004` | `ERR_UI_CSV_EXPORT` | Failed to write CSV export to disk (deals or manifests). | Ensure destination directory exists, is writable, and is not a symlink. |
+| `7005` | `ERR_UI_STARTUP_FAILED` | Application startup initialization sequence failed across one or more subsystems. | Inspect error code badge on splash screen, check logs for root cause, or click 'Enter Offline Mode'. |
 
 ### 9000–9999: System & Panic Handling
 
@@ -139,6 +140,13 @@ Every non-trivial failure condition in the application emits a standardized `Err
 ---
 
 ## 4. Diagnostics & Troubleshooting Guide
+
+### Startup Failure Recovery & Splash Telemetry
+
+If application startup encounters any fatal error (missing SDE database, offline ESI network, invalid configuration, or unexpected worker panic):
+1. **Machine-Readable Badge**: The loading splash screen displays a prominent red `ErrorCode` badge (e.g. `[ERR_SDE_NOT_FOUND]`, `[ERR_UI_WORKER_CHANNEL]`, `[ERR_UI_STARTUP_FAILED]`).
+2. **Offline Mode Bypass**: Pilots can click **"Enter Offline Mode"** to enter the workstation, inspect settings, and review cached telemetry without restarting the process.
+3. **Supervisor Task Interception**: Background startup worker panics are caught by a dedicated supervisor task and logged with `ERR_SYS_PANIC` before relaying an actionable error card to the GUI.
 
 ### Inspecting Live Logs
 

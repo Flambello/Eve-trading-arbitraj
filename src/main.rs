@@ -25,13 +25,51 @@ async fn main() -> Result<()> {
         }
     };
 
-    let cfg = UserConfig::load().unwrap_or_default();
-    let ship_profile = cfg.ship_profile()?;
+    let result = run_app().await;
+    if let Err(ref e) = result {
+        tracing::error!(
+            target: "eve_trade_scout",
+            error_code = %eve_trade_scout::error::ErrorCode::ErrUiStartupFailed,
+            error = %e,
+            "Fatal application startup/runtime failure: {e}"
+        );
+        eprintln!("[FATAL] eve-merchant startup/runtime failure: {e}");
+    }
+    result
+}
+
+async fn run_app() -> Result<()> {
+    let cfg = match UserConfig::load() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "eve_trade_scout",
+                error_code = %eve_trade_scout::error::ErrorCode::ErrConfigLoadFailed,
+                error = %e,
+                "Failed to load user config file; falling back to default configuration"
+            );
+            UserConfig::default()
+        }
+    };
+
+    let ship_profile = match cfg.ship_profile() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: "eve_trade_scout",
+                error_code = %eve_trade_scout::error::ErrorCode::ErrConfigLoadFailed,
+                error = %e,
+                "Invalid ship profile in config; defaulting to Big Hauler"
+            );
+            eve_trade_scout::config::BIG_HAULER
+        }
+    };
 
     let sde_path = resolve_sde_path();
     let cache_dir = resolve_cache_dir(&cfg.cache.directory);
 
     let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+    let startup_tx_supervisor = startup_tx.clone();
     let is_big = ship_profile.name == "Big Hauler";
 
     let sde_path_clone = sde_path.clone();
@@ -48,7 +86,7 @@ async fn main() -> Result<()> {
     let sde_max_age_days = cfg.cache.sde_max_age_days;
     let default_regions = cfg.scan.regions.clone();
 
-    tokio::spawn(async move {
+    let worker_handle = tokio::spawn(async move {
         let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
             stage_index: 1,
             total_stages: 5,
@@ -57,6 +95,7 @@ async fn main() -> Result<()> {
             percent: 0.15,
             completed: false,
             error: None,
+            error_code: None,
         }));
 
         let sde = match SdeLoader::open(&sde_path_clone, sde_max_age_days).await {
@@ -68,10 +107,10 @@ async fn main() -> Result<()> {
                     error = %e,
                     "Failed to load SDE database during startup: {e}"
                 );
-                let _ = startup_tx.send(ui::StartupMsg::Error(format!(
-                    "Failed to load SDE database: {}",
-                    e
-                )));
+                let _ = startup_tx.send(ui::StartupMsg::error(
+                    eve_trade_scout::error::ErrorCode::ErrSdeNotFound,
+                    format!("Failed to load SDE database: {}", e),
+                ));
                 return;
             }
         };
@@ -89,6 +128,7 @@ async fn main() -> Result<()> {
             percent: 0.35,
             completed: false,
             error: None,
+            error_code: None,
         }));
 
         let graph = match SystemGraph::from_sde(&sde) {
@@ -100,10 +140,10 @@ async fn main() -> Result<()> {
                     error = %e,
                     "Failed to construct stargate network during startup: {e}"
                 );
-                let _ = startup_tx.send(ui::StartupMsg::Error(format!(
-                    "Failed to construct stargate network: {}",
-                    e
-                )));
+                let _ = startup_tx.send(ui::StartupMsg::error(
+                    eve_trade_scout::error::ErrorCode::ErrGraphBuildFailed,
+                    format!("Failed to construct stargate network: {}", e),
+                ));
                 return;
             }
         };
@@ -141,6 +181,7 @@ async fn main() -> Result<()> {
             percent: 0.55,
             completed: false,
             error: None,
+            error_code: None,
         }));
 
         let esi = match EsiClient::new(&cache_dir_clone) {
@@ -152,10 +193,10 @@ async fn main() -> Result<()> {
                     error = %e,
                     "Failed to initialize ESI API client during startup: {e}"
                 );
-                let _ = startup_tx.send(ui::StartupMsg::Error(format!(
-                    "Failed to initialize ESI API client: {}",
-                    e
-                )));
+                let _ = startup_tx.send(ui::StartupMsg::error(
+                    eve_trade_scout::error::ErrorCode::ErrEsiClientInit,
+                    format!("Failed to initialize ESI API client: {}", e),
+                ));
                 return;
             }
         };
@@ -169,10 +210,10 @@ async fn main() -> Result<()> {
                     error = %e,
                     "Failed to fetch initial ESI regional market data during startup: {e}"
                 );
-                let _ = startup_tx.send(ui::StartupMsg::Error(format!(
-                    "Failed to fetch ESI market data: {}",
-                    e
-                )));
+                let _ = startup_tx.send(ui::StartupMsg::error(
+                    eve_trade_scout::error::ErrorCode::ErrEsiNetworkFailed,
+                    format!("Failed to fetch ESI market data: {}", e),
+                ));
                 return;
             }
         };
@@ -198,6 +239,7 @@ async fn main() -> Result<()> {
             percent: 0.80,
             completed: false,
             error: None,
+            error_code: None,
         }));
 
         let arb_cfg = ArbitrageConfig {
@@ -225,6 +267,7 @@ async fn main() -> Result<()> {
             percent: 0.95,
             completed: false,
             error: None,
+            error_code: None,
         }));
 
         let manifests = bundle_route_cargo(&deals, ship_profile);
@@ -240,6 +283,35 @@ async fn main() -> Result<()> {
             manifests,
             route: Some(route),
         });
+    });
+
+    let supervisor_tx = startup_tx_supervisor;
+    tokio::spawn(async move {
+        if let Err(join_err) = worker_handle.await {
+            if join_err.is_panic() {
+                tracing::error!(
+                    target: "eve_trade_scout",
+                    error_code = %eve_trade_scout::error::ErrorCode::ErrSysPanic,
+                    error = %join_err,
+                    "FATAL: Background startup worker panicked unexpectedly"
+                );
+                let _ = supervisor_tx.send(ui::StartupMsg::error(
+                    eve_trade_scout::error::ErrorCode::ErrSysPanic,
+                    format!("Startup worker panicked unexpectedly: {join_err}. Check log file for backtrace."),
+                ));
+            } else if join_err.is_cancelled() {
+                tracing::error!(
+                    target: "eve_trade_scout",
+                    error_code = %eve_trade_scout::error::ErrorCode::ErrUiStartupFailed,
+                    error = %join_err,
+                    "Startup worker task was cancelled prematurely"
+                );
+                let _ = supervisor_tx.send(ui::StartupMsg::error(
+                    eve_trade_scout::error::ErrorCode::ErrUiStartupFailed,
+                    "Startup worker task was cancelled prematurely.".to_string(),
+                ));
+            }
+        }
     });
 
     let app = ui::DesktopApp::new_loading(

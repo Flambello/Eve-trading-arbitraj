@@ -99,7 +99,7 @@ Eve trading arbitraj/
 ├── data/                           ← cached SDE SQLite database
 │   └── .gitkeep
 │
-├── tests/                          ← comprehensive automated test suites (14 suites)
+├── tests/                          ← comprehensive automated test suites (15 suites)
 │   ├── test_arbitrage.rs           ← 10% ROI, station filter, highsec filter, PPJ, hauler limits
 │   ├── test_config.rs              ← ship profile parser, user config defaults & TOML roundtrip
 │   ├── test_graph.rs               ← highsec security tags, safe route bypass, Dijkstra jumps
@@ -113,7 +113,8 @@ Eve trading arbitraj/
 │   ├── test_donation_branding.rs   ← in-game donation recipient & branding formatting
 │   ├── test_error_codes.rs         ← centralized error code taxonomy & formatting
 │   ├── test_logging.rs             ← structured logging, file rotation & redacting
-│   └── test_theme.rs               ← 4 cockpit themes, contrast tokens, frames & indicators
+│   ├── test_theme.rs               ← 4 cockpit themes, contrast tokens, frames & indicators
+│   └── test_startup_resilience.rs  ← startup failure catch-all, channel disconnect & offline mode
 │
 ├── Cargo.toml
 ├── Cargo.lock

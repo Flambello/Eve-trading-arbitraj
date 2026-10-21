@@ -518,11 +518,36 @@ pub fn run_tui(
 ) -> anyhow::Result<()>;
 
 pub fn format_unit_price(val: f64) -> String;
+
+// Startup Telemetry & Worker Messages
+pub struct StartupProgress {
+    pub stage_index: usize,
+    pub total_stages: usize,
+    pub stage_name: String,
+    pub detail: String,
+    pub percent: f32,
+    pub completed: bool,
+    pub error: Option<String>,
+    pub error_code: Option<ErrorCode>,
+}
+
+pub enum StartupMsg {
+    Progress(StartupProgress),
+    Ready { /* universe dependencies and initial deals */ },
+    Error { code: ErrorCode, message: String },
+}
 ```
 
 ### Desktop GUI Features (`src/ui/gui.rs`)
 - **Theme**: 4 selectable cockpit themes (Sci-Fi Void, Neutral Black, Black & Red, Solar Light) driven by `ThemePalette`.
-- **Background Worker**: Multi-threaded non-blocking startup progress and market scanning using `mpsc::channel`.
+- **Background Worker & Catch-All**: Multi-threaded non-blocking startup progress with a supervisor join handle and channel disconnect detection (`ErrUiWorkerChannel`).
+- **Offline Mode**: Graceful fallback allowing the pilot to inspect configuration, settings, and cached logs when startup fails.
+- **API Methods**:
+  - `poll_startup(&mut self, ctx: &egui::Context)`
+  - `start_scan(&mut self)`
+  - `is_offline(&self) -> bool`
+  - `is_scanning(&self) -> bool`
+  - `status_text(&self) -> &str`
 - **Tabs**:
   - `Deals`: Live filterable arbitrage deals table with item search, sorting, and clipboard copying.
   - `Manifests`: Station-to-station cargo bundling manifests.
@@ -631,11 +656,12 @@ pub enum ErrorCode {
     ErrConfigLoadFailed,
     ErrConfigSaveFailed,
 
-    // UI (7001..7004)
+    // UI (7001..7005)
     ErrUiRuntimeInit,
     ErrUiWorkerChannel,
     ErrUiAudioPlayback,
     ErrUiCsvExport,
+    ErrUiStartupFailed,
 
     // System (9001)
     ErrSysPanic,

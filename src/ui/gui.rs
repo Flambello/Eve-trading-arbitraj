@@ -108,6 +108,7 @@ pub struct StartupProgress {
     pub percent: f32,
     pub completed: bool,
     pub error: Option<String>,
+    pub error_code: Option<crate::error::ErrorCode>,
 }
 
 impl Default for StartupProgress {
@@ -120,6 +121,7 @@ impl Default for StartupProgress {
             percent: 0.05,
             completed: false,
             error: None,
+            error_code: None,
         }
     }
 }
@@ -136,7 +138,20 @@ pub enum StartupMsg {
         manifests: Vec<TradeCorridorManifest>,
         route: Option<TradeRoute>,
     },
-    Error(String),
+    Error {
+        code: crate::error::ErrorCode,
+        message: String,
+    },
+}
+
+impl StartupMsg {
+    /// Constructs a structured startup error message with an associated ErrorCode.
+    pub fn error(code: crate::error::ErrorCode, message: impl Into<String>) -> Self {
+        Self::Error {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 const TIPS: &[&str] = &[
@@ -579,6 +594,7 @@ impl DesktopApp {
                 percent: 1.0,
                 completed: true,
                 error: None,
+                error_code: None,
             },
             startup_rx: None,
             startup_tip_index: 0,
@@ -1127,12 +1143,29 @@ impl DesktopApp {
         list
     }
 
-    fn start_scan(&mut self) {
+    /// Returns true if any essential universe dependency (SDE, Stargate graph, ESI client) is uninitialized.
+    pub fn is_offline(&self) -> bool {
+        self.sde.is_none() || self.graph.is_none() || self.esi.is_none()
+    }
+
+    /// Returns the current application telemetry status text.
+    pub fn status_text(&self) -> &str {
+        &self.status_text
+    }
+
+    /// Returns true if an asynchronous market scan is actively running.
+    pub fn is_scanning(&self) -> bool {
+        self.is_scanning
+    }
+
+    /// Initiates a live asynchronous market scan across active regions.
+    pub fn start_scan(&mut self) {
         if self.is_scanning {
             return;
         }
 
         let (Some(sde), Some(graph), Some(esi)) = (&self.sde, &self.graph, &self.esi) else {
+            self.status_text = "[WARN] Cannot scan live market: SDE universe database or ESI client is offline.".to_string();
             return;
         };
 
@@ -1246,21 +1279,28 @@ impl DesktopApp {
             });
         });
     }
-}
 
-impl eframe::App for DesktopApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Startup splash handling
-        if self.is_startup {
-            let mut startup_complete = None;
-            if let Some(ref rx) = self.startup_rx {
-                while let Ok(msg) = rx.try_recv() {
-                    match msg {
-                        StartupMsg::Progress(prog) => {
-                            self.startup_progress = prog;
-                            ctx.request_repaint();
-                        }
-                        StartupMsg::Ready {
+    /// Polls startup messages from the background worker channel and updates progress / errors.
+    pub fn poll_startup(&mut self, ctx: &egui::Context) {
+        let mut startup_complete = None;
+        if let Some(ref rx) = self.startup_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    StartupMsg::Progress(prog) => {
+                        self.startup_progress = prog;
+                        ctx.request_repaint();
+                    }
+                    StartupMsg::Ready {
+                        sde,
+                        graph,
+                        esi,
+                        home_system_name,
+                        scan_regions,
+                        deals,
+                        manifests,
+                        route,
+                    } => {
+                        startup_complete = Some((
                             sde,
                             graph,
                             esi,
@@ -1269,63 +1309,81 @@ impl eframe::App for DesktopApp {
                             deals,
                             manifests,
                             route,
-                        } => {
-                            startup_complete = Some((
-                                sde,
-                                graph,
-                                esi,
-                                home_system_name,
-                                scan_regions,
-                                deals,
-                                manifests,
-                                route,
-                            ));
-                            break;
-                        }
-                        StartupMsg::Error(err) => {
-                            tracing::error!(
-                                error_code = %crate::error::ErrorCode::ErrUiRuntimeInit,
-                                error = %err,
-                                "Application startup sequence failed: {}",
-                                err
-                            );
-                            self.startup_progress.error = Some(err);
-                            ctx.request_repaint();
-                        }
+                        ));
+                        break;
+                    }
+                    StartupMsg::Error { code, message } => {
+                        tracing::error!(
+                            target: "eve_trade_scout",
+                            error_code = %code,
+                            error = %message,
+                            "Application startup sequence failed at stage '{}': {}",
+                            self.startup_progress.stage_name,
+                            message
+                        );
+                        self.startup_progress.error = Some(message);
+                        self.startup_progress.error_code = Some(code);
+                        ctx.request_repaint();
                     }
                 }
             }
 
-            if let Some((
-                sde,
-                graph,
-                esi,
-                home_system_name,
-                _scan_regions,
-                deals,
-                manifests,
-                route,
-            )) = startup_complete
-            {
-                self.sde = Some(sde);
-                self.graph = Some(graph);
-                self.esi = Some(esi);
-                self.home_system = home_system_name;
-                self.deals = deals;
-                self.manifests = manifests;
-                self.route = route;
-                self.is_startup = false;
-                self.startup_rx = None;
-                self.status_text = format!(
-                    "[OK] Ready! Loaded {} profitable trade deals across {} packed manifests.",
-                    self.deals.len(),
-                    self.manifests.len()
-                );
-                if self.sso_character_name.is_some() && self.sso_auto_sync_location {
-                    self.fetch_live_character_location(true);
+            // Catch-all: If startup is still pending and no error was explicitly set, check if the worker channel disconnected unexpectedly
+            if startup_complete.is_none() && self.startup_progress.error.is_none() {
+                if let Err(std::sync::mpsc::TryRecvError::Disconnected) = rx.try_recv() {
+                    let err_code = crate::error::ErrorCode::ErrUiWorkerChannel;
+                    let err_msg = "Startup background worker channel disconnected unexpectedly before completion. Worker may have terminated prematurely.".to_string();
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %err_code,
+                        "{}",
+                        err_msg
+                    );
+                    self.startup_progress.error = Some(err_msg);
+                    self.startup_progress.error_code = Some(err_code);
+                    ctx.request_repaint();
                 }
-                ctx.request_repaint();
             }
+        }
+
+        if let Some((
+            sde,
+            graph,
+            esi,
+            home_system_name,
+            _scan_regions,
+            deals,
+            manifests,
+            route,
+        )) = startup_complete
+        {
+            self.sde = Some(sde);
+            self.graph = Some(graph);
+            self.esi = Some(esi);
+            self.home_system = home_system_name;
+            self.deals = deals;
+            self.manifests = manifests;
+            self.route = route;
+            self.is_startup = false;
+            self.startup_rx = None;
+            self.status_text = format!(
+                "[OK] Ready! Loaded {} profitable trade deals across {} packed manifests.",
+                self.deals.len(),
+                self.manifests.len()
+            );
+            if self.sso_character_name.is_some() && self.sso_auto_sync_location {
+                self.fetch_live_character_location(true);
+            }
+            ctx.request_repaint();
+        }
+    }
+}
+
+impl eframe::App for DesktopApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Startup splash handling
+        if self.is_startup {
+            self.poll_startup(ctx);
 
             // Poll SSO token refresh concurrently during startup splash screen
             self.poll_sso_refresh(ctx);
@@ -8232,19 +8290,49 @@ impl DesktopApp {
                     // Error Alert Box (if any)
                     if let Some(ref err) = self.startup_progress.error {
                         ui.add_space(14.0);
+                        let err_code = self
+                            .startup_progress
+                            .error_code
+                            .unwrap_or(crate::error::ErrorCode::ErrUiStartupFailed);
+
                         egui::Frame::none()
-                            .fill(Color32::from_rgba_unmultiplied(48, 12, 16, 230))
+                            .fill(Color32::from_rgba_unmultiplied(48, 12, 16, 235))
                             .stroke(Stroke::new(1.0_f32, Color32::from_rgb(231, 76, 60)))
-                            .rounding(5.0)
-                            .inner_margin(10.0)
+                            .rounding(6.0)
+                            .inner_margin(12.0)
                             .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(format!("[!] Startup Warning: {}", err))
-                                        .size(12.0)
-                                        .color(Color32::from_rgb(255, 120, 120))
-                                        .strong(),
-                                );
+                                ui.horizontal(|ui| {
+                                    // High-visibility error code badge
+                                    egui::Frame::none()
+                                        .fill(Color32::from_rgb(180, 25, 42))
+                                        .rounding(3.0)
+                                        .inner_margin(egui::vec2(6.0, 2.0))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                RichText::new(err_code.as_str())
+                                                    .size(11.0)
+                                                    .color(Color32::WHITE)
+                                                    .strong(),
+                                            );
+                                        });
+
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Stage: {}",
+                                            self.startup_progress.stage_name
+                                        ))
+                                        .size(11.0)
+                                        .color(Color32::from_rgb(200, 215, 235)),
+                                    );
+                                });
+
                                 ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(err)
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(255, 170, 170)),
+                                );
+                                ui.add_space(8.0);
                                 ui.horizontal(|ui| {
                                     if ui
                                         .button(

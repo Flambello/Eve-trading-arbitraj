@@ -600,7 +600,8 @@ fn test_config_persistence_security_and_permission_isolation() {
     cfg.sso.callback_port = 37373;
     cfg.save().expect("Configuration save must succeed");
 
-    let config_path = eve_trade_scout::config::UserConfig::config_path().expect("Configuration path must resolve");
+    let config_path = eve_trade_scout::config::UserConfig::config_path()
+        .expect("Configuration path must resolve");
     assert!(config_path.exists(), "Configuration file must be created");
 
     #[cfg(unix)]
@@ -616,7 +617,10 @@ fn test_config_persistence_security_and_permission_isolation() {
 
     // Verify atomic rename does not leave .tmp file behind
     let tmp_path = config_path.with_extension("toml.tmp");
-    assert!(!tmp_path.exists(), "Atomic write must remove temporary file upon rename");
+    assert!(
+        !tmp_path.exists(),
+        "Atomic write must remove temporary file upon rename"
+    );
 
     // Clean up
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -626,4 +630,3 @@ fn test_config_persistence_security_and_permission_isolation() {
         std::env::remove_var("EVE_CONFIG_DIR");
     }
 }
-

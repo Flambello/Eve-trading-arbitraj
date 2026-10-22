@@ -526,7 +526,11 @@ impl DesktopApp {
             },
             broker_fee_pct: cfg.fees.broker_fee_pct.clamp(1.0, 5.0),
             sales_tax_pct: cfg.fees.sales_tax_pct.clamp(3.0, 8.0),
-            max_route_stops: if cfg.ui.max_route_stops == 0 { 5 } else { cfg.ui.max_route_stops },
+            max_route_stops: if cfg.ui.max_route_stops == 0 {
+                5
+            } else {
+                cfg.ui.max_route_stops
+            },
 
             custom_cargo_vol: cfg.ship.custom_cargo_vol.max(10.0),
             custom_budget_isk: cfg.ship.custom_budget_isk.max(100_000.0),
@@ -555,7 +559,11 @@ impl DesktopApp {
             min_profit_filter_m: cfg.view.min_profit_filter_m,
             max_jumps_filter: cfg.view.max_jumps_filter,
             hide_npc_trades: cfg.view.hide_npc_trades,
-            max_deals_per_order: if cfg.view.max_deals_per_order == 0 { 2 } else { cfg.view.max_deals_per_order },
+            max_deals_per_order: if cfg.view.max_deals_per_order == 0 {
+                2
+            } else {
+                cfg.view.max_deals_per_order
+            },
 
             cached_deals_filtered: Vec::new(),
             cached_deals_key: (
@@ -592,8 +600,16 @@ impl DesktopApp {
             rx,
             tx,
 
-            chain_max_legs: if cfg.view.chain_max_legs == 0 { 4 } else { cfg.view.chain_max_legs },
-            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 { 2 } else { cfg.view.chain_max_dest_loads },
+            chain_max_legs: if cfg.view.chain_max_legs == 0 {
+                4
+            } else {
+                cfg.view.chain_max_legs
+            },
+            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 {
+                2
+            } else {
+                cfg.view.chain_max_dest_loads
+            },
             chain_include_npc: cfg.view.chain_include_npc,
             chain_detour_enabled: cfg.view.chain_detour_enabled,
             chain_max_detour: cfg.view.chain_max_detour,
@@ -604,7 +620,11 @@ impl DesktopApp {
             chain_tx,
             chain_flowchart_split: true,
 
-            hub_source_filter: cfg.view.hub_source_hub.as_deref().and_then(core_hub_from_str),
+            hub_source_filter: cfg
+                .view
+                .hub_source_hub
+                .as_deref()
+                .and_then(core_hub_from_str),
             hub_dest_filter: cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str),
             hub_include_npc: cfg.view.hub_include_npc,
             hub_major_stations_only: cfg.view.hub_major_stations_only,
@@ -684,7 +704,11 @@ impl DesktopApp {
         initial_sound_min_roi: f64,
     ) -> Self {
         let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
-        cfg.ship.profile = if initial_ship_is_big { "big".to_string() } else { "small".to_string() };
+        cfg.ship.profile = if initial_ship_is_big {
+            "big".to_string()
+        } else {
+            "small".to_string()
+        };
         cfg.location.home_system = initial_home_system;
         cfg.scan.safe_route_only = initial_safe_only;
         cfg.scan.npc_stations_only = initial_npc_stations_only;
@@ -697,10 +721,7 @@ impl DesktopApp {
         Self::new_with_config(sde, graph, esi, &cfg, initial_deals, initial_route)
     }
 
-    pub fn new_loading(
-        cfg: &crate::config::UserConfig,
-        startup_rx: Receiver<StartupMsg>,
-    ) -> Self {
+    pub fn new_loading(cfg: &crate::config::UserConfig, startup_rx: Receiver<StartupMsg>) -> Self {
         let (tx, rx) = channel();
         let (chain_tx, chain_rx) = channel();
         let saved_tok = crate::esi::sso::load_saved_token();
@@ -721,7 +742,11 @@ impl DesktopApp {
             },
             broker_fee_pct: cfg.fees.broker_fee_pct.clamp(1.0, 5.0),
             sales_tax_pct: cfg.fees.sales_tax_pct.clamp(3.0, 8.0),
-            max_route_stops: if cfg.ui.max_route_stops == 0 { 5 } else { cfg.ui.max_route_stops },
+            max_route_stops: if cfg.ui.max_route_stops == 0 {
+                5
+            } else {
+                cfg.ui.max_route_stops
+            },
 
             auto_refresh: cfg.scan.auto_refresh,
             auto_refresh_secs: 300,
@@ -746,7 +771,11 @@ impl DesktopApp {
             min_profit_filter_m: cfg.view.min_profit_filter_m,
             max_jumps_filter: cfg.view.max_jumps_filter,
             hide_npc_trades: cfg.view.hide_npc_trades,
-            max_deals_per_order: if cfg.view.max_deals_per_order == 0 { 2 } else { cfg.view.max_deals_per_order },
+            max_deals_per_order: if cfg.view.max_deals_per_order == 0 {
+                2
+            } else {
+                cfg.view.max_deals_per_order
+            },
 
             cached_deals_filtered: Vec::new(),
             cached_deals_key: (
@@ -783,8 +812,16 @@ impl DesktopApp {
             rx,
             tx,
 
-            chain_max_legs: if cfg.view.chain_max_legs == 0 { 4 } else { cfg.view.chain_max_legs },
-            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 { 2 } else { cfg.view.chain_max_dest_loads },
+            chain_max_legs: if cfg.view.chain_max_legs == 0 {
+                4
+            } else {
+                cfg.view.chain_max_legs
+            },
+            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 {
+                2
+            } else {
+                cfg.view.chain_max_dest_loads
+            },
             chain_include_npc: cfg.view.chain_include_npc,
             chain_detour_enabled: cfg.view.chain_detour_enabled,
             chain_max_detour: cfg.view.chain_max_detour,
@@ -795,7 +832,11 @@ impl DesktopApp {
             chain_tx,
             chain_flowchart_split: true,
 
-            hub_source_filter: cfg.view.hub_source_hub.as_deref().and_then(core_hub_from_str),
+            hub_source_filter: cfg
+                .view
+                .hub_source_hub
+                .as_deref()
+                .and_then(core_hub_from_str),
             hub_dest_filter: cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str),
             hub_include_npc: cfg.view.hub_include_npc,
             hub_major_stations_only: cfg.view.hub_major_stations_only,
@@ -862,7 +903,11 @@ impl DesktopApp {
         startup_rx: Receiver<StartupMsg>,
     ) -> Self {
         let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
-        cfg.ship.profile = if initial_ship_is_big { "big".to_string() } else { "small".to_string() };
+        cfg.ship.profile = if initial_ship_is_big {
+            "big".to_string()
+        } else {
+            "small".to_string()
+        };
         cfg.location.home_system = initial_home_system;
         cfg.scan.safe_route_only = initial_safe_only;
         cfg.scan.npc_stations_only = initial_npc_stations_only;
@@ -919,22 +964,42 @@ impl DesktopApp {
         self.is_fullscreen = cfg.ui.is_fullscreen;
         self.dossier_side_panel = cfg.ui.dossier_side_panel;
         self.compact_kpi = cfg.ui.compact_kpi;
-        self.max_route_stops = if cfg.ui.max_route_stops == 0 { 5 } else { cfg.ui.max_route_stops };
+        self.max_route_stops = if cfg.ui.max_route_stops == 0 {
+            5
+        } else {
+            cfg.ui.max_route_stops
+        };
 
         self.sort_by = DealSortBy::from_str(&cfg.view.deal_sort_by);
         self.sort_descending = cfg.view.deal_sort_descending;
         self.min_profit_filter_m = cfg.view.min_profit_filter_m;
         self.max_jumps_filter = cfg.view.max_jumps_filter;
         self.hide_npc_trades = cfg.view.hide_npc_trades;
-        self.max_deals_per_order = if cfg.view.max_deals_per_order == 0 { 2 } else { cfg.view.max_deals_per_order };
+        self.max_deals_per_order = if cfg.view.max_deals_per_order == 0 {
+            2
+        } else {
+            cfg.view.max_deals_per_order
+        };
 
-        self.chain_max_legs = if cfg.view.chain_max_legs == 0 { 4 } else { cfg.view.chain_max_legs };
-        self.chain_max_dest_loads = if cfg.view.chain_max_dest_loads == 0 { 2 } else { cfg.view.chain_max_dest_loads };
+        self.chain_max_legs = if cfg.view.chain_max_legs == 0 {
+            4
+        } else {
+            cfg.view.chain_max_legs
+        };
+        self.chain_max_dest_loads = if cfg.view.chain_max_dest_loads == 0 {
+            2
+        } else {
+            cfg.view.chain_max_dest_loads
+        };
         self.chain_include_npc = cfg.view.chain_include_npc;
         self.chain_detour_enabled = cfg.view.chain_detour_enabled;
         self.chain_max_detour = cfg.view.chain_max_detour;
 
-        self.hub_source_filter = cfg.view.hub_source_hub.as_deref().and_then(core_hub_from_str);
+        self.hub_source_filter = cfg
+            .view
+            .hub_source_hub
+            .as_deref()
+            .and_then(core_hub_from_str);
         self.hub_dest_filter = cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str);
         self.hub_include_npc = cfg.view.hub_include_npc;
         self.hub_major_stations_only = cfg.view.hub_major_stations_only;
@@ -944,7 +1009,11 @@ impl DesktopApp {
     pub fn export_user_config(&self) -> crate::config::UserConfig {
         let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
 
-        cfg.ship.profile = if self.ship_is_big { "big".to_string() } else { "small".to_string() };
+        cfg.ship.profile = if self.ship_is_big {
+            "big".to_string()
+        } else {
+            "small".to_string()
+        };
         cfg.ship.use_custom_ship = self.use_custom_ship;
         cfg.ship.custom_cargo_vol = self.custom_cargo_vol.max(10.0);
         cfg.ship.custom_budget_isk = self.custom_budget_isk.max(100_000.0);
@@ -952,11 +1021,21 @@ impl DesktopApp {
         cfg.location.home_system = self.home_system.clone();
 
         let mut regions = Vec::new();
-        if self.region_the_forge { regions.push(10000002); }
-        if self.region_domain { regions.push(10000043); }
-        if self.region_sinq_laison { regions.push(10000032); }
-        if self.region_heimatar { regions.push(10000030); }
-        if self.region_metropolis { regions.push(10000042); }
+        if self.region_the_forge {
+            regions.push(10000002);
+        }
+        if self.region_domain {
+            regions.push(10000043);
+        }
+        if self.region_sinq_laison {
+            regions.push(10000032);
+        }
+        if self.region_heimatar {
+            regions.push(10000030);
+        }
+        if self.region_metropolis {
+            regions.push(10000042);
+        }
         cfg.scan.regions = regions;
         cfg.scan.safe_route_only = self.safe_only;
         cfg.scan.npc_stations_only = self.npc_stations_only;
@@ -1395,7 +1474,9 @@ impl DesktopApp {
         let _ = self.save_user_config();
 
         let (Some(sde), Some(graph), Some(esi)) = (&self.sde, &self.graph, &self.esi) else {
-            self.status_text = "[WARN] Cannot scan live market: SDE universe database or ESI client is offline.".to_string();
+            self.status_text =
+                "[WARN] Cannot scan live market: SDE universe database or ESI client is offline."
+                    .to_string();
             return;
         };
 
@@ -1576,16 +1657,8 @@ impl DesktopApp {
             }
         }
 
-        if let Some((
-            sde,
-            graph,
-            esi,
-            home_system_name,
-            _scan_regions,
-            deals,
-            manifests,
-            route,
-        )) = startup_complete
+        if let Some((sde, graph, esi, home_system_name, _scan_regions, deals, manifests, route)) =
+            startup_complete
         {
             self.sde = Some(sde);
             self.graph = Some(graph);
@@ -4958,98 +5031,98 @@ impl DesktopApp {
         let palette = self.theme.palette();
         let mut toast = None;
         palette.card_frame().inner_margin(12.0).show(ui, |ui| {
-                // Stop header
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("[STOP #{}]", stop.step))
-                            .color(palette.accent_primary)
-                            .size(14.0)
-                            .strong(),
-                    );
-                    ui.label(format!(
-                        "Travel {} jumps to pickup at",
-                        stop.jumps_from_prev
-                    ));
-                    ui.label(
-                        RichText::new(&stop.deal.source_system_name)
-                            .color(palette.info_blue)
-                            .strong(),
-                    );
-                    if ui.small_button("Copy System").clicked() {
-                        copy_to_clipboard(ui, stop.deal.source_system_name.clone());
-                        toast = Some(format!("Copied '{}'", stop.deal.source_system_name));
-                    }
-                });
-
-                ui.add_space(6.0);
-
-                // Actions breakdown
-                ui.columns(2, |cols| {
-                    // Buy side
-                    cols[0].label(
-                        RichText::new("1. BUY AT SOURCE:")
-                            .color(palette.success_green)
-                            .strong(),
-                    );
-                    cols[0].label(
-                        RichText::new(format!("{}x {}", stop.deal.quantity, stop.deal.item_name))
-                            .strong(),
-                    );
-                    cols[0].label(format!(
-                        "Unit: {:.2} ISK (Total: {:.2}M ISK)",
-                        stop.deal.buy_price,
-                        stop.deal.capital_required / 1_000_000.0
-                    ));
-                    cols[0].label(
-                        RichText::new(&stop.deal.source_station_name)
-                            .color(palette.text_muted)
-                            .size(11.0),
-                    );
-                    if cols[0].small_button("Copy Buy Station").clicked() {
-                        copy_to_clipboard(&mut cols[0], stop.deal.source_station_name.clone());
-                        toast = Some(format!(
-                            "Copied buy station '{}'",
-                            stop.deal.source_station_name
-                        ));
-                    }
-
-                    // Sell side
-                    cols[1].label(
-                        RichText::new(format!(
-                            "2. WARP {} JUMPS & SELL:",
-                            stop.deal.jumps_source_dest
-                        ))
-                        .color(palette.warning_yellow)
+            // Stop header
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("[STOP #{}]", stop.step))
+                        .color(palette.accent_primary)
+                        .size(14.0)
                         .strong(),
-                    );
-                    cols[1].label(
-                        RichText::new(format!("Destination: {}", stop.deal.dest_system_name))
-                            .color(palette.accent_secondary)
-                            .strong(),
-                    );
-                    cols[1].label(
-                        RichText::new(format!(
-                            "Net Profit: +{:.2}M ISK (+{:.1}% ROI)",
-                            stop.deal.net_profit / 1_000_000.0,
-                            stop.deal.net_profit_pct
-                        ))
+                );
+                ui.label(format!(
+                    "Travel {} jumps to pickup at",
+                    stop.jumps_from_prev
+                ));
+                ui.label(
+                    RichText::new(&stop.deal.source_system_name)
+                        .color(palette.info_blue)
+                        .strong(),
+                );
+                if ui.small_button("Copy System").clicked() {
+                    copy_to_clipboard(ui, stop.deal.source_system_name.clone());
+                    toast = Some(format!("Copied '{}'", stop.deal.source_system_name));
+                }
+            });
+
+            ui.add_space(6.0);
+
+            // Actions breakdown
+            ui.columns(2, |cols| {
+                // Buy side
+                cols[0].label(
+                    RichText::new("1. BUY AT SOURCE:")
                         .color(palette.success_green)
                         .strong(),
-                    );
-                    cols[1].label(
-                        RichText::new(&stop.deal.dest_station_name)
-                            .color(palette.text_muted)
-                            .size(11.0),
-                    );
-                    if cols[1].small_button("Copy Sell Station").clicked() {
-                        copy_to_clipboard(&mut cols[1], stop.deal.dest_station_name.clone());
-                        toast = Some(format!(
-                            "Copied sell station '{}'",
-                            stop.deal.dest_station_name
-                        ));
-                    }
-                });
+                );
+                cols[0].label(
+                    RichText::new(format!("{}x {}", stop.deal.quantity, stop.deal.item_name))
+                        .strong(),
+                );
+                cols[0].label(format!(
+                    "Unit: {:.2} ISK (Total: {:.2}M ISK)",
+                    stop.deal.buy_price,
+                    stop.deal.capital_required / 1_000_000.0
+                ));
+                cols[0].label(
+                    RichText::new(&stop.deal.source_station_name)
+                        .color(palette.text_muted)
+                        .size(11.0),
+                );
+                if cols[0].small_button("Copy Buy Station").clicked() {
+                    copy_to_clipboard(&mut cols[0], stop.deal.source_station_name.clone());
+                    toast = Some(format!(
+                        "Copied buy station '{}'",
+                        stop.deal.source_station_name
+                    ));
+                }
+
+                // Sell side
+                cols[1].label(
+                    RichText::new(format!(
+                        "2. WARP {} JUMPS & SELL:",
+                        stop.deal.jumps_source_dest
+                    ))
+                    .color(palette.warning_yellow)
+                    .strong(),
+                );
+                cols[1].label(
+                    RichText::new(format!("Destination: {}", stop.deal.dest_system_name))
+                        .color(palette.accent_secondary)
+                        .strong(),
+                );
+                cols[1].label(
+                    RichText::new(format!(
+                        "Net Profit: +{:.2}M ISK (+{:.1}% ROI)",
+                        stop.deal.net_profit / 1_000_000.0,
+                        stop.deal.net_profit_pct
+                    ))
+                    .color(palette.success_green)
+                    .strong(),
+                );
+                cols[1].label(
+                    RichText::new(&stop.deal.dest_station_name)
+                        .color(palette.text_muted)
+                        .size(11.0),
+                );
+                if cols[1].small_button("Copy Sell Station").clicked() {
+                    copy_to_clipboard(&mut cols[1], stop.deal.dest_station_name.clone());
+                    toast = Some(format!(
+                        "Copied sell station '{}'",
+                        stop.deal.dest_station_name
+                    ));
+                }
             });
+        });
         toast
     }
 
@@ -5625,20 +5698,20 @@ impl DesktopApp {
         let palette = self.theme.palette();
         // Flowchart Header Frame
         palette.card_frame().inner_margin(10.0).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Visual Stops Flowchart")
-                            .size(14.0)
-                            .color(palette.accent_primary)
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new("Flight nodes with in-game quick-copy buttons")
-                            .size(11.0)
-                            .color(palette.text_muted),
-                    );
-                });
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Visual Stops Flowchart")
+                        .size(14.0)
+                        .color(palette.accent_primary)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new("Flight nodes with in-game quick-copy buttons")
+                        .size(11.0)
+                        .color(palette.text_muted),
+                );
             });
+        });
 
         ui.add_space(8.0);
 
@@ -5679,7 +5752,11 @@ impl DesktopApp {
                         let sys_btn = egui::Button::new(
                             RichText::new("System")
                                 .size(11.0)
-                                .color(if palette.dark_mode { Color32::BLACK } else { Color32::WHITE })
+                                .color(if palette.dark_mode {
+                                    Color32::BLACK
+                                } else {
+                                    Color32::WHITE
+                                })
                                 .strong(),
                         )
                         .fill(palette.accent_primary);
@@ -6202,16 +6279,8 @@ impl DesktopApp {
         // ── 3. Route Finish Node ──
         ui.vertical_centered(|ui| {
             ui.add_space(3.0);
-            ui.label(
-                RichText::new("│")
-                    .size(13.0)
-                    .color(palette.success_green),
-            );
-            ui.label(
-                RichText::new("▼")
-                    .size(13.0)
-                    .color(palette.success_green),
-            );
+            ui.label(RichText::new("│").size(13.0).color(palette.success_green));
+            ui.label(RichText::new("▼").size(13.0).color(palette.success_green));
             ui.add_space(3.0);
         });
 
@@ -6391,181 +6460,112 @@ impl DesktopApp {
         // Render Each Leg
         for (leg_idx, leg) in route.legs.iter().enumerate() {
             palette.sub_card_frame().inner_margin(12.0).show(ui, |ui| {
-                    let leg_empty_jumps =
-                        leg.pickups.first().map(|p| p.jumps_from_prev).unwrap_or(0);
-                    let leg_haul_jumps = leg.leg_total_jumps.saturating_sub(leg_empty_jumps);
-                    let leg_ppj = leg.leg_total_profit / (leg.leg_total_jumps.max(1) as f64);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("LEG #{}", leg_idx + 1))
-                                .size(15.0)
-                                .strong()
-                                .color(palette.accent_primary),
-                        );
-                        ui.separator();
-                        let jumps_str = if leg_empty_jumps > 0 {
-                            format!(
-                                "{} jumps ({} empty + {} haul)",
-                                leg.leg_total_jumps, leg_empty_jumps, leg_haul_jumps
-                            )
-                        } else {
-                            format!("{} jumps (direct haul)", leg.leg_total_jumps)
-                        };
-                        ui.label(RichText::new(jumps_str).color(Color32::from_rgb(255, 205, 0)));
-                        ui.separator();
-                        ui.label(
-                            RichText::new(format!(
-                                "Leg Profit: +{:.2}M ISK",
-                                leg.leg_total_profit / 1_000_000.0
-                            ))
+                let leg_empty_jumps = leg.pickups.first().map(|p| p.jumps_from_prev).unwrap_or(0);
+                let leg_haul_jumps = leg.leg_total_jumps.saturating_sub(leg_empty_jumps);
+                let leg_ppj = leg.leg_total_profit / (leg.leg_total_jumps.max(1) as f64);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("LEG #{}", leg_idx + 1))
+                            .size(15.0)
                             .strong()
-                            .color(Color32::from_rgb(0, 255, 140)),
-                        );
-                        ui.separator();
-                        ui.label(
-                            RichText::new(format!("PPJ: {:.2}M/j", leg_ppj / 1_000_000.0))
-                                .strong()
-                                .color(Color32::from_rgb(0, 220, 255)),
-                        );
-                    });
+                            .color(palette.accent_primary),
+                    );
+                    ui.separator();
+                    let jumps_str = if leg_empty_jumps > 0 {
+                        format!(
+                            "{} jumps ({} empty + {} haul)",
+                            leg.leg_total_jumps, leg_empty_jumps, leg_haul_jumps
+                        )
+                    } else {
+                        format!("{} jumps (direct haul)", leg.leg_total_jumps)
+                    };
+                    ui.label(RichText::new(jumps_str).color(Color32::from_rgb(255, 205, 0)));
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!(
+                            "Leg Profit: +{:.2}M ISK",
+                            leg.leg_total_profit / 1_000_000.0
+                        ))
+                        .strong()
+                        .color(Color32::from_rgb(0, 255, 140)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("PPJ: {:.2}M/j", leg_ppj / 1_000_000.0))
+                            .strong()
+                            .color(Color32::from_rgb(0, 220, 255)),
+                    );
+                });
 
-                    ui.add_space(8.0);
+                ui.add_space(8.0);
 
-                    // Pickup Stops in this leg
-                    for pickup in &leg.pickups {
-                        let is_detour = pickup.detour_jumps > 0;
-                        let badge_col = if is_detour {
-                            Color32::from_rgb(241, 196, 15) // Gold
-                        } else {
-                            palette.accent_primary
-                        };
+                // Pickup Stops in this leg
+                for pickup in &leg.pickups {
+                    let is_detour = pickup.detour_jumps > 0;
+                    let badge_col = if is_detour {
+                        Color32::from_rgb(241, 196, 15) // Gold
+                    } else {
+                        palette.accent_primary
+                    };
 
-                        let header_text = if is_detour {
-                            format!(
-                                "EN-ROUTE PICKUP — {} (+{} detour jumps)",
-                                pickup.system_name, pickup.detour_jumps
-                            )
-                        } else {
-                            format!("PICKUP STOP — {}", pickup.system_name)
-                        };
+                    let header_text = if is_detour {
+                        format!(
+                            "EN-ROUTE PICKUP — {} (+{} detour jumps)",
+                            pickup.system_name, pickup.detour_jumps
+                        )
+                    } else {
+                        format!("PICKUP STOP — {}", pickup.system_name)
+                    };
 
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(header_text).strong().color(badge_col));
-                                if pickup.jumps_from_prev > 0 {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "({} jumps from prev)",
-                                            pickup.jumps_from_prev
-                                        ))
-                                        .color(palette.text_muted),
-                                    );
-                                }
-                            });
-
-                            ui.add_space(4.0);
-
-                            // Item Slots
-                            for slot in &pickup.cargo_loaded {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "+ {}x {}",
-                                            slot.deal.quantity, slot.deal.item_name
-                                        ))
-                                        .strong()
-                                        .color(palette.text_primary),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!("{:.1} m³", slot.volume))
-                                            .color(Color32::from_rgb(255, 140, 240)),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{:.2}M ISK",
-                                            slot.capital / 1_000_000.0
-                                        ))
-                                        .color(palette.text_secondary),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!("→ Sell at {}", slot.sell_name))
-                                            .color(palette.accent_primary),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "(+{:.2}M ISK net)",
-                                            slot.net_profit / 1_000_000.0
-                                        ))
-                                        .size(11.0)
-                                        .color(Color32::from_rgb(0, 255, 140)),
-                                    );
-                                });
-                            }
-
-                            ui.add_space(2.0);
-                            ui.label(
-                                RichText::new(format!(
-                                    "Stop Totals: Loaded {:.1} m³ · Spent {:.2}M ISK",
-                                    pickup.volume_loaded,
-                                    pickup.capital_spent / 1_000_000.0
-                                ))
-                                .size(11.0)
-                                .color(palette.text_muted),
-                            );
-                        });
-
-                        ui.add_space(4.0);
-                    }
-
-                    // Flight Arrow
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "▼ Fly {} jump(s) to destination",
-                                leg.sell.jumps_from_prev
-                            ))
-                            .color(Color32::from_rgb(255, 205, 0))
-                            .strong(),
-                        );
-                    });
-
-                    ui.add_space(4.0);
-
-                    // Sell Stop
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "SELL DESTINATION — {}",
-                                    leg.sell.system_name
-                                ))
-                                .strong()
-                                .color(palette.success_green),
-                            );
+                            ui.label(RichText::new(header_text).strong().color(badge_col));
+                            if pickup.jumps_from_prev > 0 {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "({} jumps from prev)",
+                                        pickup.jumps_from_prev
+                                    ))
+                                    .color(palette.text_muted),
+                                );
+                            }
                         });
 
                         ui.add_space(4.0);
 
-                        for slot in &leg.sell.cargo_sold {
+                        // Item Slots
+                        for slot in &pickup.cargo_loaded {
                             ui.horizontal(|ui| {
                                 ui.label(
                                     RichText::new(format!(
-                                        "Sold {}x {}",
+                                        "+ {}x {}",
                                         slot.deal.quantity, slot.deal.item_name
                                     ))
+                                    .strong()
                                     .color(palette.text_primary),
                                 );
                                 ui.label(
-                                    RichText::new(format!(
-                                        "+{:.2}M ISK net profit",
-                                        slot.net_profit / 1_000_000.0
-                                    ))
-                                    .color(Color32::from_rgb(0, 255, 140))
-                                    .strong(),
+                                    RichText::new(format!("{:.1} m³", slot.volume))
+                                        .color(Color32::from_rgb(255, 140, 240)),
                                 );
                                 ui.label(
-                                    RichText::new(format!("(freed {:.1} m³)", slot.volume))
-                                        .color(palette.text_muted),
+                                    RichText::new(format!(
+                                        "{:.2}M ISK",
+                                        slot.capital / 1_000_000.0
+                                    ))
+                                    .color(palette.text_secondary),
+                                );
+                                ui.label(
+                                    RichText::new(format!("→ Sell at {}", slot.sell_name))
+                                        .color(palette.accent_primary),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "(+{:.2}M ISK net)",
+                                        slot.net_profit / 1_000_000.0
+                                    ))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(0, 255, 140)),
                                 );
                             });
                         }
@@ -6573,16 +6573,81 @@ impl DesktopApp {
                         ui.add_space(2.0);
                         ui.label(
                             RichText::new(format!(
-                                "Sell Totals: Realized +{:.2}M ISK · Cargo Freed: {:.1} m³",
-                                leg.sell.total_profit / 1_000_000.0,
-                                leg.sell.volume_freed
+                                "Stop Totals: Loaded {:.1} m³ · Spent {:.2}M ISK",
+                                pickup.volume_loaded,
+                                pickup.capital_spent / 1_000_000.0
                             ))
                             .size(11.0)
-                            .color(Color32::from_rgb(0, 230, 170))
-                            .strong(),
+                            .color(palette.text_muted),
                         );
                     });
+
+                    ui.add_space(4.0);
+                }
+
+                // Flight Arrow
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "▼ Fly {} jump(s) to destination",
+                            leg.sell.jumps_from_prev
+                        ))
+                        .color(Color32::from_rgb(255, 205, 0))
+                        .strong(),
+                    );
                 });
+
+                ui.add_space(4.0);
+
+                // Sell Stop
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("SELL DESTINATION — {}", leg.sell.system_name))
+                                .strong()
+                                .color(palette.success_green),
+                        );
+                    });
+
+                    ui.add_space(4.0);
+
+                    for slot in &leg.sell.cargo_sold {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Sold {}x {}",
+                                    slot.deal.quantity, slot.deal.item_name
+                                ))
+                                .color(palette.text_primary),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "+{:.2}M ISK net profit",
+                                    slot.net_profit / 1_000_000.0
+                                ))
+                                .color(Color32::from_rgb(0, 255, 140))
+                                .strong(),
+                            );
+                            ui.label(
+                                RichText::new(format!("(freed {:.1} m³)", slot.volume))
+                                    .color(palette.text_muted),
+                            );
+                        });
+                    }
+
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "Sell Totals: Realized +{:.2}M ISK · Cargo Freed: {:.1} m³",
+                            leg.sell.total_profit / 1_000_000.0,
+                            leg.sell.volume_freed
+                        ))
+                        .size(11.0)
+                        .color(Color32::from_rgb(0, 230, 170))
+                        .strong(),
+                    );
+                });
+            });
 
             ui.add_space(8.0);
         }
@@ -7274,11 +7339,7 @@ impl DesktopApp {
                 .column(Column::exact(actions_w)) // ACTIONS
                 .header(24.0, |mut header| {
                     header.col(|ui| {
-                        ui.label(
-                            RichText::new("#")
-                                .color(palette.text_secondary)
-                                .strong(),
-                        );
+                        ui.label(RichText::new("#").color(palette.text_secondary).strong());
                     });
                     header.col(|ui| {
                         render_header_btn(ui, "ITEM", DealSortBy::ItemName);
@@ -7623,15 +7684,30 @@ impl DesktopApp {
     fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
         let palette = self.theme.palette();
         ui.horizontal(|ui| {
-            ui.heading(RichText::new("Configuration & System Settings").color(palette.text_primary));
+            ui.heading(
+                RichText::new("Configuration & System Settings").color(palette.text_primary),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(RichText::new("💾 Save Settings to Disk").strong().color(palette.accent_primary)).clicked() {
+                if ui
+                    .button(
+                        RichText::new("💾 Save Settings to Disk")
+                            .strong()
+                            .color(palette.accent_primary),
+                    )
+                    .clicked()
+                {
                     match self.save_user_config() {
                         Ok(()) => self.set_toast("Configuration saved to disk!"),
                         Err(e) => self.set_toast(format!("Failed to save config: {e}")),
                     }
                 }
-                if ui.button(RichText::new("↺ Reset Defaults").color(Color32::from_rgb(220, 100, 100))).on_hover_text("Reset all settings to default factory values").clicked() {
+                if ui
+                    .button(
+                        RichText::new("↺ Reset Defaults").color(Color32::from_rgb(220, 100, 100)),
+                    )
+                    .on_hover_text("Reset all settings to default factory values")
+                    .clicked()
+                {
                     let default_cfg = crate::config::UserConfig::default();
                     self.apply_user_config(&default_cfg);
                     let _ = self.save_user_config();
@@ -8423,11 +8499,7 @@ impl DesktopApp {
     fn render_splash_screen(&mut self, ctx: &egui::Context) {
         let palette = self.theme.palette();
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::none()
-                    .fill(palette.bg_app)
-                    .inner_margin(24.0),
-            )
+            .frame(egui::Frame::none().fill(palette.bg_app).inner_margin(24.0))
             .show(ctx, |ui| {
                 let total_rect = ui.max_rect();
                 let center = total_rect.center();

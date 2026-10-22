@@ -1,6 +1,6 @@
+use eframe::egui::{self, Color32};
 use eve_trade_scout::config::AppTheme;
 use eve_trade_scout::ui::theme::theme_palette;
-use eframe::egui::{self, Color32};
 
 #[test]
 fn test_all_themes_metadata_and_distinctions() {
@@ -18,7 +18,11 @@ fn test_all_themes_metadata_and_distinctions() {
         assert!(!s.is_empty(), "Theme as_str identifier cannot be empty");
 
         assert!(names.insert(name), "Theme names must be unique: {}", name);
-        assert!(descriptions.insert(desc), "Theme descriptions must be unique: {}", desc);
+        assert!(
+            descriptions.insert(desc),
+            "Theme descriptions must be unique: {}",
+            desc
+        );
         assert!(as_strs.insert(s), "Theme identifiers must be unique: {}", s);
     }
 }
@@ -34,7 +38,12 @@ fn test_theme_dark_mode_classifications() {
     // Palettes must mirror is_dark()
     for &theme in AppTheme::ALL {
         let palette = theme.palette();
-        assert_eq!(palette.dark_mode, theme.is_dark(), "Palette dark_mode must match theme.is_dark() for {:?}", theme);
+        assert_eq!(
+            palette.dark_mode,
+            theme.is_dark(),
+            "Palette dark_mode must match theme.is_dark() for {:?}",
+            theme
+        );
     }
 }
 
@@ -54,16 +63,30 @@ fn test_theme_swatches_and_colors() {
         assert_eq!(s_acc.a(), 255);
 
         // Accent colors must be visually distinct from the card background
-        assert_ne!(bg, p_acc, "Primary accent must not match background for {:?}", theme);
-        assert_ne!(bg, s_acc, "Secondary accent must not match background for {:?}", theme);
-        assert_ne!(p_acc, s_acc, "Primary and secondary accents must be distinct for {:?}", theme);
+        assert_ne!(
+            bg, p_acc,
+            "Primary accent must not match background for {:?}",
+            theme
+        );
+        assert_ne!(
+            bg, s_acc,
+            "Secondary accent must not match background for {:?}",
+            theme
+        );
+        assert_ne!(
+            p_acc, s_acc,
+            "Primary and secondary accents must be distinct for {:?}",
+            theme
+        );
     }
 }
 
 #[test]
 fn test_theme_text_contrast_against_background() {
     fn luminance(c: Color32) -> f32 {
-        0.2126 * (c.r() as f32 / 255.0) + 0.7152 * (c.g() as f32 / 255.0) + 0.0722 * (c.b() as f32 / 255.0)
+        0.2126 * (c.r() as f32 / 255.0)
+            + 0.7152 * (c.g() as f32 / 255.0)
+            + 0.0722 * (c.b() as f32 / 255.0)
     }
 
     for &theme in AppTheme::ALL {
@@ -91,10 +114,18 @@ fn test_theme_text_contrast_against_background() {
 
         if theme.is_dark() {
             // Dark themes: text is brighter than background
-            assert!(text_lum > bg_lum, "Text must be brighter than background in dark theme {:?}", theme);
+            assert!(
+                text_lum > bg_lum,
+                "Text must be brighter than background in dark theme {:?}",
+                theme
+            );
         } else {
             // Light themes: text is darker than background
-            assert!(text_lum < bg_lum, "Text must be darker than background in light theme {:?}", theme);
+            assert!(
+                text_lum < bg_lum,
+                "Text must be darker than background in light theme {:?}",
+                theme
+            );
         }
     }
 }
@@ -142,7 +173,10 @@ fn test_theme_apply_to_ctx_without_panic() {
         assert_eq!(style.visuals.panel_fill, palette.bg_panel);
         assert_eq!(style.visuals.window_fill, palette.bg_central);
         assert_eq!(style.visuals.extreme_bg_color, palette.bg_app);
-        assert_eq!(style.visuals.override_text_color, Some(palette.text_secondary));
+        assert_eq!(
+            style.visuals.override_text_color,
+            Some(palette.text_secondary)
+        );
     }
 }
 
@@ -151,38 +185,74 @@ fn test_black_red_and_solar_light_refinements() {
     // 1. Black & Red: Pure Obsidian Chassis + Vibrant Crimson Accents (not brownish/solarized)
     let br = AppTheme::BlackRed.palette();
     // Obsidian black surfaces
-    assert!(br.bg_app.r() <= 10 && br.bg_app.g() <= 10 && br.bg_app.b() <= 10, "bg_app must be deep black");
-    assert!(br.card_bg.r() <= 18 && br.card_bg.g() <= 18 && br.card_bg.b() <= 18, "card_bg must be deep black");
+    assert!(
+        br.bg_app.r() <= 10 && br.bg_app.g() <= 10 && br.bg_app.b() <= 10,
+        "bg_app must be deep black"
+    );
+    assert!(
+        br.card_bg.r() <= 18 && br.card_bg.g() <= 18 && br.card_bg.b() <= 18,
+        "card_bg must be deep black"
+    );
     // Vibrant crimson accent (r is high, green and blue low, no brownish undertone)
-    assert!(br.accent_primary.r() >= 230, "accent_primary must be bright red");
-    assert!(br.accent_primary.g() <= 60, "accent_primary green component must be low to avoid solarized/orange tint");
-    assert!(br.accent_primary.b() <= 70, "accent_primary blue component must be low");
+    assert!(
+        br.accent_primary.r() >= 230,
+        "accent_primary must be bright red"
+    );
+    assert!(
+        br.accent_primary.g() <= 60,
+        "accent_primary green component must be low to avoid solarized/orange tint"
+    );
+    assert!(
+        br.accent_primary.b() <= 70,
+        "accent_primary blue component must be low"
+    );
     // Card stroke is crimson
-    assert!(br.card_stroke.color.r() >= 150, "card_stroke must be crimson");
+    assert!(
+        br.card_stroke.color.r() >= 150,
+        "card_stroke must be crimson"
+    );
 
     // 2. Solar Light: High-clarity typography with solid black-on-white text
     let sl = AppTheme::SolarLight.palette();
     // Pure black text for maximum sharpness
-    assert_eq!(sl.text_primary, Color32::from_rgb(0, 0, 0), "text_primary must be pure black");
-    assert_eq!(sl.card_bg, Color32::from_rgb(255, 255, 255), "card_bg must be pure white");
+    assert_eq!(
+        sl.text_primary,
+        Color32::from_rgb(0, 0, 0),
+        "text_primary must be pure black"
+    );
+    assert_eq!(
+        sl.card_bg,
+        Color32::from_rgb(255, 255, 255),
+        "card_bg must be pure white"
+    );
     // Near-black secondary text
-    assert!(sl.text_secondary.r() <= 25 && sl.text_secondary.g() <= 25 && sl.text_secondary.b() <= 25);
+    assert!(
+        sl.text_secondary.r() <= 25 && sl.text_secondary.g() <= 25 && sl.text_secondary.b() <= 25
+    );
     // Dark mode must be false
     assert!(!sl.dark_mode);
 
     // 3. Context styling contrast checks
     let ctx = egui::Context::default();
     sl.apply_to_ctx(&ctx);
-    assert_eq!(ctx.style().visuals.widgets.active.fg_stroke.color, Color32::BLACK);
+    assert_eq!(
+        ctx.style().visuals.widgets.active.fg_stroke.color,
+        Color32::BLACK
+    );
 
     br.apply_to_ctx(&ctx);
-    assert_eq!(ctx.style().visuals.widgets.active.fg_stroke.color, Color32::WHITE);
+    assert_eq!(
+        ctx.style().visuals.widgets.active.fg_stroke.color,
+        Color32::WHITE
+    );
 }
 
 #[test]
 fn test_accent_button_text_and_badge_contrasts() {
     fn luminance(c: Color32) -> f32 {
-        0.2126 * (c.r() as f32 / 255.0) + 0.7152 * (c.g() as f32 / 255.0) + 0.0722 * (c.b() as f32 / 255.0)
+        0.2126 * (c.r() as f32 / 255.0)
+            + 0.7152 * (c.g() as f32 / 255.0)
+            + 0.0722 * (c.b() as f32 / 255.0)
     }
 
     for &theme in AppTheme::ALL {
@@ -238,7 +308,9 @@ fn test_hub_badge_colors_across_themes() {
     use eve_trade_scout::hub_arbitrage::CoreHub;
 
     fn luminance(c: Color32) -> f32 {
-        0.2126 * (c.r() as f32 / 255.0) + 0.7152 * (c.g() as f32 / 255.0) + 0.0722 * (c.b() as f32 / 255.0)
+        0.2126 * (c.r() as f32 / 255.0)
+            + 0.7152 * (c.g() as f32 / 255.0)
+            + 0.0722 * (c.b() as f32 / 255.0)
     }
 
     for &theme in AppTheme::ALL {
@@ -268,7 +340,9 @@ fn test_hub_badge_colors_across_themes() {
 #[test]
 fn test_semantic_indicators_contrast_and_distinction() {
     fn luminance(c: Color32) -> f32 {
-        0.2126 * (c.r() as f32 / 255.0) + 0.7152 * (c.g() as f32 / 255.0) + 0.0722 * (c.b() as f32 / 255.0)
+        0.2126 * (c.r() as f32 / 255.0)
+            + 0.7152 * (c.g() as f32 / 255.0)
+            + 0.0722 * (c.b() as f32 / 255.0)
     }
 
     for &theme in AppTheme::ALL {
@@ -318,20 +392,38 @@ fn test_theme_display_and_from_str_fidelity() {
         assert_eq!(parsed, theme);
 
         // Display name parsed with case/space tolerance
-        let parsed_display = AppTheme::from_str(theme.display_name()).expect("Display name must parse");
+        let parsed_display =
+            AppTheme::from_str(theme.display_name()).expect("Display name must parse");
         assert_eq!(parsed_display, theme);
     }
 
     // Extended case, whitespace, and kebab-case alias tests
-    assert_eq!(AppTheme::from_str("  SCI-FI-VOID  ").unwrap(), AppTheme::SciFiVoid);
-    assert_eq!(AppTheme::from_str("neutral-black").unwrap(), AppTheme::NeutralBlack);
-    assert_eq!(AppTheme::from_str("Black-And-Red").unwrap(), AppTheme::BlackRed);
-    assert_eq!(AppTheme::from_str("  triglavian ").unwrap(), AppTheme::BlackRed);
-    assert_eq!(AppTheme::from_str("solar-light").unwrap(), AppTheme::SolarLight);
-    assert_eq!(AppTheme::from_str("Daylight").unwrap(), AppTheme::SolarLight);
+    assert_eq!(
+        AppTheme::from_str("  SCI-FI-VOID  ").unwrap(),
+        AppTheme::SciFiVoid
+    );
+    assert_eq!(
+        AppTheme::from_str("neutral-black").unwrap(),
+        AppTheme::NeutralBlack
+    );
+    assert_eq!(
+        AppTheme::from_str("Black-And-Red").unwrap(),
+        AppTheme::BlackRed
+    );
+    assert_eq!(
+        AppTheme::from_str("  triglavian ").unwrap(),
+        AppTheme::BlackRed
+    );
+    assert_eq!(
+        AppTheme::from_str("solar-light").unwrap(),
+        AppTheme::SolarLight
+    );
+    assert_eq!(
+        AppTheme::from_str("Daylight").unwrap(),
+        AppTheme::SolarLight
+    );
 
     // Invalid theme names
     assert!(AppTheme::from_str("cyberpunk_neon").is_err());
     assert!(AppTheme::from_str("").is_err());
 }
-

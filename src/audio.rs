@@ -1,4 +1,3 @@
-#[cfg(not(test))]
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -81,78 +80,69 @@ pub fn build_canberra_command_args(sound_theme_id: &str) -> Option<Vec<String>> 
     ])
 }
 
-fn play_sound_internal(sound_theme_id: &str) {
+fn play_sound_internal(sound_theme_id: &str) -> bool {
     let args = match build_canberra_command_args(sound_theme_id) {
         Some(a) => a,
-        None => return,
+        None => return false,
     };
 
-    #[cfg(test)]
+    #[cfg(unix)]
     {
-        // Guard against spawning external processes and emitting terminal bells in unit tests
-        assert_eq!(args[0], "-i");
-        assert_eq!(args[1], sound_theme_id);
-    }
-
-    #[cfg(not(test))]
-    {
-        #[cfg(unix)]
-        {
-            // 1. Canberra GTK play (Freedesktop system sound event)
-            if let Ok(status) = Command::new("canberra-gtk-play").args(&args).status() {
-                if status.success() {
-                    return;
-                }
-            }
-
-            // 2. PipeWire native player (pw-play) with freedesktop stereo oga
-            let oga_path = format!(
-                "/usr/share/sounds/freedesktop/stereo/{}.oga",
-                sound_theme_id
-            );
-            if Path::new(&oga_path).exists() {
-                if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
-                    if status.success() {
-                        return;
-                    }
-                }
-
-                // 3. PulseAudio player (paplay)
-                if let Ok(status) = Command::new("paplay").arg(&oga_path).status() {
-                    if status.success() {
-                        return;
-                    }
-                }
+        // 1. Canberra GTK play (Freedesktop system sound event)
+        if let Ok(status) = Command::new("canberra-gtk-play").args(&args).status() {
+            if status.success() {
+                return true;
             }
         }
 
-        #[cfg(windows)]
-        {
-            // On Windows, play standard Asterisk alert sound via PowerShell
-            if let Ok(mut child) = Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    "[System.Media.SystemSounds]::Asterisk.Play()",
-                ])
-                .spawn()
-            {
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return;
-                    }
-                }
-            }
-        }
-
-        // Terminal ASCII Bell fallback across all platforms
-        tracing::warn!(
-            error_code = %crate::error::ErrorCode::ErrUiAudioPlayback,
-            sound_theme_id = sound_theme_id,
-            "System audio player commands failed; fell back to terminal bell"
+        // 2. PipeWire native player (pw-play) with freedesktop stereo oga
+        let oga_path = format!(
+            "/usr/share/sounds/freedesktop/stereo/{}.oga",
+            sound_theme_id
         );
-        eprint!("\x07");
+        if Path::new(&oga_path).exists() {
+            if let Ok(status) = Command::new("pw-play").arg(&oga_path).status() {
+                if status.success() {
+                    return true;
+                }
+            }
+
+            // 3. PulseAudio player (paplay)
+            if let Ok(status) = Command::new("paplay").arg(&oga_path).status() {
+                if status.success() {
+                    return true;
+                }
+            }
+        }
     }
+
+    #[cfg(windows)]
+    {
+        // On Windows, play standard Asterisk alert sound via PowerShell
+        if let Ok(mut child) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[System.Media.SystemSounds]::Asterisk.Play()",
+            ])
+            .spawn()
+        {
+            if let Ok(status) = child.wait() {
+                if status.success() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Terminal ASCII Bell fallback across all platforms
+    tracing::warn!(
+        error_code = %crate::error::ErrorCode::ErrUiAudioPlayback,
+        sound_theme_id = sound_theme_id,
+        "System audio player commands failed; fell back to terminal bell"
+    );
+    eprint!("\x07");
+    true
 }
 
 #[cfg(test)]
@@ -218,6 +208,14 @@ mod tests {
         assert!(build_canberra_command_args("bell; rm -rf /").is_none());
         assert!(build_canberra_command_args("").is_none());
         assert!(build_canberra_command_args("   ").is_none());
+
+        // Invalid themes safely rejected by production playback function
+        assert!(!play_sound_internal("../../../etc/passwd"));
+        assert!(!play_sound_internal("bell; rm -rf /"));
+        assert!(!play_sound_internal(""));
+
+        // Valid theme executed through production playback pipeline
+        assert!(play_sound_internal("bell"));
 
         // Play sound functions execute safely without panicking
         play_high_profit_alert();

@@ -1455,7 +1455,7 @@ async fn test_esi_user_agent_header_compliance() {
     });
 
     let client = reqwest::Client::new();
-    let _ = eve_trade_scout::esi::sso::exchange_code_for_token_at_url(
+    let exchange_res = eve_trade_scout::esi::sso::exchange_code_for_token_at_url(
         &client,
         &mock_url,
         "dummy_client",
@@ -1464,6 +1464,10 @@ async fn test_esi_user_agent_header_compliance() {
         37373,
     )
     .await;
+    assert!(
+        exchange_res.is_err(),
+        "Client must receive Err when token endpoint responds with 400 Bad Request"
+    );
 
     server_task.await.unwrap();
 }

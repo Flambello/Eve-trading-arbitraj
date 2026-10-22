@@ -44,7 +44,19 @@ fn test_startup_worker_channel_disconnect_detected_as_error() {
 
     // Verify recovery into Offline Mode works
     app.is_startup = false;
-    assert!(!app.is_startup, "Pilot must be able to enter offline mode");
+    assert!(
+        app.is_offline(),
+        "App must report is_offline() when dependencies are not loaded"
+    );
+    assert!(
+        !app.is_scanning(),
+        "App must not initiate market scanning while offline"
+    );
+    assert_eq!(
+        app.startup_progress.error_code,
+        Some(ErrorCode::ErrUiWorkerChannel),
+        "Error code must remain preserved in offline mode for user inspection"
+    );
 }
 
 #[test]
@@ -54,11 +66,8 @@ fn test_startup_structured_error_message_sets_error_code() {
     let mut app = DesktopApp::new_loading(&eve_trade_scout::config::UserConfig::default(), rx);
 
     let error_detail = "Corrupted SQLite header at eve_sde.sqlite (expected SQLite format 3)";
-    tx.send(StartupMsg::error(
-        ErrorCode::ErrSdeNotFound,
-        error_detail,
-    ))
-    .expect("Should send startup error message");
+    tx.send(StartupMsg::error(ErrorCode::ErrSdeNotFound, error_detail))
+        .expect("Should send startup error message");
 
     let ctx = egui::Context::default();
     app.poll_startup(&ctx);
@@ -91,7 +100,10 @@ fn test_startup_offline_mode_scan_safety() {
 
     // Transition to offline mode without SDE or ESI
     app.is_startup = false;
-    assert!(app.is_offline(), "App must report is_offline() when dependencies are not loaded");
+    assert!(
+        app.is_offline(),
+        "App must report is_offline() when dependencies are not loaded"
+    );
 
     // Trigger scan while offline: must safely update status text with actionable warning rather than panic
     app.start_scan();
@@ -133,17 +145,57 @@ fn test_err_ui_startup_failed_code_properties() {
 fn test_config_ship_profile_fallback_resilience() {
     let invalid_profiles = ["dreadnought", "freighter", "titan", "carrier", "invalid"];
     for inv in invalid_profiles {
+        let mut cfg = eve_trade_scout::config::UserConfig::default();
+        cfg.ship.profile = inv.to_string();
+
+        // 1. Invalid profile string fails direct parsing and profile_from_str
         assert!(
             profile_from_str(inv).is_err(),
-            "Invalid profile '{}' must fail parsing",
+            "profile_from_str must fail on invalid profile '{}'",
+            inv
+        );
+        assert!(
+            cfg.ship_profile().is_err(),
+            "Invalid profile '{}' must fail ship_profile()",
+            inv
+        );
+        assert!(
+            cfg.effective_ship_profile().is_err(),
+            "Invalid profile '{}' must fail effective_ship_profile()",
             inv
         );
 
-        // Verify the fallback pattern used in main.rs resolves safely to BIG_HAULER
-        let resolved = profile_from_str(inv).unwrap_or(BIG_HAULER);
+        // 2. Production fallback pattern used in main.rs resolves safely to BIG_HAULER
+        let resolved = cfg.effective_ship_profile().unwrap_or(BIG_HAULER);
         assert_eq!(resolved.name, "Big Hauler");
         assert_eq!(resolved.max_volume, 60_000.0);
         assert_eq!(resolved.max_budget, 500_000_000.0);
+
+        // 3. Desktop app apply_user_config normalizes invalid profile safely to Big Hauler
+        let (_tx, rx) = mpsc::channel::<StartupMsg>();
+        let mut app = DesktopApp::new_loading(&eve_trade_scout::config::UserConfig::default(), rx);
+        app.apply_user_config(&cfg);
+        assert_eq!(
+            app.current_ship().name,
+            "Big Hauler",
+            "App must default to Big Hauler when profile is '{}'",
+            inv
+        );
+        assert_eq!(
+            app.current_ship().max_volume,
+            60_000.0,
+            "App cargo volume must be 60,000 m³"
+        );
+        assert_eq!(
+            app.current_ship().max_budget,
+            500_000_000.0,
+            "App budget must be 500M ISK"
+        );
+        let exported = app.export_user_config();
+        assert_eq!(
+            exported.ship.profile, "big",
+            "Exported profile must be normalized to 'big'"
+        );
     }
 }
 
@@ -198,7 +250,10 @@ fn test_desktop_app_session_memory_roundtrip() {
     assert_eq!(exported.filters.min_profit_isk, 5_000_000.0);
     assert_eq!(exported.fees.broker_fee_pct, 1.4);
     assert_eq!(exported.fees.sales_tax_pct, 4.3);
-    assert_eq!(exported.theme, eve_trade_scout::config::AppTheme::NeutralBlack);
+    assert_eq!(
+        exported.theme,
+        eve_trade_scout::config::AppTheme::NeutralBlack
+    );
     assert_eq!(exported.ui.ui_scale, 1.25);
     assert!(exported.ui.is_fullscreen);
     assert!(!exported.ui.dossier_side_panel);
@@ -210,7 +265,9 @@ fn test_desktop_app_session_memory_roundtrip() {
     assert_eq!(exported.view.hub_dest_hub, Some("Dodixie".to_string()));
 
     // Verify effective ship profile reflects custom sizing
-    let effective = exported.effective_ship_profile().expect("Effective ship profile must resolve");
+    let effective = exported
+        .effective_ship_profile()
+        .expect("Effective ship profile must resolve");
     assert_eq!(effective.max_volume, 45_000.0);
     assert_eq!(effective.max_budget, 250_000_000.0);
 }

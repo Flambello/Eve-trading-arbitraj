@@ -318,9 +318,15 @@ impl AppTheme {
     pub fn description(&self) -> &'static str {
         match self {
             AppTheme::SciFiVoid => "Deep navy void with neon cyan telemetry & gold accents",
-            AppTheme::NeutralBlack => "Minimalist charcoal & OLED black with crisp monochrome contrast",
-            AppTheme::BlackRed => "Obsidian void with tactical crimson red & combat pirate aesthetics",
-            AppTheme::SolarLight => "High-contrast clean daylight workstation theme with cobalt accents",
+            AppTheme::NeutralBlack => {
+                "Minimalist charcoal & OLED black with crisp monochrome contrast"
+            }
+            AppTheme::BlackRed => {
+                "Obsidian void with tactical crimson red & combat pirate aesthetics"
+            }
+            AppTheme::SolarLight => {
+                "High-contrast clean daylight workstation theme with cobalt accents"
+            }
         }
     }
 
@@ -515,22 +521,32 @@ impl UserConfig {
         match toml::from_str::<UserConfig>(&content) {
             Ok(mut cfg) => {
                 // Invariant: Enforce >= 10.0% net ROI floor with strict NaN defense
-                if !cfg.filters.min_net_profit_pct.is_finite() || cfg.filters.min_net_profit_pct < 10.0 {
+                if !cfg.filters.min_net_profit_pct.is_finite()
+                    || cfg.filters.min_net_profit_pct < 10.0
+                {
                     cfg.filters.min_net_profit_pct = 10.0;
                 }
-                if !cfg.ui.ui_scale.is_finite() || cfg.ui.ui_scale < 0.75 || cfg.ui.ui_scale > 1.50 {
+                if !cfg.ui.ui_scale.is_finite() || cfg.ui.ui_scale < 0.75 || cfg.ui.ui_scale > 1.50
+                {
                     cfg.ui.ui_scale = 1.0;
                 }
-                if !cfg.fees.broker_fee_pct.is_finite() || cfg.fees.broker_fee_pct < 1.0 || cfg.fees.broker_fee_pct > 5.0 {
+                if !cfg.fees.broker_fee_pct.is_finite()
+                    || cfg.fees.broker_fee_pct < 1.0
+                    || cfg.fees.broker_fee_pct > 5.0
+                {
                     cfg.fees.broker_fee_pct = 3.0;
                 }
-                if !cfg.fees.sales_tax_pct.is_finite() || cfg.fees.sales_tax_pct < 3.0 || cfg.fees.sales_tax_pct > 8.0 {
+                if !cfg.fees.sales_tax_pct.is_finite()
+                    || cfg.fees.sales_tax_pct < 3.0
+                    || cfg.fees.sales_tax_pct > 8.0
+                {
                     cfg.fees.sales_tax_pct = 8.0;
                 }
                 if !cfg.ship.custom_cargo_vol.is_finite() || cfg.ship.custom_cargo_vol < 10.0 {
                     cfg.ship.custom_cargo_vol = 60_000.0;
                 }
-                if !cfg.ship.custom_budget_isk.is_finite() || cfg.ship.custom_budget_isk < 100_000.0 {
+                if !cfg.ship.custom_budget_isk.is_finite() || cfg.ship.custom_budget_isk < 100_000.0
+                {
                     cfg.ship.custom_budget_isk = 500_000_000.0;
                 }
 
@@ -619,7 +635,10 @@ impl UserConfig {
             Ok(ShipProfile {
                 name: "Custom Vessel Profile",
                 max_volume: self.ship.custom_cargo_vol.clamp(10.0, 1_500_000.0),
-                max_budget: self.ship.custom_budget_isk.clamp(100_000.0, 100_000_000_000.0),
+                max_budget: self
+                    .ship
+                    .custom_budget_isk
+                    .clamp(100_000.0, 100_000_000_000.0),
             })
         } else {
             self.ship_profile()

@@ -103,9 +103,7 @@ impl ThemePalette {
 
     /// Central workspace panel frame.
     pub fn central_panel_frame(&self) -> egui::Frame {
-        egui::Frame::none()
-            .fill(self.bg_central)
-            .inner_margin(12.0)
+        egui::Frame::none().fill(self.bg_central).inner_margin(12.0)
     }
 
     /// Returns high-contrast silver badge color adapted for dark vs light themes.

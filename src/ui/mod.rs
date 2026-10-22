@@ -1,12 +1,12 @@
 pub mod gui;
 pub mod theme;
 
+pub use crate::config::AppTheme;
 pub use gui::{
     run_desktop_gui, DesktopApp, StartupMsg, StartupProgress, APP_ICON_PNG_BYTES,
     CORP_ICON_PNG_BYTES,
 };
 pub use theme::{theme_palette, ThemePalette};
-pub use crate::config::AppTheme;
 
 /// Formats an ISK unit price into a human-readable abbreviation (e.g. 1.25B, 45.00M, 500.00k, 12.50).
 pub fn format_unit_price(val: f64) -> String {

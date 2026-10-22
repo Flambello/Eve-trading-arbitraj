@@ -121,7 +121,10 @@ fn test_user_config_toml_roundtrip() {
     assert!(parsed.scan.sound_alerts);
     assert_eq!(parsed.scan.sound_min_roi_pct, 150.0);
     assert_eq!(parsed.filters.min_net_profit_pct, 20.0);
-    assert_eq!(parsed.theme, eve_trade_scout::config::AppTheme::NeutralBlack);
+    assert_eq!(
+        parsed.theme,
+        eve_trade_scout::config::AppTheme::NeutralBlack
+    );
 }
 
 #[test]
@@ -137,26 +140,50 @@ fn test_theme_parsing_and_all_variants() {
     assert!(AppTheme::ALL.contains(&AppTheme::SolarLight));
 
     // Test string parsing and aliases
-    assert_eq!(AppTheme::from_str("sci_fi_void").unwrap(), AppTheme::SciFiVoid);
+    assert_eq!(
+        AppTheme::from_str("sci_fi_void").unwrap(),
+        AppTheme::SciFiVoid
+    );
     assert_eq!(AppTheme::from_str("scifi").unwrap(), AppTheme::SciFiVoid);
     assert_eq!(AppTheme::from_str("default").unwrap(), AppTheme::SciFiVoid);
     assert_eq!(AppTheme::from_str("dark").unwrap(), AppTheme::SciFiVoid);
 
-    assert_eq!(AppTheme::from_str("neutral_black").unwrap(), AppTheme::NeutralBlack);
-    assert_eq!(AppTheme::from_str("neutral").unwrap(), AppTheme::NeutralBlack);
+    assert_eq!(
+        AppTheme::from_str("neutral_black").unwrap(),
+        AppTheme::NeutralBlack
+    );
+    assert_eq!(
+        AppTheme::from_str("neutral").unwrap(),
+        AppTheme::NeutralBlack
+    );
     assert_eq!(AppTheme::from_str("black").unwrap(), AppTheme::NeutralBlack);
     assert_eq!(AppTheme::from_str("oled").unwrap(), AppTheme::NeutralBlack);
-    assert_eq!(AppTheme::from_str("stealth").unwrap(), AppTheme::NeutralBlack);
+    assert_eq!(
+        AppTheme::from_str("stealth").unwrap(),
+        AppTheme::NeutralBlack
+    );
 
     assert_eq!(AppTheme::from_str("black_red").unwrap(), AppTheme::BlackRed);
     assert_eq!(AppTheme::from_str("crimson").unwrap(), AppTheme::BlackRed);
     assert_eq!(AppTheme::from_str("red").unwrap(), AppTheme::BlackRed);
-    assert_eq!(AppTheme::from_str("blood_raider").unwrap(), AppTheme::BlackRed);
-    assert_eq!(AppTheme::from_str("triglavian").unwrap(), AppTheme::BlackRed);
+    assert_eq!(
+        AppTheme::from_str("blood_raider").unwrap(),
+        AppTheme::BlackRed
+    );
+    assert_eq!(
+        AppTheme::from_str("triglavian").unwrap(),
+        AppTheme::BlackRed
+    );
 
-    assert_eq!(AppTheme::from_str("solar_light").unwrap(), AppTheme::SolarLight);
+    assert_eq!(
+        AppTheme::from_str("solar_light").unwrap(),
+        AppTheme::SolarLight
+    );
     assert_eq!(AppTheme::from_str("light").unwrap(), AppTheme::SolarLight);
-    assert_eq!(AppTheme::from_str("daylight").unwrap(), AppTheme::SolarLight);
+    assert_eq!(
+        AppTheme::from_str("daylight").unwrap(),
+        AppTheme::SolarLight
+    );
     assert_eq!(AppTheme::from_str("solar").unwrap(), AppTheme::SolarLight);
     assert_eq!(AppTheme::from_str("white").unwrap(), AppTheme::SolarLight);
 
@@ -186,7 +213,8 @@ sales_tax_pct = 8.0
 directory = "cache"
 sde_max_age_days = 30
 "#;
-    let legacy_cfg: UserConfig = toml::from_str(legacy_toml).expect("Legacy TOML without theme must parse");
+    let legacy_cfg: UserConfig =
+        toml::from_str(legacy_toml).expect("Legacy TOML without theme must parse");
     assert_eq!(legacy_cfg.theme, AppTheme::SciFiVoid);
 
     // Roundtrip all 4 themes through TOML
@@ -196,7 +224,8 @@ sde_max_age_days = 30
             ..UserConfig::default()
         };
         let serialized = toml::to_string(&cfg).expect("Serialization must succeed");
-        let deserialized: UserConfig = toml::from_str(&serialized).expect("Deserialization must succeed");
+        let deserialized: UserConfig =
+            toml::from_str(&serialized).expect("Deserialization must succeed");
         assert_eq!(deserialized.theme, theme);
     }
 }
@@ -287,7 +316,8 @@ fn test_config_base_dir_resolution_and_precedence() {
 fn test_config_example_template_is_valid() {
     let example_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.toml");
     let content = std::fs::read_to_string(&example_path).expect("config.example.toml must exist");
-    let cfg: UserConfig = toml::from_str(&content).expect("config.example.toml must be valid TOML deserializing into UserConfig");
+    let cfg: UserConfig = toml::from_str(&content)
+        .expect("config.example.toml must be valid TOML deserializing into UserConfig");
     assert_eq!(cfg.theme, eve_trade_scout::config::AppTheme::SciFiVoid);
     assert_eq!(cfg.ship.profile, "big");
     assert_eq!(cfg.location.home_system, "Jita");
@@ -342,7 +372,9 @@ fn test_custom_ship_profile_effective_resolution() {
     assert_eq!(p_big.max_budget, 500_000_000.0);
 
     cfg.ship.profile = "small".to_string();
-    let p_small = cfg.effective_ship_profile().expect("Small profile resolves");
+    let p_small = cfg
+        .effective_ship_profile()
+        .expect("Small profile resolves");
     assert_eq!(p_small.name, "Small Hauler");
     assert_eq!(p_small.max_volume, 30_000.0);
     assert_eq!(p_small.max_budget, 50_000_000.0);
@@ -351,7 +383,9 @@ fn test_custom_ship_profile_effective_resolution() {
     cfg.ship.use_custom_ship = true;
     cfg.ship.custom_cargo_vol = 12_500.0;
     cfg.ship.custom_budget_isk = 300_000_000.0;
-    let p_custom = cfg.effective_ship_profile().expect("Custom profile resolves");
+    let p_custom = cfg
+        .effective_ship_profile()
+        .expect("Custom profile resolves");
     assert_eq!(p_custom.name, "Custom Vessel Profile");
     assert_eq!(p_custom.max_volume, 12_500.0);
     assert_eq!(p_custom.max_budget, 300_000_000.0);
@@ -359,7 +393,9 @@ fn test_custom_ship_profile_effective_resolution() {
     // Clamping / safety bounds: cargo hold < 10m³ or budget < 100k ISK clamped
     cfg.ship.custom_cargo_vol = -50.0;
     cfg.ship.custom_budget_isk = 10.0;
-    let p_clamped = cfg.effective_ship_profile().expect("Clamped custom profile resolves");
+    let p_clamped = cfg
+        .effective_ship_profile()
+        .expect("Clamped custom profile resolves");
     assert_eq!(p_clamped.max_volume, 10.0);
     assert_eq!(p_clamped.max_budget, 100_000.0);
 }
@@ -440,7 +476,8 @@ sales_tax_pct = 5.0
 directory = "cache"
 sde_max_age_days = 30
 "#;
-    let parsed: UserConfig = toml::from_str(minimal_legacy).expect("Minimal legacy TOML must parse without error");
+    let parsed: UserConfig =
+        toml::from_str(minimal_legacy).expect("Minimal legacy TOML must parse without error");
 
     assert_eq!(parsed.ship.profile, "small");
     assert!(!parsed.ship.use_custom_ship);
@@ -513,16 +550,23 @@ fn test_user_config_real_disk_atomic_save_and_load() {
 
     // Verify physical file was written on disk
     let expected_file = UserConfig::config_path().expect("config_path must resolve");
-    assert!(expected_file.exists(), "config.toml must physically exist on disk");
+    assert!(
+        expected_file.exists(),
+        "config.toml must physically exist on disk"
+    );
     let metadata = std::fs::metadata(&expected_file).expect("File metadata must be accessible");
     assert!(metadata.len() > 100, "Saved config file must not be empty");
 
     // Verify no temporary .tmp file is left dangling
     let dangling_tmp = expected_file.with_extension("toml.tmp");
-    assert!(!dangling_tmp.exists(), "Temporary write file must be atomically renamed and not left dangling");
+    assert!(
+        !dangling_tmp.exists(),
+        "Temporary write file must be atomically renamed and not left dangling"
+    );
 
     // Load back from disk using production UserConfig::load()
-    let loaded = UserConfig::load().expect("UserConfig::load must successfully read written config");
+    let loaded =
+        UserConfig::load().expect("UserConfig::load must successfully read written config");
 
     assert_eq!(loaded.location.home_system, "Amarr");
     assert_eq!(loaded.ship.profile, "small");
@@ -663,15 +707,22 @@ hub_min_profit_m = inf
     }
     std::fs::write(&config_path, corrupted_toml).unwrap();
 
-    let loaded = UserConfig::load().expect("Corrupted floats must be safely sanitized without error");
+    let loaded =
+        UserConfig::load().expect("Corrupted floats must be safely sanitized without error");
 
     // Verify 10% ROI floor is maintained despite NaN
     assert!(loaded.filters.min_net_profit_pct.is_finite());
-    assert_eq!(loaded.filters.min_net_profit_pct, 10.0, "NaN ROI must be sanitized to 10.0%");
+    assert_eq!(
+        loaded.filters.min_net_profit_pct, 10.0,
+        "NaN ROI must be sanitized to 10.0%"
+    );
 
     // Verify UI scale is reset to 1.0 rather than propagating NaN
     assert!(loaded.ui.ui_scale.is_finite());
-    assert_eq!(loaded.ui.ui_scale, 1.0, "NaN ui_scale must be sanitized to 1.0");
+    assert_eq!(
+        loaded.ui.ui_scale, 1.0,
+        "NaN ui_scale must be sanitized to 1.0"
+    );
 
     // Verify fees are sanitized to canonical defaults
     assert!(loaded.fees.broker_fee_pct.is_finite());
@@ -686,10 +737,22 @@ hub_min_profit_m = inf
     assert_eq!(loaded.ship.custom_budget_isk, 500_000_000.0);
 
     // Verify unbounded collection/hop limits are clamped
-    assert_eq!(loaded.ui.max_route_stops, 20, "max_route_stops must be clamped to 20");
-    assert_eq!(loaded.view.chain_max_legs, 10, "chain_max_legs must be clamped to 10");
-    assert_eq!(loaded.view.chain_max_dest_loads, 10, "chain_max_dest_loads must be clamped to 10");
-    assert_eq!(loaded.view.chain_max_detour, 10, "chain_max_detour must be clamped to 10");
+    assert_eq!(
+        loaded.ui.max_route_stops, 20,
+        "max_route_stops must be clamped to 20"
+    );
+    assert_eq!(
+        loaded.view.chain_max_legs, 10,
+        "chain_max_legs must be clamped to 10"
+    );
+    assert_eq!(
+        loaded.view.chain_max_dest_loads, 10,
+        "chain_max_dest_loads must be clamped to 10"
+    );
+    assert_eq!(
+        loaded.view.chain_max_detour, 10,
+        "chain_max_detour must be clamped to 10"
+    );
     assert_eq!(loaded.view.min_profit_filter_m, 0.0);
     assert_eq!(loaded.view.hub_min_profit_m, 0.5);
 
@@ -719,7 +782,10 @@ fn test_user_config_save_failure_on_unwritable_destination() {
 
     let cfg = UserConfig::default();
     let res = cfg.save();
-    assert!(res.is_err(), "Saving to an invalid directory path must return an Err");
+    assert!(
+        res.is_err(),
+        "Saving to an invalid directory path must return an Err"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
     if let Some(ref val) = orig_eve {

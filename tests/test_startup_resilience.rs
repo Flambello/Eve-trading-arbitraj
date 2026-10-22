@@ -271,31 +271,3 @@ fn test_desktop_app_session_memory_roundtrip() {
     assert_eq!(effective.max_volume, 45_000.0);
     assert_eq!(effective.max_budget, 250_000_000.0);
 }
-
-#[test]
-fn test_desktop_app_legacy_loading_compatibility() {
-    let (_tx, rx) = mpsc::channel::<StartupMsg>();
-    let app = DesktopApp::new_loading_legacy(
-        false, // small hauler
-        "Dodixie".to_string(),
-        false, // safe only false
-        false, // npc only false
-        12.5,
-        2_500_000.0,
-        true,
-        true,
-        80.0,
-        rx,
-    );
-
-    let exported = app.export_user_config();
-    assert_eq!(exported.location.home_system, "Dodixie");
-    assert_eq!(exported.ship.profile, "small");
-    assert!(!exported.scan.safe_route_only);
-    assert!(!exported.scan.npc_stations_only);
-    assert_eq!(exported.filters.min_net_profit_pct, 12.5);
-    assert_eq!(exported.filters.min_profit_isk, 2_500_000.0);
-    assert!(exported.scan.auto_refresh);
-    assert!(exported.scan.sound_alerts);
-    assert_eq!(exported.scan.sound_min_roi_pct, 80.0);
-}

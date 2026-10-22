@@ -275,3 +275,12 @@ async fn test_sde_search_systems_sql_wildcards_and_injection_resilience() {
     // Verify database remains intact and table was not dropped
     assert_eq!(sde.get_system_id("Jita"), Some(30000142));
 }
+
+#[tokio::test]
+async fn test_sde_get_station_system() {
+    let sde = get_test_sde().await;
+    // Jita IV - Moon 4 - Caldari Navy Assembly Plant (60003760) is in Jita (30000142)
+    assert_eq!(sde.get_station_system(60003760), Some(30000142));
+    // Non-existent station ID returns None
+    assert_eq!(sde.get_station_system(999_999_999), None);
+}

@@ -15,32 +15,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum BreakpointTier {
-    Compact,    // < 1000px: laptops / compact window
-    Standard,   // 1000px - 1440px: normal 1080p windowed
-    Widescreen, // 1440px - 2100px: 1080p fullscreen, 1440p
-    Ultrawide,  // >= 2100px: 1440p fullscreen, 4K, ultrawides
-}
-
-impl BreakpointTier {
-    pub fn from_width(w: f32) -> Self {
-        if w < 1000.0 {
-            BreakpointTier::Compact
-        } else if w < 1440.0 {
-            BreakpointTier::Standard
-        } else if w < 2100.0 {
-            BreakpointTier::Widescreen
-        } else {
-            BreakpointTier::Ultrawide
-        }
-    }
-
-    pub fn is_wide(self) -> bool {
-        matches!(self, BreakpointTier::Widescreen | BreakpointTier::Ultrawide)
-    }
-}
-
 #[derive(PartialEq, Clone, Copy)]
 enum ActiveTab {
     Deals,
@@ -887,36 +861,6 @@ impl DesktopApp {
         }
 
         app
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_loading_legacy(
-        initial_ship_is_big: bool,
-        initial_home_system: String,
-        initial_safe_only: bool,
-        initial_npc_stations_only: bool,
-        initial_min_roi: f64,
-        initial_min_profit: f64,
-        initial_auto_refresh: bool,
-        initial_sound_alerts: bool,
-        initial_sound_min_roi: f64,
-        startup_rx: Receiver<StartupMsg>,
-    ) -> Self {
-        let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
-        cfg.ship.profile = if initial_ship_is_big {
-            "big".to_string()
-        } else {
-            "small".to_string()
-        };
-        cfg.location.home_system = initial_home_system;
-        cfg.scan.safe_route_only = initial_safe_only;
-        cfg.scan.npc_stations_only = initial_npc_stations_only;
-        cfg.filters.min_net_profit_pct = initial_min_roi.max(10.0);
-        cfg.filters.min_profit_isk = initial_min_profit;
-        cfg.scan.auto_refresh = initial_auto_refresh;
-        cfg.scan.sound_alerts = initial_sound_alerts;
-        cfg.scan.sound_min_roi_pct = initial_sound_min_roi;
-        Self::new_loading(&cfg, startup_rx)
     }
 
     pub fn apply_user_config(&mut self, cfg: &crate::config::UserConfig) {

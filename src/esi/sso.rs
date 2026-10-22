@@ -773,15 +773,6 @@ pub async fn ensure_fresh_token(
     ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, false).await
 }
 
-/// Force-refreshes the access token unconditionally using the refresh token.
-pub async fn ensure_fresh_token_force(
-    client: &reqwest::Client,
-    client_id: &str,
-    token: &mut SsoToken,
-) -> Result<()> {
-    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, true).await
-}
-
 /// Refreshes the access token using the refresh token against the specified token endpoint URL.
 pub async fn ensure_fresh_token_at_url(
     client: &reqwest::Client,
@@ -867,14 +858,6 @@ pub async fn ensure_fresh_token_opts(
 
     save_token(token)?;
     Ok(())
-}
-
-/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
-pub async fn refresh_saved_token_if_needed(
-    client: &reqwest::Client,
-    client_id: &str,
-) -> Result<Option<SsoToken>> {
-    refresh_saved_token_opts(client, client_id, false).await
 }
 
 /// Refreshes the saved token with optional force override (bypasses expiration check when force is true).
@@ -1034,15 +1017,6 @@ pub async fn push_waypoints_to_client_at_url(
     }
 
     Ok(injected_count)
-}
-
-/// Injects an ordered sequence of waypoints directly into the running EVE client using default ESI endpoint.
-pub async fn push_waypoints_to_client(
-    client: &reqwest::Client,
-    access_token: &str,
-    destination_ids: &[u64],
-) -> Result<usize> {
-    push_waypoints_to_client_at_url(client, ESI_WAYPOINT_URL, access_token, destination_ids).await
 }
 
 /// Orchestrates full PKCE login flow: generates keys, launches browser, listens on localhost, exchanges code.
@@ -1207,14 +1181,6 @@ pub async fn fetch_character_location_at_url(
         .context("Failed to parse ESI character location JSON")?;
 
     Ok(loc)
-}
-
-/// Queries the live character location from ESI for an authenticated character.
-pub async fn fetch_character_location(
-    client: &reqwest::Client,
-    token: &SsoToken,
-) -> Result<CharacterLocation> {
-    fetch_character_location_at_url(client, "https://esi.evetech.net", token).await
 }
 
 /// Loads the saved token, refreshes it if needed, and fetches the character's live location with custom URLs.

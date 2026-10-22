@@ -127,26 +127,6 @@ impl EsiClient {
         Ok(())
     }
 
-    /// Fetches all paginated items from an ESI endpoint.
-    /// Checks `x-pages` header on page 1 and fetches subsequent pages concurrently.
-    /// Respects the ESI `Expires` header (300s TTL). When fresh, returns cached data.
-    pub async fn get_all_pages<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        endpoint: &str,
-        extra_query: &[(&str, String)],
-    ) -> Result<Vec<T>> {
-        self.get_all_pages_opts(endpoint, extra_query, false).await
-    }
-
-    /// Force-fetches all paginated items fresh, bypassing any cached response.
-    pub async fn get_all_pages_fresh<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        endpoint: &str,
-        extra_query: &[(&str, String)],
-    ) -> Result<Vec<T>> {
-        self.get_all_pages_opts(endpoint, extra_query, true).await
-    }
-
     /// Fetches all paginated items from an ESI endpoint with configurable force_refresh.
     pub async fn get_all_pages_opts<T: Serialize + DeserializeOwned + Send + 'static>(
         &self,

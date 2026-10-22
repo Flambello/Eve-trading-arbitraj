@@ -25,25 +25,6 @@ pub fn is_safe_sound_theme_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Send a desktop notification banner asynchronously when a high-profit trade is found.
-pub fn send_desktop_notification(summary: &str, body: &str) {
-    let summary = summary.to_string();
-    let body = body.to_string();
-    thread::spawn(move || {
-        let _ = Command::new("notify-send")
-            .args([
-                "-a",
-                "EVE Traveling Merchant",
-                "-u",
-                "normal",
-                "--",
-                &summary,
-                &body,
-            ])
-            .status();
-    });
-}
-
 /// Check if any supported system audio player binary is installed in the given PATH variable.
 pub fn check_audio_support_in_paths(path_var: &std::ffi::OsStr) -> bool {
     let players = ["canberra-gtk-play", "pw-play", "paplay", "aplay"];

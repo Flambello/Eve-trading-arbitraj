@@ -1,12 +1,10 @@
 use super::client::EsiClient;
 use super::models::MarketOrder;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 pub struct RegionMarket {
     pub region_id: u32,
-    pub fetched_at: DateTime<Utc>,
     pub sell_orders: HashMap<u32, Vec<MarketOrder>>,
     pub buy_orders: HashMap<u32, Vec<MarketOrder>>,
 }
@@ -52,7 +50,6 @@ pub async fn fetch_region_market_opts(
 
     Ok(RegionMarket {
         region_id,
-        fetched_at: Utc::now(),
         sell_orders,
         buy_orders,
     })

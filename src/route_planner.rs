@@ -1,4 +1,4 @@
-use crate::arbitrage::ArbitrageDeal;
+use crate::arbitrage::{push_dedup_destination, ArbitrageDeal, AutopilotNavigable};
 use crate::config::ShipProfile;
 use crate::graph::SystemGraph;
 use serde::{Deserialize, Serialize};
@@ -28,21 +28,21 @@ pub struct TradeRoute {
     pub avg_profit_per_jump: f64,
 }
 
+impl AutopilotNavigable for TradeRoute {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for stop in &self.stops {
+            push_dedup_destination(&mut ids, stop.deal.source_station_id);
+            push_dedup_destination(&mut ids, stop.deal.dest_station_id);
+        }
+        ids
+    }
+}
+
 impl TradeRoute {
     /// Returns the ordered sequence of station IDs for ESI in-game autopilot.
     pub fn ordered_destination_ids(&self) -> Vec<u64> {
-        let mut ids = Vec::new();
-        for stop in &self.stops {
-            let src = stop.deal.source_station_id;
-            let dst = stop.deal.dest_station_id;
-            if ids.last().copied() != Some(src) {
-                ids.push(src);
-            }
-            if ids.last().copied() != Some(dst) {
-                ids.push(dst);
-            }
-        }
-        ids
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a complete in-game flight sheet suitable for EVE Notepad (Alt+N).

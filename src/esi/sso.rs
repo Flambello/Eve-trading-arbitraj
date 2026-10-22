@@ -418,6 +418,22 @@ pub fn urldecode_simple(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Formats an RFC 8252 compliant HTTP 400 Bad Request response with defensive security headers.
+fn format_http_400_response(body: &str) -> String {
+    format!(
+        "HTTP/1.1 400 Bad Request\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         X-Frame-Options: DENY\r\n\
+         Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         Cache-Control: no-store, no-cache, must-revalidate\r\n\
+         Connection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
 /// Listens on 127.0.0.1:<port> for the OAuth callback from the browser.
 /// Returns the authorization code once received.
 pub async fn listen_for_auth_code(
@@ -491,19 +507,7 @@ pub async fn listen_for_auth_code(
 
             // RFC 8252: Ensure request starts strictly with GET /callback?
             if !first_line.starts_with("GET /callback?") {
-                let err_body = "Invalid callback path or HTTP method.";
-                let response = format!(
-                    "HTTP/1.1 400 Bad Request\r\n\
-                     Content-Type: text/plain; charset=utf-8\r\n\
-                     Content-Length: {}\r\n\
-                     X-Frame-Options: DENY\r\n\
-                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
-                     X-Content-Type-Options: nosniff\r\n\
-                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
-                     Connection: close\r\n\r\n{}",
-                    err_body.len(),
-                    err_body
-                );
+                let response = format_http_400_response("Invalid callback path or HTTP method.");
                 let _ = socket.write_all(response.as_bytes()).await;
                 continue;
             }
@@ -514,19 +518,7 @@ pub async fn listen_for_auth_code(
                 lower.starts_with("host: localhost") || lower.starts_with("host: 127.0.0.1")
             });
             if !has_valid_host {
-                let err_body = "Invalid Host header.";
-                let response = format!(
-                    "HTTP/1.1 400 Bad Request\r\n\
-                     Content-Type: text/plain; charset=utf-8\r\n\
-                     Content-Length: {}\r\n\
-                     X-Frame-Options: DENY\r\n\
-                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
-                     X-Content-Type-Options: nosniff\r\n\
-                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
-                     Connection: close\r\n\r\n{}",
-                    err_body.len(),
-                    err_body
-                );
+                let response = format_http_400_response("Invalid Host header.");
                 let _ = socket.write_all(response.as_bytes()).await;
                 continue;
             }
@@ -640,19 +632,8 @@ pub async fn listen_for_auth_code(
             }
 
             // Fallback 400 response for invalid requests or state mismatch with defensive security headers
-            let err_body = "Invalid authorization callback or state mismatch.";
-            let response = format!(
-                "HTTP/1.1 400 Bad Request\r\n\
-                 Content-Type: text/plain; charset=utf-8\r\n\
-                 Content-Length: {}\r\n\
-                 X-Frame-Options: DENY\r\n\
-                 Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
-                 X-Content-Type-Options: nosniff\r\n\
-                 Cache-Control: no-store, no-cache, must-revalidate\r\n\
-                 Connection: close\r\n\r\n{}",
-                err_body.len(),
-                err_body
-            );
+            let response =
+                format_http_400_response("Invalid authorization callback or state mismatch.");
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
             let _ = socket.shutdown().await;

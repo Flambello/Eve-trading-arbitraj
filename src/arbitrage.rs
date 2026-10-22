@@ -640,14 +640,32 @@ pub fn prune_redundant_order_deals(
     filter_deals_by_order_limit(deals.iter().cloned(), max_per_sell, max_per_buy, |d| d)
 }
 
+/// Abstraction for route entities that yield an ordered sequence of EVE station IDs for autopilot injection.
+pub trait AutopilotNavigable {
+    fn ordered_destination_ids(&self) -> Vec<u64>;
+}
+
+/// Appends a destination ID to a sequence if it differs from the last destination (deduplication).
+#[inline]
+pub fn push_dedup_destination(ids: &mut Vec<u64>, dest_id: u64) {
+    if ids.last().copied() != Some(dest_id) {
+        ids.push(dest_id);
+    }
+}
+
+impl AutopilotNavigable for ArbitrageDeal {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::with_capacity(2);
+        push_dedup_destination(&mut ids, self.source_station_id);
+        push_dedup_destination(&mut ids, self.dest_station_id);
+        ids
+    }
+}
+
 impl ArbitrageDeal {
     /// Returns the station destination IDs for pushing to EVE Autopilot HUD.
     pub fn ordered_destination_ids(&self) -> Vec<u64> {
-        if self.source_station_id == self.dest_station_id {
-            vec![self.source_station_id]
-        } else {
-            vec![self.source_station_id, self.dest_station_id]
-        }
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a clean flight sheet for EVE Notepad (Alt+N).
@@ -688,20 +706,21 @@ impl ArbitrageDeal {
     }
 }
 
+impl AutopilotNavigable for TradeCorridorManifest {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::with_capacity(2);
+        if let Some(first) = self.deals.first() {
+            push_dedup_destination(&mut ids, first.source_station_id);
+            push_dedup_destination(&mut ids, first.dest_station_id);
+        }
+        ids
+    }
+}
+
 impl TradeCorridorManifest {
     /// Returns the station destination IDs for pushing to EVE Autopilot HUD.
     pub fn ordered_destination_ids(&self) -> Vec<u64> {
-        if let Some(first) = self.deals.first() {
-            let src = first.source_station_id;
-            let dst = first.dest_station_id;
-            if src == dst {
-                vec![src]
-            } else {
-                vec![src, dst]
-            }
-        } else {
-            Vec::new()
-        }
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a clean flight sheet for EVE Notepad (Alt+N).

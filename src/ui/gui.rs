@@ -3,7 +3,7 @@ use crate::arbitrage::{
     TradeCorridorManifest,
 };
 use crate::config::{BIG_HAULER, SMALL_HAULER};
-use crate::esi::{fetch_markets_fresh, EsiClient};
+use crate::esi::{count_market_orders, fetch_markets_fresh, EsiClient};
 use crate::graph::SystemGraph;
 use crate::hub_arbitrage::{self, CoreHub};
 use crate::route_planner::{plan_route, RouteStop, TradeRoute};
@@ -450,9 +450,6 @@ impl DesktopApp {
         initial_deals: Vec<ArbitrageDeal>,
         initial_route: Option<TradeRoute>,
     ) -> Self {
-        let (tx, rx) = channel();
-        let (chain_tx, chain_rx) = channel();
-
         let initial_status = if initial_deals.is_empty() {
             "Ready. Configure ship & location, then click SCAN MARKET.".to_string()
         } else {
@@ -482,178 +479,31 @@ impl DesktopApp {
             }
         }
 
-        let saved_tok = crate::esi::sso::load_saved_token();
-        let mut app = Self {
-            sde: Some(sde),
-            graph: Some(graph),
-            esi: Some(esi),
-            ship_is_big: cfg.ship.profile.to_lowercase() != "small",
-            home_system: cfg.location.home_system.clone(),
-            include_adjacent_regions: cfg.scan.scan_adjacent_regions,
-            safe_only: cfg.scan.safe_route_only,
-            npc_stations_only: cfg.scan.npc_stations_only,
-            min_roi_pct: cfg.filters.min_net_profit_pct.max(10.0),
-            min_profit_isk: if cfg.filters.min_profit_isk <= 0.0 {
-                1_000_000.0
-            } else {
-                cfg.filters.min_profit_isk
-            },
-            broker_fee_pct: cfg.fees.broker_fee_pct.clamp(1.0, 5.0),
-            sales_tax_pct: cfg.fees.sales_tax_pct.clamp(3.0, 8.0),
-            max_route_stops: if cfg.ui.max_route_stops == 0 {
-                5
-            } else {
-                cfg.ui.max_route_stops
-            },
-
-            custom_cargo_vol: cfg.ship.custom_cargo_vol.max(10.0),
-            custom_budget_isk: cfg.ship.custom_budget_isk.max(100_000.0),
-            use_custom_ship: cfg.ship.use_custom_ship,
-
-            auto_refresh: cfg.scan.auto_refresh,
-            auto_refresh_secs: 300,
-            last_scan_completed: Some(Instant::now()),
-            sound_alerts_enabled: cfg.scan.sound_alerts,
-            sound_min_roi_pct: if cfg.scan.sound_min_roi_pct <= 0.0 {
-                100.0
-            } else {
-                cfg.scan.sound_min_roi_pct
-            },
-            alerted_deal_keys: initial_alerted_keys,
-
-            region_the_forge: cfg.scan.regions.contains(&10000002),
-            region_domain: cfg.scan.regions.contains(&10000043),
-            region_sinq_laison: cfg.scan.regions.contains(&10000032),
-            region_heimatar: cfg.scan.regions.contains(&10000030),
-            region_metropolis: cfg.scan.regions.contains(&10000042),
-
-            filter_item_name: String::new(),
-            sort_by: DealSortBy::from_str(&cfg.view.deal_sort_by),
-            sort_descending: cfg.view.deal_sort_descending,
-            min_profit_filter_m: cfg.view.min_profit_filter_m,
-            max_jumps_filter: cfg.view.max_jumps_filter,
-            hide_npc_trades: cfg.view.hide_npc_trades,
-            max_deals_per_order: if cfg.view.max_deals_per_order == 0 {
-                2
-            } else {
-                cfg.view.max_deals_per_order
-            },
-
-            cached_deals_filtered: Vec::new(),
-            cached_deals_key: (
-                String::new(),
-                0,
-                0,
-                false,
-                0,
-                DealSortBy::ProfitPerJump,
-                false,
-                usize::MAX,
-            ),
-            cached_hub_deals: Vec::new(),
-            cached_hub_key: (
-                None,
-                None,
-                false,
-                false,
-                0,
-                String::new(),
-                DealSortBy::ProfitPerJump,
-                false,
-                usize::MAX,
-            ),
-
-            tab: ActiveTab::Deals,
-            is_scanning: false,
-            status_text: initial_status,
-            deals: initial_deals,
-            manifests: initial_manifests,
-            route: initial_route,
-            selected_deal_idx: None,
-            toast: None,
-            rx,
-            tx,
-
-            chain_max_legs: if cfg.view.chain_max_legs == 0 {
-                4
-            } else {
-                cfg.view.chain_max_legs
-            },
-            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 {
-                2
-            } else {
-                cfg.view.chain_max_dest_loads
-            },
-            chain_include_npc: cfg.view.chain_include_npc,
-            chain_detour_enabled: cfg.view.chain_detour_enabled,
-            chain_max_detour: cfg.view.chain_max_detour,
-            chain_is_running: false,
-            chain_results: Vec::new(),
-            chain_selected_idx: None,
-            chain_rx,
-            chain_tx,
-            chain_flowchart_split: true,
-
-            hub_source_filter: cfg
-                .view
-                .hub_source_hub
-                .as_deref()
-                .and_then(core_hub_from_str),
-            hub_dest_filter: cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str),
-            hub_include_npc: cfg.view.hub_include_npc,
-            hub_major_stations_only: cfg.view.hub_major_stations_only,
-            hub_min_profit_m: cfg.view.hub_min_profit_m,
-            hub_search_query: String::new(),
-            hub_sort_by: DealSortBy::ProfitPerJump,
-            hub_sort_descending: true,
-            hub_packed_manifest: None,
-            hub_show_manifest_card: false,
-
-            ui_scale: cfg.ui.ui_scale.clamp(0.75, 1.50),
-            is_fullscreen: cfg.ui.is_fullscreen,
-            dossier_side_panel: cfg.ui.dossier_side_panel,
-            compact_kpi: cfg.ui.compact_kpi,
-            theme: cfg.theme,
-            has_applied_initial_viewport: false,
-
-            is_startup: false,
-            startup_progress: StartupProgress {
-                stage_index: 5,
-                total_stages: 5,
-                stage_name: "Ready".to_string(),
-                detail: "Startup complete".to_string(),
-                percent: 1.0,
-                completed: true,
-                error: None,
-                error_code: None,
-            },
-            startup_rx: None,
-            startup_tip_index: 0,
-            startup_last_tip: Instant::now(),
-
-            sso_client_id: cfg.sso.client_id.clone(),
-            sso_character_name: saved_tok.as_ref().map(|t| t.character_name.clone()),
-            sso_character_id: saved_tok.as_ref().map(|t| t.character_id),
-            sso_token_expires_at: saved_tok.as_ref().map(|t| t.expires_at),
-            sso_is_authenticating: false,
-            sso_is_pushing: false,
-            sso_auto_sync_location: cfg.sso.auto_sync_location,
-            sso_is_fetching_location: false,
-            sso_location_scan_after: false,
-            sso_auth_rx: None,
-            sso_push_rx: None,
-            sso_location_rx: None,
-            sso_last_token_refresh_check: Instant::now() - Duration::from_secs(3600),
-            sso_is_refreshing_token: false,
-            sso_refresh_rx: None,
-            corp_icon_texture: None,
+        let (_startup_tx, startup_rx) = channel();
+        let mut app = Self::new_loading(cfg, startup_rx);
+        app.sde = Some(sde);
+        app.graph = Some(graph);
+        app.esi = Some(esi);
+        app.status_text = initial_status;
+        app.deals = initial_deals;
+        app.manifests = initial_manifests;
+        app.route = initial_route;
+        app.alerted_deal_keys = initial_alerted_keys;
+        app.is_startup = false;
+        app.startup_progress = StartupProgress {
+            stage_index: 5,
+            total_stages: 5,
+            stage_name: "Ready".to_string(),
+            detail: "Startup complete".to_string(),
+            percent: 1.0,
+            completed: true,
+            error: None,
+            error_code: None,
         };
+        app.startup_rx = None;
 
-        if app.sso_character_name.is_some() {
-            app.check_and_refresh_sso_token(false);
-            if app.sso_auto_sync_location {
-                app.fetch_live_character_location(true);
-            }
+        if app.sso_character_name.is_some() && app.sso_auto_sync_location {
+            app.fetch_live_character_location(true);
         }
 
         app
@@ -1496,14 +1346,7 @@ impl DesktopApp {
                     }
                 };
 
-                let total_sells = markets
-                    .values()
-                    .map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>())
-                    .sum();
-                let total_buys = markets
-                    .values()
-                    .map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>())
-                    .sum();
+                let (total_sells, total_buys) = count_market_orders(&markets);
 
                 let arb_cfg = ArbitrageConfig {
                     ship,

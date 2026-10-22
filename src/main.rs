@@ -3,7 +3,7 @@
 use anyhow::Result;
 use eve_trade_scout::arbitrage::{bundle_route_cargo, find_deals, ArbitrageConfig};
 use eve_trade_scout::config::UserConfig;
-use eve_trade_scout::esi::{fetch_markets_fresh, EsiClient};
+use eve_trade_scout::esi::{count_market_orders, fetch_markets_fresh, EsiClient};
 use eve_trade_scout::graph::SystemGraph;
 use eve_trade_scout::route_planner::plan_route;
 use eve_trade_scout::sde::SdeLoader;
@@ -218,14 +218,7 @@ async fn run_app() -> Result<()> {
         };
         let _ = esi.save_cache().await;
 
-        let total_sells: usize = markets
-            .values()
-            .map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>())
-            .sum();
-        let total_buys: usize = markets
-            .values()
-            .map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>())
-            .sum();
+        let (total_sells, total_buys) = count_market_orders(&markets);
 
         let _ = startup_tx.send(ui::StartupMsg::Progress(ui::StartupProgress {
             stage_index: 4,

@@ -133,3 +133,16 @@ pub fn best_buy(orders: &[MarketOrder]) -> Option<&MarketOrder> {
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
 }
+
+/// Counts the total number of sell and buy orders across a collection of regional markets.
+pub fn count_market_orders(markets: &HashMap<u32, RegionMarket>) -> (usize, usize) {
+    let total_sells = markets
+        .values()
+        .map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>())
+        .sum();
+    let total_buys = markets
+        .values()
+        .map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>())
+        .sum();
+    (total_sells, total_buys)
+}

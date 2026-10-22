@@ -293,21 +293,17 @@ pub fn hub_corridor_destination_ids(
     dest_hub: CoreHub,
     manifest: &Option<ConstrainedPackResult>,
 ) -> Vec<u64> {
+    let mut ids = Vec::with_capacity(2);
     if let Some(m) = manifest {
         if let Some(first) = m.packed.first() {
-            let src = first.deal.source_station_id;
-            let dst = first.deal.dest_station_id;
-            if src == dst {
-                return vec![src];
-            } else {
-                return vec![src, dst];
-            }
+            crate::arbitrage::push_dedup_destination(&mut ids, first.deal.source_station_id);
+            crate::arbitrage::push_dedup_destination(&mut ids, first.deal.dest_station_id);
+            return ids;
         }
     }
-    vec![
-        source_hub.primary_station_id(),
-        dest_hub.primary_station_id(),
-    ]
+    crate::arbitrage::push_dedup_destination(&mut ids, source_hub.primary_station_id());
+    crate::arbitrage::push_dedup_destination(&mut ids, dest_hub.primary_station_id());
+    ids
 }
 
 /// Formats a complete in-game flight sheet for EVE Notepad (Alt+N) for a hub trade run.

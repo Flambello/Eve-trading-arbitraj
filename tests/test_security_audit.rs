@@ -14,6 +14,8 @@ use flate2::Compression;
 use rusqlite::Connection;
 use std::io::{Cursor, Read};
 
+static SSO_CONFIG_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn test_csv_formula_injection_sanitization() {
     // 1. Equal sign formula injection
@@ -255,6 +257,7 @@ fn test_calculate_deal_non_finite_and_negative_price_rejection() {
 
 #[test]
 fn test_sso_token_save_unix_permissions() {
+    let _lock = SSO_CONFIG_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let token = SsoToken {
         access_token: "test_access_token".to_string(),
         refresh_token: "test_refresh_token".to_string(),
@@ -581,3 +584,46 @@ fn test_config_rejects_empty_or_malformed_regions() {
     let err = parse_region_ids("the_forge,domain").expect_err("Alpha regions must return an error");
     assert!(err.to_string().contains("Invalid regions argument"));
 }
+
+#[test]
+fn test_config_persistence_security_and_permission_isolation() {
+    let _lock = SSO_CONFIG_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!("eve_sec_cfg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let orig_eve = std::env::var_os("EVE_CONFIG_DIR");
+    std::env::set_var("EVE_CONFIG_DIR", &temp_dir);
+
+    let mut cfg = eve_trade_scout::config::UserConfig::default();
+    cfg.sso.client_id = "test_public_client_id_security".to_string();
+    cfg.sso.callback_port = 37373;
+    cfg.save().expect("Configuration save must succeed");
+
+    let config_path = eve_trade_scout::config::UserConfig::config_path().expect("Configuration path must resolve");
+    assert!(config_path.exists(), "Configuration file must be created");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&config_path).expect("Metadata must be readable");
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "Saved config file must have 0600 permissions to isolate client ID and user preferences"
+        );
+    }
+
+    // Verify atomic rename does not leave .tmp file behind
+    let tmp_path = config_path.with_extension("toml.tmp");
+    assert!(!tmp_path.exists(), "Atomic write must remove temporary file upon rename");
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    if let Some(ref val) = orig_eve {
+        std::env::set_var("EVE_CONFIG_DIR", val);
+    } else {
+        std::env::remove_var("EVE_CONFIG_DIR");
+    }
+}
+

@@ -51,7 +51,7 @@ enum ActiveTab {
     Settings,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum DealSortBy {
     ProfitPerJump,
     TotalProfit,
@@ -84,6 +84,42 @@ impl DealSortBy {
             DealSortBy::SellPrice => "Sell Price / Item (Buy Order)",
             DealSortBy::Quantity => "Quantity",
             DealSortBy::Volume => "Volume (m³)",
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DealSortBy::ProfitPerJump => "profit_per_jump",
+            DealSortBy::TotalProfit => "total_profit",
+            DealSortBy::RoiPct => "roi_pct",
+            DealSortBy::ProfitPerM3 => "profit_per_m3",
+            DealSortBy::Jumps => "jumps",
+            DealSortBy::Cost => "cost",
+            DealSortBy::ItemName => "item_name",
+            DealSortBy::BuySystem => "buy_system",
+            DealSortBy::BuyPrice => "buy_price",
+            DealSortBy::SellSystem => "sell_system",
+            DealSortBy::SellPrice => "sell_price",
+            DealSortBy::Quantity => "quantity",
+            DealSortBy::Volume => "volume",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "total_profit" => DealSortBy::TotalProfit,
+            "roi_pct" => DealSortBy::RoiPct,
+            "profit_per_m3" => DealSortBy::ProfitPerM3,
+            "jumps" => DealSortBy::Jumps,
+            "cost" => DealSortBy::Cost,
+            "item_name" => DealSortBy::ItemName,
+            "buy_system" => DealSortBy::BuySystem,
+            "buy_price" => DealSortBy::BuyPrice,
+            "sell_system" => DealSortBy::SellSystem,
+            "sell_price" => DealSortBy::SellPrice,
+            "quantity" => DealSortBy::Quantity,
+            "volume" => DealSortBy::Volume,
+            _ => DealSortBy::ProfitPerJump,
         }
     }
 }
@@ -279,6 +315,17 @@ pub const APP_ICON_PNG_BYTES: &[u8] =
 /// Embedded Expandabliss corporation crest PNG bytes (124x124 RGBA).
 pub const CORP_ICON_PNG_BYTES: &[u8] = include_bytes!("../../assets/icons/expandabliss.png");
 
+fn core_hub_from_str(s: &str) -> Option<crate::hub_arbitrage::CoreHub> {
+    match s.trim().to_lowercase().as_str() {
+        "jita" => Some(crate::hub_arbitrage::CoreHub::Jita),
+        "amarr" => Some(crate::hub_arbitrage::CoreHub::Amarr),
+        "dodixie" => Some(crate::hub_arbitrage::CoreHub::Dodixie),
+        "rens" => Some(crate::hub_arbitrage::CoreHub::Rens),
+        "hek" => Some(crate::hub_arbitrage::CoreHub::Hek),
+        _ => None,
+    }
+}
+
 pub struct DesktopApp {
     sde: Option<Arc<SdeLoader>>,
     graph: Option<Arc<SystemGraph>>,
@@ -388,6 +435,7 @@ pub struct DesktopApp {
     pub dossier_side_panel: bool,
     pub compact_kpi: bool,
     pub theme: crate::config::AppTheme,
+    pub has_applied_initial_viewport: bool,
 
     // ── Startup & Animated Splash Screen ─────────────────────────
     pub is_startup: bool,
@@ -420,23 +468,13 @@ pub struct DesktopApp {
 }
 
 impl DesktopApp {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new_with_config(
         sde: Arc<SdeLoader>,
         graph: Arc<SystemGraph>,
         esi: Arc<EsiClient>,
-        initial_ship_is_big: bool,
-        initial_home_system: String,
-        initial_safe_only: bool,
-        initial_npc_stations_only: bool,
-        initial_min_roi: f64,
-        initial_min_profit: f64,
-        _initial_regions: Vec<u32>,
+        cfg: &crate::config::UserConfig,
         initial_deals: Vec<ArbitrageDeal>,
         initial_route: Option<TradeRoute>,
-        initial_auto_refresh: bool,
-        initial_sound_alerts: bool,
-        initial_sound_min_roi: f64,
     ) -> Self {
         let (tx, rx) = channel();
         let (chain_tx, chain_rx) = channel();
@@ -450,22 +488,22 @@ impl DesktopApp {
             )
         };
 
-        let has_forge = false;
-        let has_domain = false;
-        let has_sinq = false;
-        let has_heim = false;
-        let has_metr = false;
-
-        let initial_ship = if initial_ship_is_big {
-            BIG_HAULER
-        } else {
+        let initial_ship = if cfg.ship.use_custom_ship {
+            crate::config::ShipProfile {
+                name: "Custom / Anti-Gank Profile",
+                max_volume: cfg.ship.custom_cargo_vol.max(10.0),
+                max_budget: cfg.ship.custom_budget_isk.max(100_000.0),
+            }
+        } else if cfg.ship.profile.to_lowercase() == "small" {
             SMALL_HAULER
+        } else {
+            BIG_HAULER
         };
         let initial_manifests = bundle_route_cargo(&initial_deals, initial_ship);
 
         let mut initial_alerted_keys = std::collections::HashSet::new();
         for d in &initial_deals {
-            if d.net_profit_pct >= initial_sound_min_roi.max(10.0) {
+            if d.net_profit_pct >= cfg.scan.sound_min_roi_pct.max(10.0) {
                 initial_alerted_keys.insert((d.type_id, d.source_station_id, d.dest_station_id));
             }
         }
@@ -475,45 +513,49 @@ impl DesktopApp {
             sde: Some(sde),
             graph: Some(graph),
             esi: Some(esi),
-            ship_is_big: initial_ship_is_big,
-            home_system: initial_home_system,
-            include_adjacent_regions: true,
-            safe_only: initial_safe_only,
-            npc_stations_only: initial_npc_stations_only,
-            min_roi_pct: initial_min_roi.max(10.0),
-            min_profit_isk: if initial_min_profit <= 0.0 {
+            ship_is_big: cfg.ship.profile.to_lowercase() != "small",
+            home_system: cfg.location.home_system.clone(),
+            include_adjacent_regions: cfg.scan.scan_adjacent_regions,
+            safe_only: cfg.scan.safe_route_only,
+            npc_stations_only: cfg.scan.npc_stations_only,
+            min_roi_pct: cfg.filters.min_net_profit_pct.max(10.0),
+            min_profit_isk: if cfg.filters.min_profit_isk <= 0.0 {
                 1_000_000.0
             } else {
-                initial_min_profit
+                cfg.filters.min_profit_isk
             },
-            broker_fee_pct: 3.0,
-            sales_tax_pct: 8.0,
-            max_route_stops: 5,
+            broker_fee_pct: cfg.fees.broker_fee_pct.clamp(1.0, 5.0),
+            sales_tax_pct: cfg.fees.sales_tax_pct.clamp(3.0, 8.0),
+            max_route_stops: if cfg.ui.max_route_stops == 0 { 5 } else { cfg.ui.max_route_stops },
 
-            auto_refresh: initial_auto_refresh,
+            custom_cargo_vol: cfg.ship.custom_cargo_vol.max(10.0),
+            custom_budget_isk: cfg.ship.custom_budget_isk.max(100_000.0),
+            use_custom_ship: cfg.ship.use_custom_ship,
+
+            auto_refresh: cfg.scan.auto_refresh,
             auto_refresh_secs: 300,
             last_scan_completed: Some(Instant::now()),
-            sound_alerts_enabled: initial_sound_alerts,
-            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 {
+            sound_alerts_enabled: cfg.scan.sound_alerts,
+            sound_min_roi_pct: if cfg.scan.sound_min_roi_pct <= 0.0 {
                 100.0
             } else {
-                initial_sound_min_roi
+                cfg.scan.sound_min_roi_pct
             },
             alerted_deal_keys: initial_alerted_keys,
 
-            region_the_forge: has_forge,
-            region_domain: has_domain,
-            region_sinq_laison: has_sinq,
-            region_heimatar: has_heim,
-            region_metropolis: has_metr,
+            region_the_forge: cfg.scan.regions.contains(&10000002),
+            region_domain: cfg.scan.regions.contains(&10000043),
+            region_sinq_laison: cfg.scan.regions.contains(&10000032),
+            region_heimatar: cfg.scan.regions.contains(&10000030),
+            region_metropolis: cfg.scan.regions.contains(&10000042),
 
             filter_item_name: String::new(),
-            sort_by: DealSortBy::ProfitPerJump,
-            sort_descending: true,
-            min_profit_filter_m: 0.0,
-            max_jumps_filter: 0,
-            hide_npc_trades: false,
-            max_deals_per_order: 2,
+            sort_by: DealSortBy::from_str(&cfg.view.deal_sort_by),
+            sort_descending: cfg.view.deal_sort_descending,
+            min_profit_filter_m: cfg.view.min_profit_filter_m,
+            max_jumps_filter: cfg.view.max_jumps_filter,
+            hide_npc_trades: cfg.view.hide_npc_trades,
+            max_deals_per_order: if cfg.view.max_deals_per_order == 0 { 2 } else { cfg.view.max_deals_per_order },
 
             cached_deals_filtered: Vec::new(),
             cached_deals_key: (
@@ -550,11 +592,11 @@ impl DesktopApp {
             rx,
             tx,
 
-            chain_max_legs: 4,
-            chain_max_dest_loads: 2,
-            chain_include_npc: true,
-            chain_detour_enabled: true,
-            chain_max_detour: 2,
+            chain_max_legs: if cfg.view.chain_max_legs == 0 { 4 } else { cfg.view.chain_max_legs },
+            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 { 2 } else { cfg.view.chain_max_dest_loads },
+            chain_include_npc: cfg.view.chain_include_npc,
+            chain_detour_enabled: cfg.view.chain_detour_enabled,
+            chain_max_detour: cfg.view.chain_max_detour,
             chain_is_running: false,
             chain_results: Vec::new(),
             chain_selected_idx: None,
@@ -562,28 +604,23 @@ impl DesktopApp {
             chain_tx,
             chain_flowchart_split: true,
 
-            hub_source_filter: Some(crate::hub_arbitrage::CoreHub::Jita),
-            hub_dest_filter: Some(crate::hub_arbitrage::CoreHub::Amarr),
-            hub_include_npc: true,
-            hub_major_stations_only: false,
-            hub_min_profit_m: 0.5,
+            hub_source_filter: cfg.view.hub_source_hub.as_deref().and_then(core_hub_from_str),
+            hub_dest_filter: cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str),
+            hub_include_npc: cfg.view.hub_include_npc,
+            hub_major_stations_only: cfg.view.hub_major_stations_only,
+            hub_min_profit_m: cfg.view.hub_min_profit_m,
             hub_search_query: String::new(),
             hub_sort_by: DealSortBy::ProfitPerJump,
             hub_sort_descending: true,
             hub_packed_manifest: None,
             hub_show_manifest_card: false,
 
-            custom_cargo_vol: 60_000.0,
-            custom_budget_isk: 500_000_000.0,
-            use_custom_ship: false,
-
-            ui_scale: 1.0,
-            is_fullscreen: false,
-            dossier_side_panel: true,
-            compact_kpi: true,
-            theme: crate::config::UserConfig::load()
-                .map(|c| c.theme)
-                .unwrap_or_default(),
+            ui_scale: cfg.ui.ui_scale.clamp(0.75, 1.50),
+            is_fullscreen: cfg.ui.is_fullscreen,
+            dossier_side_panel: cfg.ui.dossier_side_panel,
+            compact_kpi: cfg.ui.compact_kpi,
+            theme: cfg.theme,
+            has_applied_initial_viewport: false,
 
             is_startup: false,
             startup_progress: StartupProgress {
@@ -600,17 +637,13 @@ impl DesktopApp {
             startup_tip_index: 0,
             startup_last_tip: Instant::now(),
 
-            sso_client_id: crate::config::UserConfig::load()
-                .map(|c| c.sso.client_id)
-                .unwrap_or_default(),
+            sso_client_id: cfg.sso.client_id.clone(),
             sso_character_name: saved_tok.as_ref().map(|t| t.character_name.clone()),
             sso_character_id: saved_tok.as_ref().map(|t| t.character_id),
             sso_token_expires_at: saved_tok.as_ref().map(|t| t.expires_at),
             sso_is_authenticating: false,
             sso_is_pushing: false,
-            sso_auto_sync_location: crate::config::UserConfig::load()
-                .map(|c| c.sso.auto_sync_location)
-                .unwrap_or(false),
+            sso_auto_sync_location: cfg.sso.auto_sync_location,
             sso_is_fetching_location: false,
             sso_location_scan_after: false,
             sso_auth_rx: None,
@@ -633,16 +666,39 @@ impl DesktopApp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_loading(
+    pub fn new(
+        sde: Arc<SdeLoader>,
+        graph: Arc<SystemGraph>,
+        esi: Arc<EsiClient>,
         initial_ship_is_big: bool,
         initial_home_system: String,
         initial_safe_only: bool,
         initial_npc_stations_only: bool,
         initial_min_roi: f64,
         initial_min_profit: f64,
+        initial_regions: Vec<u32>,
+        initial_deals: Vec<ArbitrageDeal>,
+        initial_route: Option<TradeRoute>,
         initial_auto_refresh: bool,
         initial_sound_alerts: bool,
         initial_sound_min_roi: f64,
+    ) -> Self {
+        let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
+        cfg.ship.profile = if initial_ship_is_big { "big".to_string() } else { "small".to_string() };
+        cfg.location.home_system = initial_home_system;
+        cfg.scan.safe_route_only = initial_safe_only;
+        cfg.scan.npc_stations_only = initial_npc_stations_only;
+        cfg.filters.min_net_profit_pct = initial_min_roi.max(10.0);
+        cfg.filters.min_profit_isk = initial_min_profit;
+        cfg.scan.regions = initial_regions;
+        cfg.scan.auto_refresh = initial_auto_refresh;
+        cfg.scan.sound_alerts = initial_sound_alerts;
+        cfg.scan.sound_min_roi_pct = initial_sound_min_roi;
+        Self::new_with_config(sde, graph, esi, &cfg, initial_deals, initial_route)
+    }
+
+    pub fn new_loading(
+        cfg: &crate::config::UserConfig,
         startup_rx: Receiver<StartupMsg>,
     ) -> Self {
         let (tx, rx) = channel();
@@ -652,45 +708,45 @@ impl DesktopApp {
             sde: None,
             graph: None,
             esi: None,
-            ship_is_big: initial_ship_is_big,
-            home_system: initial_home_system,
-            include_adjacent_regions: true,
-            safe_only: initial_safe_only,
-            npc_stations_only: initial_npc_stations_only,
-            min_roi_pct: initial_min_roi.max(10.0),
-            min_profit_isk: if initial_min_profit <= 0.0 {
+            ship_is_big: cfg.ship.profile.to_lowercase() != "small",
+            home_system: cfg.location.home_system.clone(),
+            include_adjacent_regions: cfg.scan.scan_adjacent_regions,
+            safe_only: cfg.scan.safe_route_only,
+            npc_stations_only: cfg.scan.npc_stations_only,
+            min_roi_pct: cfg.filters.min_net_profit_pct.max(10.0),
+            min_profit_isk: if cfg.filters.min_profit_isk <= 0.0 {
                 1_000_000.0
             } else {
-                initial_min_profit
+                cfg.filters.min_profit_isk
             },
-            broker_fee_pct: 3.0,
-            sales_tax_pct: 8.0,
-            max_route_stops: 5,
+            broker_fee_pct: cfg.fees.broker_fee_pct.clamp(1.0, 5.0),
+            sales_tax_pct: cfg.fees.sales_tax_pct.clamp(3.0, 8.0),
+            max_route_stops: if cfg.ui.max_route_stops == 0 { 5 } else { cfg.ui.max_route_stops },
 
-            auto_refresh: initial_auto_refresh,
+            auto_refresh: cfg.scan.auto_refresh,
             auto_refresh_secs: 300,
             last_scan_completed: Some(Instant::now()),
-            sound_alerts_enabled: initial_sound_alerts,
-            sound_min_roi_pct: if initial_sound_min_roi <= 0.0 {
+            sound_alerts_enabled: cfg.scan.sound_alerts,
+            sound_min_roi_pct: if cfg.scan.sound_min_roi_pct <= 0.0 {
                 100.0
             } else {
-                initial_sound_min_roi
+                cfg.scan.sound_min_roi_pct
             },
             alerted_deal_keys: std::collections::HashSet::new(),
 
-            region_the_forge: false,
-            region_domain: false,
-            region_sinq_laison: false,
-            region_heimatar: false,
-            region_metropolis: false,
+            region_the_forge: cfg.scan.regions.contains(&10000002),
+            region_domain: cfg.scan.regions.contains(&10000043),
+            region_sinq_laison: cfg.scan.regions.contains(&10000032),
+            region_heimatar: cfg.scan.regions.contains(&10000030),
+            region_metropolis: cfg.scan.regions.contains(&10000042),
 
             filter_item_name: String::new(),
-            sort_by: DealSortBy::ProfitPerJump,
-            sort_descending: true,
-            min_profit_filter_m: 0.0,
-            max_jumps_filter: 0,
-            hide_npc_trades: false,
-            max_deals_per_order: 2,
+            sort_by: DealSortBy::from_str(&cfg.view.deal_sort_by),
+            sort_descending: cfg.view.deal_sort_descending,
+            min_profit_filter_m: cfg.view.min_profit_filter_m,
+            max_jumps_filter: cfg.view.max_jumps_filter,
+            hide_npc_trades: cfg.view.hide_npc_trades,
+            max_deals_per_order: if cfg.view.max_deals_per_order == 0 { 2 } else { cfg.view.max_deals_per_order },
 
             cached_deals_filtered: Vec::new(),
             cached_deals_key: (
@@ -727,11 +783,11 @@ impl DesktopApp {
             rx,
             tx,
 
-            chain_max_legs: 4,
-            chain_max_dest_loads: 2,
-            chain_include_npc: true,
-            chain_detour_enabled: true,
-            chain_max_detour: 2,
+            chain_max_legs: if cfg.view.chain_max_legs == 0 { 4 } else { cfg.view.chain_max_legs },
+            chain_max_dest_loads: if cfg.view.chain_max_dest_loads == 0 { 2 } else { cfg.view.chain_max_dest_loads },
+            chain_include_npc: cfg.view.chain_include_npc,
+            chain_detour_enabled: cfg.view.chain_detour_enabled,
+            chain_max_detour: cfg.view.chain_max_detour,
             chain_is_running: false,
             chain_results: Vec::new(),
             chain_selected_idx: None,
@@ -739,28 +795,27 @@ impl DesktopApp {
             chain_tx,
             chain_flowchart_split: true,
 
-            hub_source_filter: Some(crate::hub_arbitrage::CoreHub::Jita),
-            hub_dest_filter: Some(crate::hub_arbitrage::CoreHub::Amarr),
-            hub_include_npc: true,
-            hub_major_stations_only: false,
-            hub_min_profit_m: 0.5,
+            hub_source_filter: cfg.view.hub_source_hub.as_deref().and_then(core_hub_from_str),
+            hub_dest_filter: cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str),
+            hub_include_npc: cfg.view.hub_include_npc,
+            hub_major_stations_only: cfg.view.hub_major_stations_only,
+            hub_min_profit_m: cfg.view.hub_min_profit_m,
             hub_search_query: String::new(),
             hub_sort_by: DealSortBy::ProfitPerJump,
             hub_sort_descending: true,
             hub_packed_manifest: None,
             hub_show_manifest_card: false,
 
-            custom_cargo_vol: 60_000.0,
-            custom_budget_isk: 500_000_000.0,
-            use_custom_ship: false,
+            custom_cargo_vol: cfg.ship.custom_cargo_vol.max(10.0),
+            custom_budget_isk: cfg.ship.custom_budget_isk.max(100_000.0),
+            use_custom_ship: cfg.ship.use_custom_ship,
 
-            ui_scale: 1.0,
-            is_fullscreen: false,
-            dossier_side_panel: true,
-            compact_kpi: true,
-            theme: crate::config::UserConfig::load()
-                .map(|c| c.theme)
-                .unwrap_or_default(),
+            ui_scale: cfg.ui.ui_scale.clamp(0.75, 1.50),
+            is_fullscreen: cfg.ui.is_fullscreen,
+            dossier_side_panel: cfg.ui.dossier_side_panel,
+            compact_kpi: cfg.ui.compact_kpi,
+            theme: cfg.theme,
+            has_applied_initial_viewport: false,
 
             is_startup: true,
             startup_progress: StartupProgress::default(),
@@ -768,17 +823,13 @@ impl DesktopApp {
             startup_tip_index: 0,
             startup_last_tip: Instant::now(),
 
-            sso_client_id: crate::config::UserConfig::load()
-                .map(|c| c.sso.client_id)
-                .unwrap_or_default(),
+            sso_client_id: cfg.sso.client_id.clone(),
             sso_character_name: saved_tok.as_ref().map(|t| t.character_name.clone()),
             sso_character_id: saved_tok.as_ref().map(|t| t.character_id),
             sso_token_expires_at: saved_tok.as_ref().map(|t| t.expires_at),
             sso_is_authenticating: false,
             sso_is_pushing: false,
-            sso_auto_sync_location: crate::config::UserConfig::load()
-                .map(|c| c.sso.auto_sync_location)
-                .unwrap_or(false),
+            sso_auto_sync_location: cfg.sso.auto_sync_location,
             sso_is_fetching_location: false,
             sso_location_scan_after: false,
             sso_auth_rx: None,
@@ -795,6 +846,183 @@ impl DesktopApp {
         }
 
         app
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_loading_legacy(
+        initial_ship_is_big: bool,
+        initial_home_system: String,
+        initial_safe_only: bool,
+        initial_npc_stations_only: bool,
+        initial_min_roi: f64,
+        initial_min_profit: f64,
+        initial_auto_refresh: bool,
+        initial_sound_alerts: bool,
+        initial_sound_min_roi: f64,
+        startup_rx: Receiver<StartupMsg>,
+    ) -> Self {
+        let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
+        cfg.ship.profile = if initial_ship_is_big { "big".to_string() } else { "small".to_string() };
+        cfg.location.home_system = initial_home_system;
+        cfg.scan.safe_route_only = initial_safe_only;
+        cfg.scan.npc_stations_only = initial_npc_stations_only;
+        cfg.filters.min_net_profit_pct = initial_min_roi.max(10.0);
+        cfg.filters.min_profit_isk = initial_min_profit;
+        cfg.scan.auto_refresh = initial_auto_refresh;
+        cfg.scan.sound_alerts = initial_sound_alerts;
+        cfg.scan.sound_min_roi_pct = initial_sound_min_roi;
+        Self::new_loading(&cfg, startup_rx)
+    }
+
+    pub fn apply_user_config(&mut self, cfg: &crate::config::UserConfig) {
+        self.ship_is_big = cfg.ship.profile.to_lowercase() != "small";
+        self.use_custom_ship = cfg.ship.use_custom_ship;
+        self.custom_cargo_vol = cfg.ship.custom_cargo_vol.max(10.0);
+        self.custom_budget_isk = cfg.ship.custom_budget_isk.max(100_000.0);
+
+        self.home_system = cfg.location.home_system.clone();
+
+        self.region_the_forge = cfg.scan.regions.contains(&10000002);
+        self.region_domain = cfg.scan.regions.contains(&10000043);
+        self.region_sinq_laison = cfg.scan.regions.contains(&10000032);
+        self.region_heimatar = cfg.scan.regions.contains(&10000030);
+        self.region_metropolis = cfg.scan.regions.contains(&10000042);
+        self.safe_only = cfg.scan.safe_route_only;
+        self.npc_stations_only = cfg.scan.npc_stations_only;
+        self.include_adjacent_regions = cfg.scan.scan_adjacent_regions;
+        self.auto_refresh = cfg.scan.auto_refresh;
+        self.sound_alerts_enabled = cfg.scan.sound_alerts;
+        self.sound_min_roi_pct = if cfg.scan.sound_min_roi_pct <= 0.0 {
+            100.0
+        } else {
+            cfg.scan.sound_min_roi_pct
+        };
+
+        self.min_profit_isk = if cfg.filters.min_profit_isk <= 0.0 {
+            1_000_000.0
+        } else {
+            cfg.filters.min_profit_isk
+        };
+        self.min_roi_pct = cfg.filters.min_net_profit_pct.max(10.0);
+
+        self.broker_fee_pct = cfg.fees.broker_fee_pct.clamp(1.0, 5.0);
+        self.sales_tax_pct = cfg.fees.sales_tax_pct.clamp(3.0, 8.0);
+
+        if !cfg.sso.client_id.is_empty() {
+            self.sso_client_id = cfg.sso.client_id.clone();
+        }
+        self.sso_auto_sync_location = cfg.sso.auto_sync_location;
+
+        self.theme = cfg.theme;
+
+        self.ui_scale = cfg.ui.ui_scale.clamp(0.75, 1.50);
+        self.is_fullscreen = cfg.ui.is_fullscreen;
+        self.dossier_side_panel = cfg.ui.dossier_side_panel;
+        self.compact_kpi = cfg.ui.compact_kpi;
+        self.max_route_stops = if cfg.ui.max_route_stops == 0 { 5 } else { cfg.ui.max_route_stops };
+
+        self.sort_by = DealSortBy::from_str(&cfg.view.deal_sort_by);
+        self.sort_descending = cfg.view.deal_sort_descending;
+        self.min_profit_filter_m = cfg.view.min_profit_filter_m;
+        self.max_jumps_filter = cfg.view.max_jumps_filter;
+        self.hide_npc_trades = cfg.view.hide_npc_trades;
+        self.max_deals_per_order = if cfg.view.max_deals_per_order == 0 { 2 } else { cfg.view.max_deals_per_order };
+
+        self.chain_max_legs = if cfg.view.chain_max_legs == 0 { 4 } else { cfg.view.chain_max_legs };
+        self.chain_max_dest_loads = if cfg.view.chain_max_dest_loads == 0 { 2 } else { cfg.view.chain_max_dest_loads };
+        self.chain_include_npc = cfg.view.chain_include_npc;
+        self.chain_detour_enabled = cfg.view.chain_detour_enabled;
+        self.chain_max_detour = cfg.view.chain_max_detour;
+
+        self.hub_source_filter = cfg.view.hub_source_hub.as_deref().and_then(core_hub_from_str);
+        self.hub_dest_filter = cfg.view.hub_dest_hub.as_deref().and_then(core_hub_from_str);
+        self.hub_include_npc = cfg.view.hub_include_npc;
+        self.hub_major_stations_only = cfg.view.hub_major_stations_only;
+        self.hub_min_profit_m = cfg.view.hub_min_profit_m;
+    }
+
+    pub fn export_user_config(&self) -> crate::config::UserConfig {
+        let mut cfg = crate::config::UserConfig::load().unwrap_or_default();
+
+        cfg.ship.profile = if self.ship_is_big { "big".to_string() } else { "small".to_string() };
+        cfg.ship.use_custom_ship = self.use_custom_ship;
+        cfg.ship.custom_cargo_vol = self.custom_cargo_vol.max(10.0);
+        cfg.ship.custom_budget_isk = self.custom_budget_isk.max(100_000.0);
+
+        cfg.location.home_system = self.home_system.clone();
+
+        let mut regions = Vec::new();
+        if self.region_the_forge { regions.push(10000002); }
+        if self.region_domain { regions.push(10000043); }
+        if self.region_sinq_laison { regions.push(10000032); }
+        if self.region_heimatar { regions.push(10000030); }
+        if self.region_metropolis { regions.push(10000042); }
+        cfg.scan.regions = regions;
+        cfg.scan.safe_route_only = self.safe_only;
+        cfg.scan.npc_stations_only = self.npc_stations_only;
+        cfg.scan.scan_adjacent_regions = self.include_adjacent_regions;
+        cfg.scan.auto_refresh = self.auto_refresh;
+        cfg.scan.sound_alerts = self.sound_alerts_enabled;
+        cfg.scan.sound_min_roi_pct = self.sound_min_roi_pct.max(10.0);
+
+        cfg.filters.min_profit_isk = self.min_profit_isk;
+        cfg.filters.min_net_profit_pct = self.min_roi_pct.max(10.0);
+
+        cfg.fees.broker_fee_pct = self.broker_fee_pct.clamp(1.0, 5.0);
+        cfg.fees.sales_tax_pct = self.sales_tax_pct.clamp(3.0, 8.0);
+
+        if !self.sso_client_id.is_empty() {
+            cfg.sso.client_id = self.sso_client_id.clone();
+        }
+        cfg.sso.auto_sync_location = self.sso_auto_sync_location;
+
+        cfg.theme = self.theme;
+
+        cfg.ui.ui_scale = self.ui_scale.clamp(0.75, 1.50);
+        cfg.ui.is_fullscreen = self.is_fullscreen;
+        cfg.ui.dossier_side_panel = self.dossier_side_panel;
+        cfg.ui.compact_kpi = self.compact_kpi;
+        cfg.ui.max_route_stops = self.max_route_stops;
+
+        cfg.view.deal_sort_by = self.sort_by.as_str().to_string();
+        cfg.view.deal_sort_descending = self.sort_descending;
+        cfg.view.min_profit_filter_m = self.min_profit_filter_m;
+        cfg.view.max_jumps_filter = self.max_jumps_filter;
+        cfg.view.hide_npc_trades = self.hide_npc_trades;
+        cfg.view.max_deals_per_order = self.max_deals_per_order;
+
+        cfg.view.chain_max_legs = self.chain_max_legs;
+        cfg.view.chain_max_dest_loads = self.chain_max_dest_loads;
+        cfg.view.chain_include_npc = self.chain_include_npc;
+        cfg.view.chain_detour_enabled = self.chain_detour_enabled;
+        cfg.view.chain_max_detour = self.chain_max_detour;
+
+        cfg.view.hub_source_hub = self.hub_source_filter.map(|h| h.name().to_string());
+        cfg.view.hub_dest_hub = self.hub_dest_filter.map(|h| h.name().to_string());
+        cfg.view.hub_include_npc = self.hub_include_npc;
+        cfg.view.hub_major_stations_only = self.hub_major_stations_only;
+        cfg.view.hub_min_profit_m = self.hub_min_profit_m;
+
+        cfg
+    }
+
+    pub fn save_user_config(&self) -> anyhow::Result<()> {
+        let cfg = self.export_user_config();
+        match cfg.save() {
+            Ok(()) => {
+                tracing::info!(target: "eve_trade_scout", "User configuration successfully saved to disk.");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "eve_trade_scout",
+                    error_code = %crate::error::ErrorCode::ErrConfigSaveFailed,
+                    error = %e,
+                    "Failed to save user configuration to disk: {e}"
+                );
+                Err(e)
+            }
+        }
     }
 
     pub fn current_ship(&self) -> crate::config::ShipProfile {
@@ -1164,6 +1392,8 @@ impl DesktopApp {
             return;
         }
 
+        let _ = self.save_user_config();
+
         let (Some(sde), Some(graph), Some(esi)) = (&self.sde, &self.graph, &self.esi) else {
             self.status_text = "[WARN] Cannot scan live market: SDE universe database or ESI client is offline.".to_string();
             return;
@@ -1381,6 +1611,14 @@ impl DesktopApp {
 
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.has_applied_initial_viewport {
+            self.has_applied_initial_viewport = true;
+            ctx.set_zoom_factor(self.ui_scale);
+            if self.is_fullscreen {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+            }
+        }
+
         // Startup splash handling
         if self.is_startup {
             self.poll_startup(ctx);
@@ -1845,6 +2083,19 @@ impl eframe::App for DesktopApp {
                 ActiveTab::HubArbitrage => self.render_hub_arbitrage_tab(ui),
                 ActiveTab::Settings => self.render_settings_tab(ui),
             });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Err(e) = self.save_user_config() {
+            tracing::error!(
+                target: "eve_trade_scout",
+                error_code = %crate::error::ErrorCode::ErrConfigSaveFailed,
+                error = %e,
+                "Failed to auto-save user configuration on application exit"
+            );
+        } else {
+            tracing::info!(target: "eve_trade_scout", "User configuration saved successfully on application exit.");
+        }
     }
 }
 
@@ -7371,7 +7622,23 @@ impl DesktopApp {
 
     fn render_settings_tab(&mut self, ui: &mut egui::Ui) {
         let palette = self.theme.palette();
-        ui.heading(RichText::new("Configuration & System Settings").color(palette.text_primary));
+        ui.horizontal(|ui| {
+            ui.heading(RichText::new("Configuration & System Settings").color(palette.text_primary));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(RichText::new("💾 Save Settings to Disk").strong().color(palette.accent_primary)).clicked() {
+                    match self.save_user_config() {
+                        Ok(()) => self.set_toast("Configuration saved to disk!"),
+                        Err(e) => self.set_toast(format!("Failed to save config: {e}")),
+                    }
+                }
+                if ui.button(RichText::new("↺ Reset Defaults").color(Color32::from_rgb(220, 100, 100))).on_hover_text("Reset all settings to default factory values").clicked() {
+                    let default_cfg = crate::config::UserConfig::default();
+                    self.apply_user_config(&default_cfg);
+                    let _ = self.save_user_config();
+                    self.set_toast("Reset all settings to default factory values");
+                }
+            });
+        });
         ui.add_space(10.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -7520,10 +7787,7 @@ impl DesktopApp {
                 if let Some(new_t) = theme_switched {
                     if self.theme != new_t {
                         self.theme = new_t;
-                        if let Ok(mut cfg) = crate::config::UserConfig::load() {
-                            cfg.theme = self.theme;
-                            let _ = cfg.save();
-                        }
+                        let _ = self.save_user_config();
                         self.set_toast(format!("Theme switched to {}", new_t.display_name()));
                         ui.ctx().request_repaint();
                     }
@@ -7544,10 +7808,12 @@ impl DesktopApp {
                         if ui.add(egui::Slider::new(&mut pct, 75..=150).suffix("%").step_by(5.0)).changed() {
                             self.ui_scale = (pct as f32 / 100.0).clamp(0.75, 1.50);
                             ui.ctx().set_zoom_factor(self.ui_scale);
+                            let _ = self.save_user_config();
                         }
                         if ui.button("↺ Reset 100%").clicked() {
                             self.ui_scale = 1.0;
                             ui.ctx().set_zoom_factor(1.0);
+                            let _ = self.save_user_config();
                             self.set_toast("UI Scale reset to 100%");
                         }
                         ui.label(RichText::new("(Shortcuts: Ctrl + / Ctrl - / Ctrl 0)").color(Color32::GRAY).size(11.0));
@@ -7560,6 +7826,7 @@ impl DesktopApp {
                         if ui.button(fs_label).clicked() {
                             self.is_fullscreen = !self.is_fullscreen;
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.is_fullscreen));
+                            let _ = self.save_user_config();
                             if self.is_fullscreen {
                                 self.set_toast("Entered Fullscreen mode (Press F11 to exit)");
                             } else {
@@ -7571,9 +7838,11 @@ impl DesktopApp {
 
                         ui.label("Deal Dossier Docking:");
                         if ui.radio_value(&mut self.dossier_side_panel, true, "◫ Side Panel (widescreen)").clicked() {
+                            let _ = self.save_user_config();
                             self.set_toast("Dossier docking set to Side Panel");
                         }
                         if ui.radio_value(&mut self.dossier_side_panel, false, "▬ Bottom Drawer").clicked() {
+                            let _ = self.save_user_config();
                             self.set_toast("Dossier docking set to Bottom Drawer");
                         }
 
@@ -7581,9 +7850,11 @@ impl DesktopApp {
 
                         ui.label("Executive KPI Bar:");
                         if ui.radio_value(&mut self.compact_kpi, false, "Full Cards").clicked() {
+                            let _ = self.save_user_config();
                             self.set_toast("KPI bar set to Full Cards");
                         }
                         if ui.radio_value(&mut self.compact_kpi, true, "Compact Pills").clicked() {
+                            let _ = self.save_user_config();
                             self.set_toast("KPI bar set to Compact Pills");
                         }
                     });
@@ -7791,10 +8062,7 @@ impl DesktopApp {
                                 )
                                 .changed()
                             {
-                                if let Ok(mut cfg) = crate::config::UserConfig::load() {
-                                    cfg.sso.auto_sync_location = self.sso_auto_sync_location;
-                                    let _ = cfg.save();
-                                }
+                                let _ = self.save_user_config();
                             }
                         });
                     }
@@ -7810,14 +8078,18 @@ impl DesktopApp {
 
                     ui.horizontal(|ui| {
                         ui.label("Broker Fee % (on buy order):");
-                        ui.add(egui::DragValue::new(&mut self.broker_fee_pct).speed(0.1).range(1.0..=5.0).suffix("%"));
+                        if ui.add(egui::DragValue::new(&mut self.broker_fee_pct).speed(0.1).range(1.0..=5.0).suffix("%")).changed() {
+                            let _ = self.save_user_config();
+                        }
                         ui.label(RichText::new("(Default 3.0%, reduced by Broker Relations skill)").color(Color32::GRAY));
                     });
 
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Sales Tax % (on sell order):");
-                        ui.add(egui::DragValue::new(&mut self.sales_tax_pct).speed(0.1).range(3.375..=8.0).suffix("%"));
+                        if ui.add(egui::DragValue::new(&mut self.sales_tax_pct).speed(0.1).range(3.375..=8.0).suffix("%")).changed() {
+                            let _ = self.save_user_config();
+                        }
                         ui.label(RichText::new("(Default 8.0%, reduced by Accounting skill to 3.375%)").color(Color32::GRAY));
                     });
 
@@ -7827,16 +8099,19 @@ impl DesktopApp {
                         if ui.small_button("Max Skills (Accounting V / Broker V)").on_hover_text("Accounting V: 3.375% sales tax\nBroker Relations V: 1.0% broker fee").clicked() {
                             self.sales_tax_pct = 3.375;
                             self.broker_fee_pct = 1.0;
+                            let _ = self.save_user_config();
                             self.set_toast("Applied Max Skills: 3.375% sales tax, 1.0% broker fee");
                         }
                         if ui.small_button("Level IV Skills").on_hover_text("Accounting IV: 4.3% sales tax\nBroker Relations IV: 1.4% broker fee").clicked() {
                             self.sales_tax_pct = 4.3;
                             self.broker_fee_pct = 1.4;
+                            let _ = self.save_user_config();
                             self.set_toast("Applied Level IV Skills: 4.3% sales tax, 1.4% broker fee");
                         }
                         if ui.small_button("Base / Untrained").on_hover_text("Accounting 0: 8.0% sales tax\nBroker Relations 0: 3.0% broker fee").clicked() {
                             self.sales_tax_pct = 8.0;
                             self.broker_fee_pct = 3.0;
+                            let _ = self.save_user_config();
                             self.set_toast("Applied Untrained: 8.0% sales tax, 3.0% broker fee");
                         }
                     });
@@ -7853,9 +8128,11 @@ impl DesktopApp {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new("Profile Mode:").strong());
                         if ui.radio_value(&mut self.use_custom_ship, false, "Standard Hauler Presets").clicked() {
+                            let _ = self.save_user_config();
                             self.set_toast(if self.ship_is_big { "Active: Big Hauler (60k m³ · 500M)" } else { "Active: Small Hauler (30k m³ · 50M)" });
                         }
                         if ui.radio_value(&mut self.use_custom_ship, true, "Custom Ship & Anti-Gank Sizing").clicked() {
+                            let _ = self.save_user_config();
                             self.set_toast("Active: Custom Vessel & Anti-Gank Protection");
                         }
                     });
@@ -7866,10 +8143,12 @@ impl DesktopApp {
                             ui.label("Active Preset:");
                             if ui.selectable_label(self.ship_is_big, "Big Hauler (Deep Space Transport: 60,000 m³ · 500M ISK)").clicked() {
                                 self.ship_is_big = true;
+                                let _ = self.save_user_config();
                                 self.set_toast("Selected Big Hauler preset (60k m³ · 500M ISK)");
                             }
                             if ui.selectable_label(!self.ship_is_big, "Small Hauler (T1 Industrial: 30,000 m³ · 50M ISK)").clicked() {
                                 self.ship_is_big = false;
+                                let _ = self.save_user_config();
                                 self.set_toast("Selected Small Hauler preset (30k m³ · 50M ISK)");
                             }
                         });
@@ -7880,21 +8159,25 @@ impl DesktopApp {
                             if ui.small_button("T1 Hauler (30k m³ · 50M ISK)").on_hover_text("Iteron Mark V, Bestower, Tayra, Mammoth\nAnti-Gank Cap: 50M ISK (safe against 1 Catalyst)").clicked() {
                                 self.custom_cargo_vol = 30_000.0;
                                 self.custom_budget_isk = 50_000_000.0;
+                                let _ = self.save_user_config();
                                 self.set_toast("Loaded T1 Hauler preset (30k m³ · 50M ISK cap)");
                             }
                             if ui.small_button("Deep Space Transport (60k m³ · 500M ISK)").on_hover_text("Occator, Bustard, Mastodon, Impel (Overheated tank)\nAnti-Gank Cap: 500M ISK").clicked() {
                                 self.custom_cargo_vol = 60_000.0;
                                 self.custom_budget_isk = 500_000_000.0;
+                                let _ = self.save_user_config();
                                 self.set_toast("Loaded DST preset (60k m³ · 500M ISK cap)");
                             }
                             if ui.small_button("Blockade Runner (12k m³ · 300M ISK)").on_hover_text("Prowler, Prorator, Crane, Viator (Cloaky / Immune to Cargo Scanners)\nAnti-Gank Cap: 300M ISK").clicked() {
                                 self.custom_cargo_vol = 12_000.0;
                                 self.custom_budget_isk = 300_000_000.0;
+                                let _ = self.save_user_config();
                                 self.set_toast("Loaded Blockade Runner preset (12k m³ · 300M ISK cap)");
                             }
                             if ui.small_button("Freighter (900k m³ · 2.0B ISK)").on_hover_text("Charon, Obelisk, Fenrir, Providence\nAnti-Gank Cap: 2.0B ISK (Tornado gank threshold)").clicked() {
                                 self.custom_cargo_vol = 900_000.0;
                                 self.custom_budget_isk = 2_000_000_000.0;
+                                let _ = self.save_user_config();
                                 self.set_toast("Loaded Freighter preset (900k m³ · 2.0B ISK cap)");
                             }
                         });
@@ -7902,14 +8185,18 @@ impl DesktopApp {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.label("Cargo Hold Capacity (m³):");
-                            ui.add(egui::DragValue::new(&mut self.custom_cargo_vol).speed(250.0).range(100.0..=1_500_000.0).suffix(" m³"));
+                            if ui.add(egui::DragValue::new(&mut self.custom_cargo_vol).speed(250.0).range(100.0..=1_500_000.0).suffix(" m³")).changed() {
+                                let _ = self.save_user_config();
+                            }
                             ui.label(RichText::new(format!("({:.1}k m³)", self.custom_cargo_vol / 1000.0)).color(Color32::from_rgb(0, 220, 255)));
                         });
 
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             ui.label("Anti-Gank Collateral Budget (ISK):");
-                            ui.add(egui::DragValue::new(&mut self.custom_budget_isk).speed(5_000_000.0).range(1_000_000.0..=100_000_000_000.0));
+                            if ui.add(egui::DragValue::new(&mut self.custom_budget_isk).speed(5_000_000.0).range(1_000_000.0..=100_000_000_000.0)).changed() {
+                                let _ = self.save_user_config();
+                            }
                             let isk_badge = if self.custom_budget_isk >= 1_000_000_000.0 {
                                 format!("{:.2}B ISK", self.custom_budget_isk / 1_000_000_000.0)
                             } else {
@@ -7942,11 +8229,21 @@ impl DesktopApp {
                     ui.label("Select major trade hub regions to include in the arbitrage scanner:");
                     ui.add_space(8.0);
 
-                    ui.checkbox(&mut self.region_the_forge, "The Forge (Jita IV-4) — Region 10000002");
-                    ui.checkbox(&mut self.region_domain, "Domain (Amarr VIII) — Region 10000043");
-                    ui.checkbox(&mut self.region_sinq_laison, "Sinq Laison (Dodixie IX-20) — Region 10000032");
-                    ui.checkbox(&mut self.region_heimatar, "Heimatar (Rens VI-8) — Region 10000030");
-                    ui.checkbox(&mut self.region_metropolis, "Metropolis (Hek VIII-12) — Region 10000042");
+                    if ui.checkbox(&mut self.region_the_forge, "The Forge (Jita IV-4) — Region 10000002").changed() {
+                        let _ = self.save_user_config();
+                    }
+                    if ui.checkbox(&mut self.region_domain, "Domain (Amarr VIII) — Region 10000043").changed() {
+                        let _ = self.save_user_config();
+                    }
+                    if ui.checkbox(&mut self.region_sinq_laison, "Sinq Laison (Dodixie IX-20) — Region 10000032").changed() {
+                        let _ = self.save_user_config();
+                    }
+                    if ui.checkbox(&mut self.region_heimatar, "Heimatar (Rens VI-8) — Region 10000030").changed() {
+                        let _ = self.save_user_config();
+                    }
+                    if ui.checkbox(&mut self.region_metropolis, "Metropolis (Hek VIII-12) — Region 10000042").changed() {
+                        let _ = self.save_user_config();
+                    }
                 });
 
             ui.add_space(12.0);
@@ -7963,6 +8260,7 @@ impl DesktopApp {
                     ui.add_space(8.0);
 
                     if ui.checkbox(&mut self.auto_refresh, "Enable 5-Minute Market Auto-Refresh").changed() {
+                        let _ = self.save_user_config();
                         if self.auto_refresh {
                             self.last_scan_completed = Some(Instant::now());
                             self.set_toast("Auto-Refresh enabled (5-minute interval)");
@@ -7983,6 +8281,7 @@ impl DesktopApp {
 
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut self.sound_alerts_enabled, "Play audio chime on high-profit trades").changed() {
+                            let _ = self.save_user_config();
                             if self.sound_alerts_enabled {
                                 crate::audio::play_test_sound();
                                 self.set_toast("Sound alerts enabled");
@@ -7995,7 +8294,9 @@ impl DesktopApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Alert Minimum Net ROI %:");
-                        ui.add(egui::DragValue::new(&mut self.sound_min_roi_pct).speed(1.0).range(10.0..=1000.0).suffix("%"));
+                        if ui.add(egui::DragValue::new(&mut self.sound_min_roi_pct).speed(1.0).range(10.0..=1000.0).suffix("%")).changed() {
+                            let _ = self.save_user_config();
+                        }
                         ui.label(RichText::new("(Default: 100.0% Net ROI)").color(Color32::GRAY));
 
                         ui.add_space(10.0);
@@ -8015,10 +8316,12 @@ impl DesktopApp {
                 ui.add_space(8.0);
 
                 if ui.radio_value(&mut self.npc_stations_only, true, "Preferred: NPC Stations Only (Guaranteed public docking, no access lockouts)").changed() {
+                    let _ = self.save_user_config();
                     self.set_toast("Station Pool: Set to NPC Stations Only");
                 }
                 ui.add_space(4.0);
                 if ui.radio_value(&mut self.npc_stations_only, false, "Include Player Citadels / Upwell Structures in Pool (May require docking access ACL)").changed() {
+                    let _ = self.save_user_config();
                     self.set_toast("Station Pool: Set to Include Player Citadels");
                 }
             });

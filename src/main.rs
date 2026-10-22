@@ -52,7 +52,7 @@ async fn run_app() -> Result<()> {
         }
     };
 
-    let ship_profile = match cfg.ship_profile() {
+    let ship_profile = match cfg.effective_ship_profile() {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(
@@ -70,7 +70,6 @@ async fn run_app() -> Result<()> {
 
     let (startup_tx, startup_rx) = std::sync::mpsc::channel();
     let startup_tx_supervisor = startup_tx.clone();
-    let is_big = ship_profile.name == "Big Hauler";
 
     let sde_path_clone = sde_path.clone();
     let cache_dir_clone = cache_dir.clone();
@@ -314,18 +313,7 @@ async fn run_app() -> Result<()> {
         }
     });
 
-    let app = ui::DesktopApp::new_loading(
-        is_big,
-        cfg.location.home_system.clone(),
-        cfg.scan.safe_route_only,
-        cfg.scan.npc_stations_only,
-        cfg.filters.min_net_profit_pct,
-        cfg.filters.min_profit_isk,
-        cfg.scan.auto_refresh,
-        cfg.scan.sound_alerts,
-        cfg.scan.sound_min_roi_pct,
-        startup_rx,
-    );
+    let app = ui::DesktopApp::new_loading(&cfg, startup_rx);
 
     if let Err(e) = ui::run_desktop_gui(app) {
         tracing::error!(

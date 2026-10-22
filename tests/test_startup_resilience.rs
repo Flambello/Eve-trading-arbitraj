@@ -10,18 +10,7 @@ fn test_startup_worker_channel_disconnect_detected_as_error() {
     // Drop the sender immediately to simulate a crashed or aborted worker thread
     drop(tx);
 
-    let mut app = DesktopApp::new_loading(
-        true,
-        "Jita".to_string(),
-        true,
-        true,
-        10.0,
-        1_000_000.0,
-        false,
-        false,
-        100.0,
-        rx,
-    );
+    let mut app = DesktopApp::new_loading(&eve_trade_scout::config::UserConfig::default(), rx);
 
     assert!(app.is_startup, "App must start in loading splash state");
     assert!(
@@ -62,18 +51,7 @@ fn test_startup_worker_channel_disconnect_detected_as_error() {
 fn test_startup_structured_error_message_sets_error_code() {
     let (tx, rx) = mpsc::channel::<StartupMsg>();
 
-    let mut app = DesktopApp::new_loading(
-        true,
-        "Jita".to_string(),
-        true,
-        true,
-        10.0,
-        1_000_000.0,
-        false,
-        false,
-        100.0,
-        rx,
-    );
+    let mut app = DesktopApp::new_loading(&eve_trade_scout::config::UserConfig::default(), rx);
 
     let error_detail = "Corrupted SQLite header at eve_sde.sqlite (expected SQLite format 3)";
     tx.send(StartupMsg::error(
@@ -109,18 +87,7 @@ fn test_startup_structured_error_message_sets_error_code() {
 #[test]
 fn test_startup_offline_mode_scan_safety() {
     let (_tx, rx) = mpsc::channel::<StartupMsg>();
-    let mut app = DesktopApp::new_loading(
-        true,
-        "Jita".to_string(),
-        true,
-        true,
-        10.0,
-        1_000_000.0,
-        false,
-        false,
-        100.0,
-        rx,
-    );
+    let mut app = DesktopApp::new_loading(&eve_trade_scout::config::UserConfig::default(), rx);
 
     // Transition to offline mode without SDE or ESI
     app.is_startup = false;
@@ -178,4 +145,100 @@ fn test_config_ship_profile_fallback_resilience() {
         assert_eq!(resolved.max_volume, 60_000.0);
         assert_eq!(resolved.max_budget, 500_000_000.0);
     }
+}
+
+#[test]
+fn test_desktop_app_session_memory_roundtrip() {
+    let (_tx, rx) = mpsc::channel::<StartupMsg>();
+    let mut app = DesktopApp::new_loading(&eve_trade_scout::config::UserConfig::default(), rx);
+
+    // Apply custom settings simulating a user tweaking preferences in Cockpit
+    let mut custom_cfg = eve_trade_scout::config::UserConfig::default();
+    custom_cfg.location.home_system = "Amarr".to_string();
+    custom_cfg.ship.profile = "small".to_string();
+    custom_cfg.ship.use_custom_ship = true;
+    custom_cfg.ship.custom_cargo_vol = 45_000.0;
+    custom_cfg.ship.custom_budget_isk = 250_000_000.0;
+    custom_cfg.scan.safe_route_only = false;
+    custom_cfg.scan.npc_stations_only = false;
+    custom_cfg.scan.auto_refresh = true;
+    custom_cfg.scan.sound_alerts = true;
+    custom_cfg.scan.sound_min_roi_pct = 50.0;
+    custom_cfg.filters.min_net_profit_pct = 15.0;
+    custom_cfg.filters.min_profit_isk = 5_000_000.0;
+    custom_cfg.fees.broker_fee_pct = 1.4;
+    custom_cfg.fees.sales_tax_pct = 4.3;
+    custom_cfg.theme = eve_trade_scout::config::AppTheme::NeutralBlack;
+    custom_cfg.ui.ui_scale = 1.25;
+    custom_cfg.ui.is_fullscreen = true;
+    custom_cfg.ui.dossier_side_panel = false;
+    custom_cfg.ui.compact_kpi = false;
+    custom_cfg.ui.max_route_stops = 8;
+    custom_cfg.view.deal_sort_by = "total_profit".to_string();
+    custom_cfg.view.deal_sort_descending = false;
+    custom_cfg.view.hub_source_hub = Some("Amarr".to_string());
+    custom_cfg.view.hub_dest_hub = Some("Dodixie".to_string());
+
+    app.apply_user_config(&custom_cfg);
+
+    // Export back to UserConfig
+    let exported = app.export_user_config();
+
+    assert_eq!(exported.location.home_system, "Amarr");
+    assert_eq!(exported.ship.profile, "small");
+    assert!(exported.ship.use_custom_ship);
+    assert_eq!(exported.ship.custom_cargo_vol, 45_000.0);
+    assert_eq!(exported.ship.custom_budget_isk, 250_000_000.0);
+    assert!(!exported.scan.safe_route_only);
+    assert!(!exported.scan.npc_stations_only);
+    assert!(exported.scan.auto_refresh);
+    assert!(exported.scan.sound_alerts);
+    assert_eq!(exported.scan.sound_min_roi_pct, 50.0);
+    assert_eq!(exported.filters.min_net_profit_pct, 15.0);
+    assert_eq!(exported.filters.min_profit_isk, 5_000_000.0);
+    assert_eq!(exported.fees.broker_fee_pct, 1.4);
+    assert_eq!(exported.fees.sales_tax_pct, 4.3);
+    assert_eq!(exported.theme, eve_trade_scout::config::AppTheme::NeutralBlack);
+    assert_eq!(exported.ui.ui_scale, 1.25);
+    assert!(exported.ui.is_fullscreen);
+    assert!(!exported.ui.dossier_side_panel);
+    assert!(!exported.ui.compact_kpi);
+    assert_eq!(exported.ui.max_route_stops, 8);
+    assert_eq!(exported.view.deal_sort_by, "total_profit");
+    assert!(!exported.view.deal_sort_descending);
+    assert_eq!(exported.view.hub_source_hub, Some("Amarr".to_string()));
+    assert_eq!(exported.view.hub_dest_hub, Some("Dodixie".to_string()));
+
+    // Verify effective ship profile reflects custom sizing
+    let effective = exported.effective_ship_profile().expect("Effective ship profile must resolve");
+    assert_eq!(effective.max_volume, 45_000.0);
+    assert_eq!(effective.max_budget, 250_000_000.0);
+}
+
+#[test]
+fn test_desktop_app_legacy_loading_compatibility() {
+    let (_tx, rx) = mpsc::channel::<StartupMsg>();
+    let app = DesktopApp::new_loading_legacy(
+        false, // small hauler
+        "Dodixie".to_string(),
+        false, // safe only false
+        false, // npc only false
+        12.5,
+        2_500_000.0,
+        true,
+        true,
+        80.0,
+        rx,
+    );
+
+    let exported = app.export_user_config();
+    assert_eq!(exported.location.home_system, "Dodixie");
+    assert_eq!(exported.ship.profile, "small");
+    assert!(!exported.scan.safe_route_only);
+    assert!(!exported.scan.npc_stations_only);
+    assert_eq!(exported.filters.min_net_profit_pct, 12.5);
+    assert_eq!(exported.filters.min_profit_isk, 2_500_000.0);
+    assert!(exported.scan.auto_refresh);
+    assert!(exported.scan.sound_alerts);
+    assert_eq!(exported.scan.sound_min_roi_pct, 80.0);
 }

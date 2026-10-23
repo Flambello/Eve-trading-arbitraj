@@ -178,6 +178,30 @@ fn clean_location_input(s: &str) -> &str {
     trimmed
 }
 
+/// RAII guard that automatically removes a temporary file upon drop unless explicitly disarmed.
+pub struct TempFileCleanupGuard<'a> {
+    path: &'a Path,
+    active: bool,
+}
+
+impl<'a> TempFileCleanupGuard<'a> {
+    pub fn new(path: &'a Path) -> Self {
+        Self { path, active: true }
+    }
+
+    pub fn disarm(mut self) {
+        self.active = false;
+    }
+}
+
+impl<'a> Drop for TempFileCleanupGuard<'a> {
+    fn drop(&mut self) {
+        if self.active && self.path.exists() {
+            let _ = std::fs::remove_file(self.path);
+        }
+    }
+}
+
 pub struct SdeLoader {
     conn: Mutex<Connection>,
     has_inv_volumes: bool,
@@ -432,6 +456,7 @@ impl SdeLoader {
         let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
 
         let temp_db_path = dest_path.with_extension("sqlite.part");
+        let guard = TempFileCleanupGuard::new(&temp_db_path);
         let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
 
         let mut buffer = [0u8; 64 * 1024];
@@ -477,6 +502,7 @@ impl SdeLoader {
         }
 
         std::fs::rename(&temp_db_path, dest_path)?;
+        guard.disarm();
         Ok(total_decompressed)
     }
 
@@ -524,13 +550,13 @@ impl SdeLoader {
         }
 
         let temp_gz_path = dest_path.with_extension("sqlite.gz.part");
+        let gz_guard = TempFileCleanupGuard::new(&temp_gz_path);
         let mut file = File::create(&temp_gz_path)?;
 
         let mut downloaded_bytes = 0u64;
         while let Some(chunk) = resp.chunk().await? {
             downloaded_bytes += chunk.len() as u64;
             if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
-                let _ = std::fs::remove_file(&temp_gz_path);
                 bail!(
                     "SDE download exceeded maximum allowed size threshold ({} bytes)",
                     MAX_SDE_COMPRESSED_BYTES
@@ -539,6 +565,7 @@ impl SdeLoader {
             file.write_all(&chunk)?;
         }
         file.flush()?;
+        drop(file);
 
         tracing::info!(
             target: "eve_trade_scout",
@@ -547,11 +574,8 @@ impl SdeLoader {
         let compressed_file = File::open(&temp_gz_path)?;
         let decomp_res =
             Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
-        if let Err(e) = decomp_res {
-            let _ = std::fs::remove_file(&temp_gz_path);
-            return Err(e);
-        }
-        let _ = std::fs::remove_file(&temp_gz_path);
+        decomp_res?;
+        drop(gz_guard);
 
         tracing::info!(
             target: "eve_trade_scout",
@@ -634,7 +658,7 @@ impl SdeLoader {
             }
         }
 
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let query = if self.has_packaged_col {
             "SELECT t.typeID, t.typeName, COALESCE(t.packagedVolume, t.volume, 0.01), t.groupID, COALESCE(g.categoryID, 0), t.published 
@@ -688,7 +712,7 @@ impl SdeLoader {
             return None;
         }
 
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // 1. Exact match on mapSolarSystems
         let mut stmt_sys = conn
@@ -747,7 +771,7 @@ impl SdeLoader {
         if let Some(name) = self.system_names.get(&system_id) {
             return Some(name.clone());
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
@@ -758,7 +782,7 @@ impl SdeLoader {
         if let Some(&sec) = self.system_securities.get(&system_id) {
             return Some(sec);
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT security FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
@@ -769,7 +793,7 @@ impl SdeLoader {
         if let Some(&reg_id) = self.system_regions.get(&system_id) {
             return Some(reg_id);
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
@@ -793,10 +817,7 @@ impl SdeLoader {
             return Vec::new();
         }
 
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // If the user typed something with a Roman or Arabic planet token, e.g. "Jita IV" or "Jita 4"
         // also extract candidate base system name e.g. "jita"
@@ -857,7 +878,7 @@ impl SdeLoader {
         if let Some(&sys_id) = self.station_systems.get(&station_id) {
             return Some(sys_id);
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT solarSystemID FROM staStations WHERE stationID = ?1")
             .ok()?;
@@ -868,7 +889,7 @@ impl SdeLoader {
         if let Some(name) = self.station_names.get(&station_id) {
             return Some(name.clone());
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT stationName FROM staStations WHERE stationID = ?1")
             .ok()?;
@@ -880,7 +901,7 @@ impl SdeLoader {
         if let Some(name) = self.region_names.get(&region_id) {
             return Some(name.clone());
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT regionName FROM mapRegions WHERE regionID = ?1")
             .ok()?;
@@ -889,7 +910,7 @@ impl SdeLoader {
 
     /// Loads all solar systems from the `mapSolarSystems` SDE table into in-memory [`SystemNode`] structures.
     pub fn all_systems(&self) -> Result<Vec<SystemNode>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT solarSystemID, solarSystemName, COALESCE(security, 0.0), regionID 
              FROM mapSolarSystems",
@@ -909,7 +930,7 @@ impl SdeLoader {
 
     /// Loads all stargate jump connections from the `mapSolarSystemJumps` SDE table as `(from, to)` pairs.
     pub fn all_jumps(&self) -> Result<Vec<(u32, u32)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT fromSolarSystemID, toSolarSystemID FROM mapSolarSystemJumps")?;
         let mut rows = stmt.query([])?;
@@ -918,5 +939,19 @@ impl SdeLoader {
             list.push((row.get(0)?, row.get(1)?));
         }
         Ok(list)
+    }
+
+    /// Returns true if the internal SQLite connection mutex is poisoned.
+    pub fn is_conn_poisoned(&self) -> bool {
+        self.conn.is_poisoned()
+    }
+
+    /// Simulates a thread panic to poison the SQLite connection mutex for reliability verification.
+    #[doc(hidden)]
+    pub fn poison_conn_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.conn.lock().unwrap();
+            panic!("poisoning sde.conn for reliability verification");
+        }));
     }
 }

@@ -251,6 +251,7 @@ fn resolve_csv_export_path(filename: &str) -> std::path::PathBuf {
 
 /// Safely writes exported CSV content, rejecting symlinks and ensuring valid destination.
 fn safe_write_csv(export_path: &std::path::Path, csv_str: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
     if let Ok(meta) = std::fs::symlink_metadata(export_path) {
         if meta.file_type().is_symlink() {
             anyhow::bail!("Refusing to export through symlink: {:?}", export_path);
@@ -258,7 +259,8 @@ fn safe_write_csv(export_path: &std::path::Path, csv_str: &str) -> anyhow::Resul
     }
     if let Some(parent) = export_path.parent() {
         if !parent.as_os_str().is_empty() && !parent.exists() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create export directory: {:?}", parent))?;
         }
     }
     std::fs::write(export_path, csv_str)?;

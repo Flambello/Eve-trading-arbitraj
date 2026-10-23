@@ -168,6 +168,7 @@ pub fn save_token(token: &SsoToken) -> Result<()> {
         Ok(())
     })();
     if let Err(ref e) = res {
+        let _ = std::fs::remove_file(token_storage_path().with_extension("json.tmp"));
         tracing::error!(
             error_code = %ErrorCode::ErrSsoTokenSave,
             error = %e,

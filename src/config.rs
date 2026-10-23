@@ -585,6 +585,7 @@ impl UserConfig {
         let content = toml::to_string_pretty(self)?;
         let tmp_path = path.with_extension("toml.tmp");
         if let Err(e) = fs::write(&tmp_path, &content) {
+            let _ = fs::remove_file(&tmp_path);
             tracing::error!(
                 target: "eve_trade_scout",
                 error_code = %crate::error::ErrorCode::ErrConfigSaveFailed,

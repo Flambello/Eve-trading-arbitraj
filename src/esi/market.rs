@@ -91,6 +91,7 @@ pub async fn fetch_markets_opts(
                 result.insert(rid, market);
             }
             Ok(Err(e)) => {
+                tasks.abort_all();
                 tracing::error!(
                     error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
                     error = %e,
@@ -99,6 +100,7 @@ pub async fn fetch_markets_opts(
                 return Err(e);
             }
             Err(join_err) => {
+                tasks.abort_all();
                 tracing::error!(
                     error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
                     error = %join_err,

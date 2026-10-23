@@ -117,14 +117,20 @@ impl EsiClient {
         map.retain(|_, entry| entry.is_fresh());
 
         let tmp_file = self.cache_dir.join("etags.json.tmp");
-        let file = std::fs::File::create(&tmp_file)?;
-        let mut writer = std::io::BufWriter::new(file);
-        serde_json::to_writer(&mut writer, &*map)?;
-        use std::io::Write;
-        writer.flush()?;
-        drop(writer);
-        std::fs::rename(tmp_file, etags_file)?;
-        Ok(())
+        let res = (|| -> Result<()> {
+            let file = std::fs::File::create(&tmp_file)?;
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &*map)?;
+            use std::io::Write;
+            writer.flush()?;
+            drop(writer);
+            std::fs::rename(&tmp_file, &etags_file)?;
+            Ok(())
+        })();
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp_file);
+        }
+        res
     }
 
     /// Fetches all paginated items from an ESI endpoint with configurable force_refresh.

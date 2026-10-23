@@ -652,7 +652,8 @@ impl SdeLoader {
     }
 
     pub fn get_item_info(&self, type_id: u32) -> Option<ItemInfo> {
-        if let Ok(cache) = self.item_cache.lock() {
+        {
+            let cache = self.item_cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(res) = cache.get(&type_id) {
                 return res.clone();
             }
@@ -690,7 +691,8 @@ impl SdeLoader {
             })
             .ok();
 
-        if let Ok(mut cache) = self.item_cache.lock() {
+        {
+            let mut cache = self.item_cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.insert(type_id, info.clone());
         }
 
@@ -952,6 +954,20 @@ impl SdeLoader {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = self.conn.lock().unwrap();
             panic!("poisoning sde.conn for reliability verification");
+        }));
+    }
+
+    /// Returns true if the internal item cache mutex is poisoned.
+    pub fn is_item_cache_poisoned(&self) -> bool {
+        self.item_cache.is_poisoned()
+    }
+
+    /// Simulates a thread panic to poison the item cache mutex for reliability verification.
+    #[doc(hidden)]
+    pub fn poison_item_cache_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.item_cache.lock().unwrap();
+            panic!("poisoning sde.item_cache for reliability verification");
         }));
     }
 }

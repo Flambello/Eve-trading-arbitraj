@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex as TokioMutex;
 
 pub const DEFAULT_PUBLIC_CLIENT_ID: &str = "5793fc7aa2cb49e385d3cfb5d52061c7";
 pub const DEFAULT_CALLBACK_PORT: u16 = 37373;
@@ -130,8 +131,16 @@ pub fn load_saved_token() -> Option<SsoToken> {
 /// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
 /// Uses an atomic temporary file write and rename pattern to prevent file corruption during unexpected termination.
 pub fn save_token(token: &SsoToken) -> Result<()> {
+    let path = token_storage_path();
+    let tmp_path = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     let res = (|| -> Result<()> {
-        let path = token_storage_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
             #[cfg(unix)]
@@ -144,7 +153,6 @@ pub fn save_token(token: &SsoToken) -> Result<()> {
             }
         }
         let data = serde_json::to_string_pretty(token)?;
-        let tmp_path = path.with_extension("json.tmp");
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -168,7 +176,7 @@ pub fn save_token(token: &SsoToken) -> Result<()> {
         Ok(())
     })();
     if let Err(ref e) = res {
-        let _ = std::fs::remove_file(token_storage_path().with_extension("json.tmp"));
+        let _ = std::fs::remove_file(&tmp_path);
         tracing::error!(
             error_code = %ErrorCode::ErrSsoTokenSave,
             error = %e,
@@ -804,6 +812,8 @@ pub async fn ensure_fresh_token_at_url(
     ensure_fresh_token_opts(client, token_url, client_id, token, false).await
 }
 
+static REFRESH_MUTEX: TokioMutex<()> = TokioMutex::const_new(());
+
 /// Refreshes the access token with optional force flag (bypasses expiration check when force is true).
 pub async fn ensure_fresh_token_opts(
     client: &reqwest::Client,
@@ -814,6 +824,21 @@ pub async fn ensure_fresh_token_opts(
 ) -> Result<()> {
     if !force && !token.needs_refresh() {
         return Ok(());
+    }
+
+    let _guard = REFRESH_MUTEX.lock().await;
+
+    // Double-checked locking: check if another thread already refreshed the token
+    if !force {
+        if let Some(saved) = load_saved_token() {
+            if saved.character_id == token.character_id && !saved.needs_refresh() {
+                *token = saved;
+                return Ok(());
+            }
+        }
+        if !token.needs_refresh() {
+            return Ok(());
+        }
     }
 
     let effective_client_id: String = if !client_id.trim().is_empty() {

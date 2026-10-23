@@ -10,7 +10,7 @@ use crate::route_planner::{plan_route, RouteStop, TradeRoute};
 use crate::sde::SdeLoader;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 use egui_extras::{Column, TableBuilder};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -98,7 +98,7 @@ impl DealSortBy {
     }
 }
 
-enum ScanResult {
+pub enum ScanResult {
     Success {
         deals: Vec<ArbitrageDeal>,
         manifests: Vec<TradeCorridorManifest>,
@@ -377,8 +377,7 @@ pub struct DesktopApp {
     toast: Option<(String, Instant)>,
 
     // Async worker channel
-    rx: Receiver<ScanResult>,
-    tx: Sender<ScanResult>,
+    scan_rx: Option<Receiver<ScanResult>>,
 
     // ── Chain Route Planner tab ──────────────────────────────────
     chain_max_legs: usize,
@@ -389,8 +388,7 @@ pub struct DesktopApp {
     chain_is_running: bool,
     chain_results: Vec<crate::chain_route_planner::ChainRoute>,
     chain_selected_idx: Option<usize>,
-    chain_rx: Receiver<Vec<crate::chain_route_planner::ChainRoute>>,
-    chain_tx: Sender<Vec<crate::chain_route_planner::ChainRoute>>,
+    chain_rx: Option<Receiver<Vec<crate::chain_route_planner::ChainRoute>>>,
     chain_flowchart_split: bool,
 
     // ── Core Hub Arbitrage tab ────────────────────────────────────
@@ -548,8 +546,6 @@ impl DesktopApp {
     }
 
     pub fn new_loading(cfg: &crate::config::UserConfig, startup_rx: Receiver<StartupMsg>) -> Self {
-        let (tx, rx) = channel();
-        let (chain_tx, chain_rx) = channel();
         let saved_tok = crate::esi::sso::load_saved_token();
         let mut app = Self {
             sde: None,
@@ -635,8 +631,7 @@ impl DesktopApp {
             route: None,
             selected_deal_idx: None,
             toast: None,
-            rx,
-            tx,
+            scan_rx: None,
 
             chain_max_legs: if cfg.view.chain_max_legs == 0 {
                 4
@@ -654,8 +649,7 @@ impl DesktopApp {
             chain_is_running: false,
             chain_results: Vec::new(),
             chain_selected_idx: None,
-            chain_rx,
-            chain_tx,
+            chain_rx: None,
             chain_flowchart_split: true,
 
             hub_source_filter: cfg
@@ -999,42 +993,431 @@ impl DesktopApp {
     /// Polls the SSO token refresh worker channel and updates token status.
     fn poll_sso_refresh(&mut self, ctx: &egui::Context) {
         if let Some(ref rx) = self.sso_refresh_rx {
-            if let Ok((res, force)) = rx.try_recv() {
-                self.sso_is_refreshing_token = false;
-                match res {
-                    Ok(token) => {
-                        self.sso_character_name = Some(token.character_name);
-                        self.sso_character_id = Some(token.character_id);
-                        self.sso_token_expires_at = Some(token.expires_at);
-                        if force {
-                            self.set_toast("EVE SSO access token refreshed successfully.");
+            match rx.try_recv() {
+                Ok((res, force)) => {
+                    self.sso_is_refreshing_token = false;
+                    match res {
+                        Ok(token) => {
+                            self.sso_character_name = Some(token.character_name);
+                            self.sso_character_id = Some(token.character_id);
+                            self.sso_token_expires_at = Some(token.expires_at);
+                            if force {
+                                self.set_toast("EVE SSO access token refreshed successfully.");
+                            }
                         }
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            error_code = %crate::error::ErrorCode::ErrSsoTokenRefresh,
-                            error = %err,
-                            "EVE SSO background token refresh encountered error: {}",
-                            err
-                        );
-                        if err.contains("invalid_grant") || err.contains("revoked") {
-                            self.sso_character_name = None;
-                            self.sso_character_id = None;
-                            self.sso_token_expires_at = None;
-                            self.set_toast(
-                                "EVE SSO session expired or was revoked. Please connect character.",
+                        Err(err) => {
+                            tracing::warn!(
+                                error_code = %crate::error::ErrorCode::ErrSsoTokenRefresh,
+                                error = %err,
+                                "EVE SSO background token refresh encountered error: {}",
+                                err
                             );
-                        } else if force {
-                            self.set_toast(format!("SSO token refresh error: {}", err));
-                        } else {
-                            // Transient error during automatic background refresh - silently retry on next interval
+                            if err.contains("invalid_grant") || err.contains("revoked") {
+                                self.sso_character_name = None;
+                                self.sso_character_id = None;
+                                self.sso_token_expires_at = None;
+                                self.set_toast(
+                                    "EVE SSO session expired or was revoked. Please connect character.",
+                                );
+                            } else if force {
+                                self.set_toast(format!("SSO token refresh error: {}", err));
+                            } else {
+                                // Transient error during automatic background refresh - silently retry on next interval
+                            }
                         }
                     }
+                    self.sso_refresh_rx = None;
+                    ctx.request_repaint();
                 }
-                self.sso_refresh_rx = None;
-                ctx.request_repaint();
+                Err(TryRecvError::Disconnected) => {
+                    self.sso_is_refreshing_token = false;
+                    self.sso_refresh_rx = None;
+                    tracing::warn!(
+                        error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                        "SSO token refresh worker disconnected unexpectedly"
+                    );
+                    ctx.request_repaint();
+                }
+                Err(TryRecvError::Empty) => {}
             }
         }
+    }
+
+    /// Polls all active background worker channels (market scan, chain routes, SSO auth, push, location, token refresh)
+    /// and resets busy flags if any worker thread disconnected or terminated unexpectedly.
+    pub fn poll_active_workers(&mut self, ctx: &egui::Context) {
+        self.poll_sso_refresh(ctx);
+
+        // Poll market scan worker thread
+        if let Some(ref rx) = self.scan_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.is_scanning = false;
+                    self.last_scan_completed = Some(Instant::now());
+                    match res {
+                        ScanResult::Success {
+                            deals,
+                            manifests,
+                            route,
+                            total_sells,
+                            total_buys,
+                        } => {
+                            let count = deals.len();
+                            let manifest_count = manifests.len();
+                            self.status_text = format!(
+                                "[OK] Scan Complete! Parsed {} sell orders & {} buy orders. Discovered {} deals (ROI >= {:.1}%) across {} packed manifests.",
+                                total_sells, total_buys, count, self.min_roi_pct, manifest_count
+                            );
+
+                            // Check for newly discovered high-profit trades in auto-refresh mode
+                            let mut new_high_profit_count = 0;
+                            if self.auto_refresh && self.sound_alerts_enabled {
+                                for d in &deals {
+                                    if d.net_profit_pct >= self.sound_min_roi_pct {
+                                        let key = (d.type_id, d.source_station_id, d.dest_station_id);
+                                        if !self.alerted_deal_keys.contains(&key) {
+                                            self.alerted_deal_keys.insert(key);
+                                            new_high_profit_count += 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Prune old alerted keys that no longer exist in current deals pool
+                            let current_high_profit_keys: std::collections::HashSet<_> = deals
+                                .iter()
+                                .filter(|d| d.net_profit_pct >= self.sound_min_roi_pct)
+                                .map(|d| (d.type_id, d.source_station_id, d.dest_station_id))
+                                .collect();
+                            self.alerted_deal_keys
+                                .retain(|k| current_high_profit_keys.contains(k));
+
+                            if new_high_profit_count > 0 {
+                                crate::audio::play_high_profit_alert();
+                                self.set_toast(format!(
+                                    "[ALERT] HIGH PROFIT: Found {} new trade(s) with ≥ {:.0}% Net ROI!",
+                                    new_high_profit_count, self.sound_min_roi_pct
+                                ));
+                            } else {
+                                // Completely silent on normal refresh
+                                self.set_toast(format!(
+                                    "Discovered {} profitable deals ({} manifests)!",
+                                    count, manifest_count
+                                ));
+                            }
+
+                            self.deals = deals;
+                            self.manifests = manifests;
+                            self.route = Some(route);
+                            self.selected_deal_idx = None;
+                        }
+                        ScanResult::Error(err) => {
+                            tracing::error!(
+                                error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
+                                error = %err,
+                                "Market scan failed with error: {}",
+                                err
+                            );
+                            self.status_text = format!("[!] {}", err);
+                            self.set_toast(format!("Error: {}", err));
+                        }
+                    }
+                    self.scan_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.is_scanning = false;
+                    self.scan_rx = None;
+                    tracing::error!(
+                        error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                        "Market scan worker thread disconnected unexpectedly"
+                    );
+                    self.status_text = "[!] Market scan worker terminated unexpectedly.".to_string();
+                    self.set_toast("Market scan worker failed unexpectedly. You may retry.");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        // Poll chain route worker thread
+        if let Some(ref rx) = self.chain_rx {
+            match rx.try_recv() {
+                Ok(results) => {
+                    self.chain_is_running = false;
+                    let count = results.len();
+                    self.chain_results = results;
+                    self.chain_selected_idx = if self.chain_results.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    if count > 0 {
+                        self.set_toast(format!("Found {} optimized chained trade route(s)!", count));
+                    } else {
+                        self.set_toast("No chain routes found with current parameters.");
+                    }
+                    self.chain_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.chain_is_running = false;
+                    self.chain_rx = None;
+                    tracing::error!(
+                        error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                        "Chain route planner worker thread disconnected unexpectedly"
+                    );
+                    self.set_toast("Chain route calculation failed unexpectedly. You may retry.");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        if self.chain_is_running {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+
+        // Poll SSO auth worker
+        if let Some(ref rx) = self.sso_auth_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.sso_is_authenticating = false;
+                    match res {
+                        Ok(tok) => {
+                            self.sso_character_name = Some(tok.character_name.clone());
+                            self.sso_character_id = Some(tok.character_id);
+                            self.sso_token_expires_at = Some(tok.expires_at);
+                            self.set_toast(format!(
+                                "Connected to EVE character: {}",
+                                tok.character_name
+                            ));
+                            crate::audio::play_high_profit_alert();
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                target: "eve_trade_scout",
+                                error_code = %crate::error::ErrorCode::ErrSsoTokenExchange,
+                                error = %err,
+                                "SSO authentication worker reported failure: {err}"
+                            );
+                            self.set_toast(format!("SSO Authentication Error: {}", err));
+                        }
+                    }
+                    self.sso_auth_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.sso_is_authenticating = false;
+                    self.sso_auth_rx = None;
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                        "SSO authentication worker disconnected unexpectedly"
+                    );
+                    self.set_toast("SSO Authentication worker failed unexpectedly.");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        // Poll SSO autopilot push worker
+        if let Some(ref rx) = self.sso_push_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.sso_is_pushing = false;
+                    match res {
+                        Ok(stops) => {
+                            self.sync_sso_token_from_disk();
+                            self.set_toast(format!(
+                                "Injected {} waypoint(s) into live EVE client HUD!",
+                                stops
+                            ));
+                            crate::audio::play_high_profit_alert();
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                target: "eve_trade_scout",
+                                error_code = %crate::error::ErrorCode::ErrSsoAutopilotFailed,
+                                error = %err,
+                                "SSO waypoint injection worker reported failure: {err}"
+                            );
+                            if err.contains("invalid_grant") || err.contains("revoked") {
+                                self.sso_character_name = None;
+                                self.sso_character_id = None;
+                                self.sso_token_expires_at = None;
+                                self.set_toast(
+                                    "EVE SSO session expired or was revoked. Please connect character in Settings.",
+                                );
+                            } else {
+                                self.set_toast(format!("Autopilot injection failed: {}", err));
+                            }
+                        }
+                    }
+                    self.sso_push_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.sso_is_pushing = false;
+                    self.sso_push_rx = None;
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                        "SSO waypoint injection worker disconnected unexpectedly"
+                    );
+                    self.set_toast("Autopilot injection worker failed unexpectedly.");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
+        // Poll SSO character location worker
+        if let Some(ref rx) = self.sso_location_rx {
+            match rx.try_recv() {
+                Ok(res) => {
+                    self.sso_is_fetching_location = false;
+                    let scan_after = self.sso_location_scan_after;
+                    self.sso_location_scan_after = false;
+                    match res {
+                        Ok(loc) => {
+                            self.sync_sso_token_from_disk();
+                            let sys_name_opt = self
+                                .sde
+                                .as_ref()
+                                .and_then(|s| s.get_system_name(loc.solar_system_id));
+                            if let Some(sys_name) = sys_name_opt {
+                                let old_system = self.home_system.clone();
+                                self.home_system = sys_name.clone();
+                                self.set_toast(format!(
+                                    "Detected in-game system: {} (ID: {})",
+                                    sys_name, loc.solar_system_id
+                                ));
+                                crate::audio::play_high_profit_alert();
+                                if scan_after || old_system != sys_name {
+                                    self.start_scan();
+                                }
+                            } else {
+                                tracing::warn!(
+                                    target: "eve_trade_scout",
+                                    error_code = %crate::error::ErrorCode::ErrSdeSystemNotFound,
+                                    system_id = loc.solar_system_id,
+                                    "In-game solar system ID {} detected, but not found in SDE",
+                                    loc.solar_system_id
+                                );
+                                self.set_toast(format!(
+                                    "In-game solar system ID {} detected, but not found in SDE.",
+                                    loc.solar_system_id
+                                ));
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                target: "eve_trade_scout",
+                                error_code = %crate::error::ErrorCode::ErrSsoLocationFailed,
+                                error = %err,
+                                "SSO character location sync worker reported failure: {err}"
+                            );
+                            if err.contains("invalid_grant") || err.contains("revoked") {
+                                self.sso_character_name = None;
+                                self.sso_character_id = None;
+                                self.sso_token_expires_at = None;
+                                self.set_toast(
+                                    "EVE SSO session expired or was revoked. Please connect character in Settings.",
+                                );
+                            } else {
+                                self.set_toast(format!("Location sync error: {}", err));
+                            }
+                        }
+                    }
+                    self.sso_location_rx = None;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.sso_is_fetching_location = false;
+                    self.sso_location_scan_after = false;
+                    self.sso_location_rx = None;
+                    tracing::error!(
+                        target: "eve_trade_scout",
+                        error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
+                        "SSO character location worker disconnected unexpectedly"
+                    );
+                    self.set_toast("Character location sync failed unexpectedly.");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+
+    #[doc(hidden)]
+    pub fn is_chain_running(&self) -> bool {
+        self.chain_is_running
+    }
+
+    #[doc(hidden)]
+    pub fn is_sso_refreshing(&self) -> bool {
+        self.sso_is_refreshing_token
+    }
+
+    #[doc(hidden)]
+    pub fn is_sso_authenticating(&self) -> bool {
+        self.sso_is_authenticating
+    }
+
+    #[doc(hidden)]
+    pub fn is_sso_pushing(&self) -> bool {
+        self.sso_is_pushing
+    }
+
+    #[doc(hidden)]
+    pub fn is_sso_fetching_location(&self) -> bool {
+        self.sso_is_fetching_location
+    }
+
+    #[doc(hidden)]
+    pub fn toast_text(&self) -> Option<&str> {
+        self.toast.as_ref().map(|(msg, _)| msg.as_str())
+    }
+
+    #[doc(hidden)]
+    pub fn set_scan_rx_for_test(&mut self, rx: Receiver<ScanResult>) {
+        self.is_scanning = true;
+        self.scan_rx = Some(rx);
+    }
+
+    #[doc(hidden)]
+    pub fn set_chain_rx_for_test(
+        &mut self,
+        rx: Receiver<Vec<crate::chain_route_planner::ChainRoute>>,
+    ) {
+        self.chain_is_running = true;
+        self.chain_rx = Some(rx);
+    }
+
+    #[doc(hidden)]
+    pub fn set_sso_refresh_rx_for_test(
+        &mut self,
+        rx: Receiver<(Result<crate::esi::sso::SsoToken, String>, bool)>,
+    ) {
+        self.sso_is_refreshing_token = true;
+        self.sso_refresh_rx = Some(rx);
+    }
+
+    #[doc(hidden)]
+    pub fn set_sso_auth_rx_for_test(
+        &mut self,
+        rx: Receiver<Result<crate::esi::sso::SsoToken, String>>,
+    ) {
+        self.sso_is_authenticating = true;
+        self.sso_auth_rx = Some(rx);
+    }
+
+    #[doc(hidden)]
+    pub fn set_sso_push_rx_for_test(&mut self, rx: Receiver<Result<usize, String>>) {
+        self.sso_is_pushing = true;
+        self.sso_push_rx = Some(rx);
+    }
+
+    #[doc(hidden)]
+    pub fn set_sso_location_rx_for_test(
+        &mut self,
+        rx: Receiver<Result<crate::esi::sso::CharacterLocation, String>>,
+    ) {
+        self.sso_is_fetching_location = true;
+        self.sso_location_rx = Some(rx);
     }
 
     /// Syncs in-memory SSO token state (character name, ID, and expiration) with the stored token on disk.
@@ -1282,7 +1665,8 @@ impl DesktopApp {
         let sde = Arc::clone(sde);
         let graph = Arc::clone(graph);
         let esi = Arc::clone(esi);
-        let tx = self.tx.clone();
+        let (tx, rx) = channel();
+        self.scan_rx = Some(rx);
 
         let ship = self.current_ship();
 
@@ -1495,237 +1879,8 @@ impl eframe::App for DesktopApp {
             }
         }
 
-        // Poll worker thread
-        if let Ok(res) = self.rx.try_recv() {
-            self.is_scanning = false;
-            self.last_scan_completed = Some(Instant::now());
-            match res {
-                ScanResult::Success {
-                    deals,
-                    manifests,
-                    route,
-                    total_sells,
-                    total_buys,
-                } => {
-                    let count = deals.len();
-                    let manifest_count = manifests.len();
-                    self.status_text = format!(
-                        "[OK] Scan Complete! Parsed {} sell orders & {} buy orders. Discovered {} deals (ROI >= {:.1}%) across {} packed manifests.",
-                        total_sells, total_buys, count, self.min_roi_pct, manifest_count
-                    );
-
-                    // Check for newly discovered high-profit trades in auto-refresh mode
-                    let mut new_high_profit_count = 0;
-                    if self.auto_refresh && self.sound_alerts_enabled {
-                        for d in &deals {
-                            if d.net_profit_pct >= self.sound_min_roi_pct {
-                                let key = (d.type_id, d.source_station_id, d.dest_station_id);
-                                if !self.alerted_deal_keys.contains(&key) {
-                                    self.alerted_deal_keys.insert(key);
-                                    new_high_profit_count += 1;
-                                }
-                            }
-                        }
-                    }
-
-                    // Prune old alerted keys that no longer exist in current deals pool
-                    let current_high_profit_keys: std::collections::HashSet<_> = deals
-                        .iter()
-                        .filter(|d| d.net_profit_pct >= self.sound_min_roi_pct)
-                        .map(|d| (d.type_id, d.source_station_id, d.dest_station_id))
-                        .collect();
-                    self.alerted_deal_keys
-                        .retain(|k| current_high_profit_keys.contains(k));
-
-                    if new_high_profit_count > 0 {
-                        crate::audio::play_high_profit_alert();
-                        self.set_toast(format!(
-                            "[ALERT] HIGH PROFIT: Found {} new trade(s) with ≥ {:.0}% Net ROI!",
-                            new_high_profit_count, self.sound_min_roi_pct
-                        ));
-                    } else {
-                        // Completely silent on normal refresh
-                        self.set_toast(format!(
-                            "Discovered {} profitable deals ({} manifests)!",
-                            count, manifest_count
-                        ));
-                    }
-
-                    self.deals = deals;
-                    self.manifests = manifests;
-                    self.route = Some(route);
-                    self.selected_deal_idx = None;
-                }
-                ScanResult::Error(err) => {
-                    tracing::error!(
-                        error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
-                        error = %err,
-                        "Market scan failed with error: {}",
-                        err
-                    );
-                    self.status_text = format!("[!] {}", err);
-                    self.set_toast(format!("Error: {}", err));
-                }
-            }
-        }
-
-        // Poll chain route worker thread
-        if let Ok(results) = self.chain_rx.try_recv() {
-            self.chain_is_running = false;
-            let count = results.len();
-            self.chain_results = results;
-            self.chain_selected_idx = if self.chain_results.is_empty() {
-                None
-            } else {
-                Some(0)
-            };
-            if count > 0 {
-                self.set_toast(format!("Found {} optimized chained trade route(s)!", count));
-            } else {
-                self.set_toast("No chain routes found with current parameters.");
-            }
-        }
-
-        if self.chain_is_running {
-            ctx.request_repaint_after(Duration::from_millis(100));
-        }
-
-        // Poll SSO auth worker
-        if let Some(ref rx) = self.sso_auth_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.sso_is_authenticating = false;
-                match res {
-                    Ok(tok) => {
-                        self.sso_character_name = Some(tok.character_name.clone());
-                        self.sso_character_id = Some(tok.character_id);
-                        self.sso_token_expires_at = Some(tok.expires_at);
-                        self.set_toast(format!(
-                            "Connected to EVE character: {}",
-                            tok.character_name
-                        ));
-                        crate::audio::play_high_profit_alert();
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            target: "eve_trade_scout",
-                            error_code = %crate::error::ErrorCode::ErrSsoTokenExchange,
-                            error = %err,
-                            "SSO authentication worker reported failure: {err}"
-                        );
-                        self.set_toast(format!("SSO Authentication Error: {}", err));
-                    }
-                }
-                self.sso_auth_rx = None;
-            }
-        }
-
-        // Poll SSO autopilot push worker
-        if let Some(ref rx) = self.sso_push_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.sso_is_pushing = false;
-                match res {
-                    Ok(stops) => {
-                        self.sync_sso_token_from_disk();
-                        self.set_toast(format!(
-                            "Injected {} waypoint(s) into live EVE client HUD!",
-                            stops
-                        ));
-                        crate::audio::play_high_profit_alert();
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            target: "eve_trade_scout",
-                            error_code = %crate::error::ErrorCode::ErrSsoAutopilotFailed,
-                            error = %err,
-                            "SSO waypoint injection worker reported failure: {err}"
-                        );
-                        if err.contains("invalid_grant") || err.contains("revoked") {
-                            self.sso_character_name = None;
-                            self.sso_character_id = None;
-                            self.sso_token_expires_at = None;
-                            self.set_toast(
-                                "EVE SSO session expired or was revoked. Please connect character in Settings.",
-                            );
-                        } else {
-                            self.set_toast(format!("Autopilot injection failed: {}", err));
-                        }
-                    }
-                }
-                self.sso_push_rx = None;
-            }
-        }
-
-        // Poll SSO character location worker
-        if let Some(ref rx) = self.sso_location_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.sso_is_fetching_location = false;
-                let scan_after = self.sso_location_scan_after;
-                self.sso_location_scan_after = false;
-                match res {
-                    Ok(loc) => {
-                        self.sync_sso_token_from_disk();
-                        let sys_name_opt = self
-                            .sde
-                            .as_ref()
-                            .and_then(|s| s.get_system_name(loc.solar_system_id));
-                        if let Some(sys_name) = sys_name_opt {
-                            let old_system = self.home_system.clone();
-                            self.home_system = sys_name.clone();
-                            self.set_toast(format!(
-                                "Detected in-game system: {} (ID: {})",
-                                sys_name, loc.solar_system_id
-                            ));
-                            crate::audio::play_high_profit_alert();
-                            if scan_after || old_system != sys_name {
-                                self.start_scan();
-                            }
-                        } else {
-                            tracing::warn!(
-                                target: "eve_trade_scout",
-                                error_code = %crate::error::ErrorCode::ErrSdeSystemNotFound,
-                                system_id = loc.solar_system_id,
-                                "In-game solar system ID {} detected, but not found in SDE",
-                                loc.solar_system_id
-                            );
-                            self.set_toast(format!(
-                                "In-game solar system ID {} detected, but not found in SDE.",
-                                loc.solar_system_id
-                            ));
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            target: "eve_trade_scout",
-                            error_code = %crate::error::ErrorCode::ErrSsoLocationFailed,
-                            error = %err,
-                            "SSO character location sync worker reported failure: {err}"
-                        );
-                        if err.contains("invalid_grant") || err.contains("revoked") {
-                            self.sso_character_name = None;
-                            self.sso_character_id = None;
-                            self.sso_token_expires_at = None;
-                            self.set_toast(
-                                "EVE SSO session expired or was revoked. Please connect character in Settings.",
-                            );
-                        } else {
-                            self.set_toast(format!("Location sync error: {}", err));
-                        }
-                    }
-                }
-                self.sso_location_rx = None;
-            }
-        }
-
-        // Periodic background SSO token refresh check (every 30 seconds)
-        if self.sso_character_name.is_some()
-            && self.sso_last_token_refresh_check.elapsed() >= Duration::from_secs(30)
-        {
-            self.sso_last_token_refresh_check = Instant::now();
-            self.check_and_refresh_sso_token(false);
-        }
-
-        // Poll SSO token refresh worker
-        self.poll_sso_refresh(ctx);
+        // Poll all background worker channels
+        self.poll_active_workers(ctx);
 
         if self.chain_is_running
             || self.sso_is_authenticating
@@ -5116,7 +5271,8 @@ impl DesktopApp {
         self.chain_is_running = true;
         let deals = self.deals.clone();
         let graph = Arc::clone(graph);
-        let tx = self.chain_tx.clone();
+        let (tx, rx) = channel();
+        self.chain_rx = Some(rx);
 
         let home_id = sde.get_system_id(&self.home_system).unwrap_or(30000142);
 

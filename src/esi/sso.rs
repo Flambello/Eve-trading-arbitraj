@@ -49,32 +49,31 @@ impl std::fmt::Debug for SsoToken {
     }
 }
 
+/// Returns the current Unix timestamp in seconds, defaulting to i64::MAX on clock error to fail closed (expired).
+pub fn current_unix_time() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(i64::MAX)
+}
+
 impl SsoToken {
     /// Returns true if the token is expired or within 60 seconds of expiration.
     pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        now >= (self.expires_at - 60)
+        let now = current_unix_time();
+        now >= self.expires_at.saturating_sub(60)
     }
 
     /// Returns true if the token needs proactive refresh (within 300 seconds / 5 minutes of expiration).
     pub fn needs_refresh(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        now >= (self.expires_at - 300)
+        let now = current_unix_time();
+        now >= self.expires_at.saturating_sub(300)
     }
 
     /// Returns the number of seconds until token expiration (or 0 if expired).
     pub fn seconds_until_expiration(&self) -> i64 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        (self.expires_at - now).max(0)
+        let now = current_unix_time();
+        self.expires_at.saturating_sub(now).max(0)
     }
 }
 
@@ -129,6 +128,7 @@ pub fn load_saved_token() -> Option<SsoToken> {
 }
 
 /// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
+/// Uses an atomic temporary file write and rename pattern to prevent file corruption during unexpected termination.
 pub fn save_token(token: &SsoToken) -> Result<()> {
     let res = (|| -> Result<()> {
         let path = token_storage_path();
@@ -144,6 +144,7 @@ pub fn save_token(token: &SsoToken) -> Result<()> {
             }
         }
         let data = serde_json::to_string_pretty(token)?;
+        let tmp_path = path.with_extension("json.tmp");
         #[cfg(unix)]
         {
             use std::io::Write;
@@ -152,16 +153,18 @@ pub fn save_token(token: &SsoToken) -> Result<()> {
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
-                .open(&path)?;
+                .open(&tmp_path)?;
             let mut perms = file.metadata()?.permissions();
             perms.set_mode(0o600);
             let _ = file.set_permissions(perms);
             file.write_all(data.as_bytes())?;
+            file.flush()?;
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, data)?;
+            std::fs::write(&tmp_path, data.as_bytes())?;
         }
+        std::fs::rename(&tmp_path, &path)?;
         Ok(())
     })();
     if let Err(ref e) = res {
@@ -509,6 +512,8 @@ pub async fn listen_for_auth_code(
             if !first_line.starts_with("GET /callback?") {
                 let response = format_http_400_response("Invalid callback path or HTTP method.");
                 let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                let _ = socket.shutdown().await;
                 continue;
             }
 
@@ -520,6 +525,8 @@ pub async fn listen_for_auth_code(
             if !has_valid_host {
                 let response = format_http_400_response("Invalid Host header.");
                 let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                let _ = socket.shutdown().await;
                 continue;
             }
 
@@ -537,8 +544,7 @@ pub async fn listen_for_auth_code(
             let mut oauth_error_desc = None;
 
             for pair in query_str.split('&') {
-                let mut parts = pair.split('=');
-                if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+                if let Some((k, v)) = pair.split_once('=') {
                     if k == "code" {
                         code = Some(urldecode_simple(v));
                     } else if k == "state" {
@@ -551,8 +557,24 @@ pub async fn listen_for_auth_code(
                 }
             }
 
-            // Immediately handle user cancellation or denial without hanging for 3 minutes
+            // Immediately handle user cancellation or denial without hanging for 3 minutes,
+            // but REQUIRE and verify the state parameter to prevent unauthenticated DoS / CSRF cancellation
             if let Some(err) = oauth_error {
+                let is_valid_state = state
+                    .as_deref()
+                    .map(|s| constant_time_eq(s.as_bytes(), expected_state.as_bytes()))
+                    .unwrap_or(false);
+
+                if !is_valid_state {
+                    let response = format_http_400_response(
+                        "Invalid or missing state in OAuth error callback.",
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
+                    let _ = socket.shutdown().await;
+                    continue;
+                }
+
                 let desc = oauth_error_desc
                     .unwrap_or_else(|| "Authorization was cancelled or denied by user".to_string());
                 let cancel_html = format!(
@@ -645,13 +667,27 @@ pub async fn listen_for_auth_code(
         .map_err(|_| anyhow::anyhow!("SSO authorization timed out waiting for browser callback."))?
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
     #[serde(default)]
     pub refresh_token: Option<String>,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Exchanges the PKCE authorization code for an access token and refresh token.
@@ -716,15 +752,18 @@ pub async fn exchange_code_for_token_at_url(
         .await
         .context("Failed to parse SSO token response")?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let expires_at = now + token_data.expires_in;
+    let now = current_unix_time();
+    let expires_at = now + token_data.expires_in.max(0);
 
-    // Decode character name and character ID from JWT access token payload
-    let (character_id, character_name) = parse_jwt_character_claims(&token_data.access_token)
-        .context("Failed to extract valid character claims from SSO access token")?;
+    // Decode character name, ID, and scopes from JWT access token payload
+    let (character_id, character_name, scopes) =
+        parse_jwt_character_claims_with_scopes(&token_data.access_token)
+            .context("Failed to extract valid character claims from SSO access token")?;
+
+    // If scopes were provided in JWT claims, enforce the primary required waypoint scope
+    if !scopes.is_empty() && !scopes.iter().any(|s| s == "esi-ui.write_waypoint.v1") {
+        bail!("SSO access token is missing required scope 'esi-ui.write_waypoint.v1'");
+    }
 
     let refresh_token = token_data
         .refresh_token
@@ -799,8 +838,17 @@ pub async fn ensure_fresh_token_opts(
         .context("Failed to refresh SSO access token")?;
 
     if !resp.status().is_success() {
+        let status = resp.status();
         let err_text = resp.text().await.unwrap_or_default();
-        if err_text.contains("invalid_grant") {
+        let err_lower = err_text.to_ascii_lowercase();
+
+        if err_lower.contains("invalid_grant")
+            || status == reqwest::StatusCode::UNAUTHORIZED
+            || (status == reqwest::StatusCode::BAD_REQUEST
+                && (err_lower.contains("revoked")
+                    || err_lower.contains("unauthorized_client")
+                    || err_lower.contains("invalid_token")))
+        {
             let _ = delete_saved_token();
             tracing::error!(
                 error_code = %ErrorCode::ErrSsoTokenRefresh,
@@ -822,10 +870,7 @@ pub async fn ensure_fresh_token_opts(
         .await
         .context("Failed to parse refreshed SSO token response")?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now = current_unix_time();
 
     token.access_token = token_data.access_token;
     token.token_type = token_data.token_type;
@@ -834,7 +879,7 @@ pub async fn ensure_fresh_token_opts(
     if let Some(new_rt) = token_data.refresh_token.filter(|s| !s.trim().is_empty()) {
         token.refresh_token = new_rt;
     }
-    token.expires_at = now + token_data.expires_in;
+    token.expires_at = now + token_data.expires_in.max(0);
     token.client_id = Some(effective_client_id);
 
     save_token(token)?;
@@ -860,8 +905,21 @@ pub async fn refresh_saved_token_opts(
     Ok(Some(token))
 }
 
-/// Decodes the payload segment of a JWT token to extract `name` and `sub` (CHARACTER:EVE:<id>).
-pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
+/// Extracts granted OAuth scopes from JWT claims payload.
+pub fn extract_jwt_scopes(claims: &serde_json::Value) -> Vec<String> {
+    if let Some(arr) = claims.get("scp").and_then(|s| s.as_array()) {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    } else if let Some(s) = claims.get("scp").and_then(|s| s.as_str()) {
+        s.split_whitespace().map(|s| s.to_string()).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Decodes the payload segment of a JWT token to extract character ID, name, and granted scopes.
+pub fn parse_jwt_character_claims_with_scopes(jwt: &str) -> Option<(u64, String, Vec<String>)> {
     let mut parts = jwt.split('.');
     let _header = parts.next()?;
     let payload_b64 = parts.next()?;
@@ -892,7 +950,14 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
         })
         .filter(|&id| id > 0)?;
 
-    Some((character_id, name))
+    let scopes = extract_jwt_scopes(&v);
+
+    Some((character_id, name, scopes))
+}
+
+/// Decodes the payload segment of a JWT token to extract `name` and `sub` (CHARACTER:EVE:<id>).
+pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
+    parse_jwt_character_claims_with_scopes(jwt).map(|(id, name, _)| (id, name))
 }
 
 /// Injects an ordered sequence of waypoints (station IDs and/or system IDs) directly into the running EVE client.

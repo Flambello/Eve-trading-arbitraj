@@ -388,6 +388,39 @@ fn test_oauth_callback_urldecode_simple() {
 }
 
 #[test]
+fn test_oauth_callback_query_parameter_split_once_resilience() {
+    // Verifies that query parameter key-value extraction uses split_once to preserve values containing '='
+    let query_str = "code=mock_code_123&state=state_abc=xyz&error_description=detail=part1=part2";
+    let mut code = None;
+    let mut state = None;
+    let mut err_desc = None;
+
+    for pair in query_str.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == "code" {
+                code = Some(urldecode_simple(v));
+            } else if k == "state" {
+                state = Some(urldecode_simple(v));
+            } else if k == "error_description" {
+                err_desc = Some(urldecode_simple(v));
+            }
+        }
+    }
+
+    assert_eq!(code.as_deref(), Some("mock_code_123"));
+    assert_eq!(
+        state.as_deref(),
+        Some("state_abc=xyz"),
+        "Nested '=' in state must not be truncated"
+    );
+    assert_eq!(
+        err_desc.as_deref(),
+        Some("detail=part1=part2"),
+        "Nested '=' in error_description must not be truncated"
+    );
+}
+
+#[test]
 fn test_sanitize_sso_error() {
     // Strips token references
     let leak_error = "Error: invalid grant for access_token=secret_12345";

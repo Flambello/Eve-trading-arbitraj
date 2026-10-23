@@ -35,8 +35,8 @@ Traditional trade finders often force you to haul single items, leave your cargo
 - 🛡️ **Safe Highsec Routing**: Dijkstra pathfinding penalizes dangerous space, completely avoiding lowsec and nullsec gate networks.
 - 🏛️ **Station Docking Pool Toggle**: Choose between **NPC Stations Only** (guaranteed 100% public docking access) or include **Player Citadels / Upwell Structures**.
 - 💡 **Real-Time SDE Autocomplete**: Type any solar system name for instant prefix/substring search, security rating pills, and parent region tags from the embedded universe SQLite export.
-- 🔔 **Audible Sound Alerts**: Freedesktop audio alerts and desktop notifications when deals yielding $\ge 100\%$ ROI are detected.
-- 🖥️ **Native Desktop GUI**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring a dark sci-fi aesthetic, sortable dossier tables, and 1-click clipboard buttons for in-game pasting.
+- 🖥️ **Native Desktop GUI**: Built with `egui` and `eframe` for Windows and Linux (native Wayland and X11), featuring sortable dossier tables and 1-click clipboard buttons for in-game pasting.
+- 🎨 **4 Cockpit Color Themes**: Customize your trading workstation with **Sci-Fi Void** (deep navy & neon cyan), **Neutral Black** (pure OLED monochrome), **Black & Red** (Triglavian obsidian & tactical crimson), and **Solar Light** (crisp high-clarity daylight theme).
 - 📊 **Built-in CSV & Flight Sheet Export**: Export filtered deals, packed corridor manifests, and multi-leg chain routes directly to CSV files and clipboard via dedicated GUI buttons.
 
 ---
@@ -166,6 +166,7 @@ Launch via your desktop application launcher, application menu, or terminal:
 - **Interactive Dossier**: Click any deal row to expand exact buy/sell stations, volume, capital required, and 1-click copy buttons (`📋 Item`, `📋 Buy Station`, `📋 Sell Station`).
 - **📦 Packed Manifests Tab**: View knapsack cargo lists grouping multiple items into unified origin-destination flights. Use `📋 Shopping List` to copy item names and quantities for in-game multi-buy.
 - **🔗 Chain Route Plotter**: Configure maximum legs (1–8) and detour tolerance (0–5 jumps) to plot multi-hop trading expeditions. Click `📋 Autopilot Trail` to paste the waypoint sequence directly into EVE chat.
+- **🎨 Cockpit Theme Switcher**: Open the **Settings** tab (`Alt+S`) to switch between the 4 cockpit themes with live preview cards. Your choice is automatically persisted to `config.toml`.
 - **📊 CSV Export**: Dedicated 1-click buttons to export filtered deals and manifests to CSV files with clipboard integration.
 
 ---
@@ -178,7 +179,7 @@ The application creates its configuration file automatically upon first launch:
 
 Reference templates are included in the repository:
 - **[.env.example](.env.example)**: Environment variable template documenting optional overrides such as `EVE_CLIENT_ID` and `RUST_LOG`.
-- **[config.example.toml](config.example.toml)**: Fully annotated TOML configuration template detailing ship profiles, scan settings, tax rates, and SSO callback options.
+- **[config.example.toml](config.example.toml)**: Fully annotated TOML configuration template detailing cockpit themes, ship profiles, scan settings, tax rates, and SSO callback options.
 
 ---
 

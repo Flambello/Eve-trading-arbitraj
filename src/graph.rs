@@ -58,7 +58,7 @@ impl SystemGraph {
             }
         }
 
-        let cache = LruCache::new(NonZeroUsize::new(20_000).unwrap());
+        let cache = LruCache::new(NonZeroUsize::new(20_000).unwrap_or(NonZeroUsize::MIN));
 
         Self {
             graph,
@@ -154,8 +154,9 @@ impl SystemGraph {
 
         let cache_key = (origin.min(dest), origin.max(dest), safe_only);
 
-        // Check LRU cache
-        if let Ok(mut cache) = self.jump_cache.lock() {
+        // Check LRU cache (with poisoning recovery)
+        {
+            let mut cache = self.jump_cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(&jumps) = cache.get(&cache_key) {
                 return jumps;
             }
@@ -171,6 +172,15 @@ impl SystemGraph {
             None => return 9999,
         };
 
+        if safe_only
+            && (self.graph[origin_idx].security_status < 0.45
+                || self.graph[dest_idx].security_status < 0.45)
+        {
+            let mut cache = self.jump_cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.put(cache_key, 9999);
+            return 9999;
+        }
+
         let node_count = self.graph.node_count();
         let mut visited = FastBitSet::new(node_count);
         let mut queue = VecDeque::new();
@@ -178,11 +188,6 @@ impl SystemGraph {
         queue.push_back((origin_idx, 0u32));
 
         let result = if safe_only {
-            // Strictly exclude lowsec and nullsec origin or destination
-            if !self.is_highsec(origin) || !self.is_highsec(dest) {
-                return 9999;
-            }
-
             let mut found_dist = None;
             while let Some((curr, dist)) = queue.pop_front() {
                 if curr == dest_idx {
@@ -218,7 +223,8 @@ impl SystemGraph {
             found_dist.unwrap_or(9999)
         };
 
-        if let Ok(mut cache) = self.jump_cache.lock() {
+        {
+            let mut cache = self.jump_cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.put(cache_key, result);
         }
 
@@ -291,5 +297,19 @@ impl SystemGraph {
         path.push(self.graph[origin_idx].system_id);
         path.reverse();
         path
+    }
+
+    /// Returns true if the internal jump calculation LRU cache mutex is poisoned.
+    pub fn is_jump_cache_poisoned(&self) -> bool {
+        self.jump_cache.is_poisoned()
+    }
+
+    /// Simulates a thread panic to poison the jump cache mutex for reliability verification.
+    #[doc(hidden)]
+    pub fn poison_jump_cache_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.jump_cache.lock().unwrap();
+            panic!("poisoning jump_cache for reliability verification");
+        }));
     }
 }

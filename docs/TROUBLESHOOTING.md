@@ -9,8 +9,8 @@ This guide assists operators, traders, and developers in diagnosing and resolvin
 - **Live Stream**: Standard console output (`stdout` / `stderr`)
 - **Configuring Verbosity**: Set the `RUST_LOG` environment variable:
   ```bash
-  RUST_LOG=debug cargo run -- --gui
-  RUST_LOG=trace cargo run -- --system Jita
+  RUST_LOG=debug cargo run
+  RUST_LOG=trace cargo run
   ```
 
 ---
@@ -28,7 +28,7 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
   "timestamp": "2026-10-13T12:00:10.104Z",
   "level": "ERROR",
   "fields": {
-    "error_code": "SDE_CORRUPTION_DETECTED",
+    "error_code": "ERR_SDE_SCHEMA_INVALID",
     "table": "staStations",
     "error": "database disk image is malformed"
   },
@@ -44,8 +44,9 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
    ```
 3. Re-download and compile fresh SDE tables:
    ```bash
-   cargo run -- --update-sde
+   cargo run
    ```
+   *(The application will detect the missing database on startup and automatically download and decompress the latest SQLite dump from Fuzzwork).*
 
 ---
 
@@ -62,7 +63,7 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
   "timestamp": "2026-10-13T12:05:42.512Z",
   "level": "ERROR",
   "fields": {
-    "error_code": "ESI_RATE_LIMIT_EXCEEDED",
+    "error_code": "ERR_ESI_RATE_LIMITED",
     "status": 420,
     "endpoint": "https://esi.evetech.net/v1/markets/10000002/orders/",
     "retry_after": 60
@@ -138,7 +139,7 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
 #### Step-by-Step Resolution
 1. Check if the target station is located in lowsec or nullsec.
 2. In GUI: toggle off "Safe Highsec Only" if you are operating a blockade runner or tanked ship.
-3. In CLI: pass `--unsafe-routes` to permit travel through lowsec.
+3. In `config.toml`: set `safe_only = false` in the `[scan]` section to permit travel through lowsec.
 
 ---
 
@@ -154,7 +155,7 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
   "timestamp": "2026-10-13T12:45:00.012Z",
   "level": "ERROR",
   "fields": {
-    "error_code": "GUI_DISPLAY_UNAVAILABLE",
+    "error_code": "ERR_UI_RUNTIME_INIT",
     "display": null,
     "wayland_display": null,
     "message": "No display server detected"
@@ -164,11 +165,9 @@ Occurs when `data/eve_sde.sqlite` is missing, incomplete, corrupted, or schema t
 ```
 
 #### Step-by-Step Resolution
-1. Run in CLI/TUI terminal mode on headless environments:
-   ```bash
-   cargo run -- --no-ui --ship big --system Jita
-   ```
-2. Verify display server permissions on Linux:
+1. Verify display server permissions on Linux:
    ```bash
    echo $WAYLAND_DISPLAY $DISPLAY
    ```
+2. If running across SSH, enable X11 forwarding (`ssh -X` or `ssh -Y`) or launch inside an active graphical desktop session.
+3. If running on a headless or virtual machine, install an X virtual framebuffer (e.g. `xvfb-run eve-merchant`).

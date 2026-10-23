@@ -84,6 +84,19 @@ pub fn arabic_to_roman(mut n: u32) -> String {
     out
 }
 
+/// Escapes SQLite LIKE wildcard characters (`%`, `_`) and the escape character (`\`)
+/// so user queries are matched literally.
+pub fn escape_sqlite_like(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for c in input.chars() {
+        if c == '%' || c == '_' || c == '\\' {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
 /// Parse a Roman numeral string case-insensitively (e.g. "IV" -> 4, "x" -> 10, "VIII" -> 8).
 pub fn roman_to_arabic(s: &str) -> Option<u32> {
     let s = s.trim();
@@ -164,6 +177,33 @@ fn clean_location_input(s: &str) -> &str {
     }
     trimmed
 }
+
+/// RAII guard that automatically removes a temporary file upon drop unless explicitly disarmed.
+pub struct TempFileCleanupGuard<'a> {
+    path: &'a Path,
+    active: bool,
+}
+
+impl<'a> TempFileCleanupGuard<'a> {
+    pub fn new(path: &'a Path) -> Self {
+        Self { path, active: true }
+    }
+
+    pub fn disarm(mut self) {
+        self.active = false;
+    }
+}
+
+impl<'a> Drop for TempFileCleanupGuard<'a> {
+    fn drop(&mut self) {
+        if self.active && self.path.exists() {
+            let _ = std::fs::remove_file(self.path);
+        }
+    }
+}
+
+pub const MAX_SYSTEM_SEARCH_QUERY_LEN: usize = 64;
+pub const MAX_SYSTEM_SEARCH_LIMIT: usize = 50;
 
 pub struct SdeLoader {
     conn: Mutex<Connection>,
@@ -419,6 +459,7 @@ impl SdeLoader {
         let mut bounded_reader = decoder.take(MAX_DECOMPRESSED_SDE_BYTES + 1);
 
         let temp_db_path = dest_path.with_extension("sqlite.part");
+        let guard = TempFileCleanupGuard::new(&temp_db_path);
         let mut out_file = BufWriter::new(File::create(&temp_db_path)?);
 
         let mut buffer = [0u8; 64 * 1024];
@@ -451,9 +492,12 @@ impl SdeLoader {
         // Verify SQLite database magic header bytes
         {
             let mut header = [0u8; 16];
-            let mut check_file = File::open(&temp_db_path)?;
-            check_file.read_exact(&mut header)?;
-            if &header != b"SQLite format 3\0" {
+            let is_valid = {
+                let mut check_file = File::open(&temp_db_path)?;
+                check_file.read_exact(&mut header)?;
+                &header == b"SQLite format 3\0"
+            };
+            if !is_valid {
                 let _ = std::fs::remove_file(&temp_db_path);
                 tracing::error!(
                     error_code = %ErrorCode::ErrSdeDecompressionFailed,
@@ -464,6 +508,7 @@ impl SdeLoader {
         }
 
         std::fs::rename(&temp_db_path, dest_path)?;
+        guard.disarm();
         Ok(total_decompressed)
     }
 
@@ -489,63 +534,105 @@ impl SdeLoader {
             .timeout(Duration::from_secs(600))
             .build()?;
 
-        let mut resp = client
-            .get(FUZZWORK_SDE_URL)
-            .send()
-            .await
-            .context("Failed to initiate SDE download from Fuzzwork")?;
-
-        if !resp.status().is_success() {
-            bail!("Failed to download SDE: HTTP {}", resp.status());
-        }
-
-        if let Some(len) = resp.content_length() {
-            if !(MIN_SDE_COMPRESSED_BYTES..=MAX_SDE_COMPRESSED_BYTES).contains(&len) {
-                bail!(
-                    "SDE archive Content-Length out of bounds ({} bytes; expected {} to {} bytes)",
-                    len,
-                    MIN_SDE_COMPRESSED_BYTES,
-                    MAX_SDE_COMPRESSED_BYTES
-                );
-            }
-        }
-
         let temp_gz_path = dest_path.with_extension("sqlite.gz.part");
-        let mut file = File::create(&temp_gz_path)?;
+        let mut attempts = 0u32;
+        let mut backoff = Duration::from_secs(1);
 
-        let mut downloaded_bytes = 0u64;
-        while let Some(chunk) = resp.chunk().await? {
-            downloaded_bytes += chunk.len() as u64;
-            if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
-                let _ = std::fs::remove_file(&temp_gz_path);
-                bail!(
-                    "SDE download exceeded maximum allowed size threshold ({} bytes)",
-                    MAX_SDE_COMPRESSED_BYTES
-                );
-            }
-            file.write_all(&chunk)?;
-        }
-        file.flush()?;
-
-        tracing::info!(
-            target: "eve_trade_scout",
-            "Decompressing gzip archive into SQLite database..."
-        );
-        let compressed_file = File::open(&temp_gz_path)?;
-        let decomp_res =
-            Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
-        if let Err(e) = decomp_res {
+        loop {
+            attempts += 1;
             let _ = std::fs::remove_file(&temp_gz_path);
-            return Err(e);
-        }
-        let _ = std::fs::remove_file(&temp_gz_path);
+            let gz_guard = TempFileCleanupGuard::new(&temp_gz_path);
 
-        tracing::info!(
-            target: "eve_trade_scout",
-            path = ?dest_path,
-            "SDE database ready"
-        );
-        Ok(())
+            let download_result: Result<()> = async {
+                let mut resp = client
+                    .get(FUZZWORK_SDE_URL)
+                    .send()
+                    .await
+                    .context("Failed to initiate SDE download from Fuzzwork")?;
+
+                if !resp.status().is_success() {
+                    bail!("Failed to download SDE: HTTP {}", resp.status());
+                }
+
+                if let Some(len) = resp.content_length() {
+                    if !(MIN_SDE_COMPRESSED_BYTES..=MAX_SDE_COMPRESSED_BYTES).contains(&len) {
+                        bail!(
+                            "SDE archive Content-Length out of bounds ({} bytes; expected {} to {} bytes)",
+                            len,
+                            MIN_SDE_COMPRESSED_BYTES,
+                            MAX_SDE_COMPRESSED_BYTES
+                        );
+                    }
+                }
+
+                let mut file = File::create(&temp_gz_path)?;
+                let mut downloaded_bytes = 0u64;
+                while let Some(chunk) = resp.chunk().await? {
+                    downloaded_bytes += chunk.len() as u64;
+                    if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
+                        bail!(
+                            "SDE download exceeded maximum allowed size threshold ({} bytes)",
+                            MAX_SDE_COMPRESSED_BYTES
+                        );
+                    }
+                    file.write_all(&chunk)?;
+                }
+                file.flush()?;
+                drop(file);
+                Ok(())
+            }
+            .await;
+
+            match download_result {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "eve_trade_scout",
+                        "Decompressing gzip archive into SQLite database..."
+                    );
+                    let compressed_file = File::open(&temp_gz_path)?;
+                    let decomp_res = Self::decompress_and_validate_archive(
+                        BufReader::new(compressed_file),
+                        dest_path,
+                    );
+                    decomp_res?;
+                    drop(gz_guard);
+
+                    tracing::info!(
+                        target: "eve_trade_scout",
+                        path = ?dest_path,
+                        "SDE database ready"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    drop(gz_guard);
+                    if attempts >= 3 {
+                        tracing::error!(
+                            target: "eve_trade_scout",
+                            error_code = %ErrorCode::ErrSdeDownloadFailed,
+                            attempts = attempts,
+                            error = %e,
+                            "SDE download failed permanently after {} attempts",
+                            attempts
+                        );
+                        return Err(e).context(format!(
+                            "Failed to download SDE database after {} attempts",
+                            attempts
+                        ));
+                    }
+                    tracing::warn!(
+                        target: "eve_trade_scout",
+                        error_code = %ErrorCode::ErrSdeDownloadFailed,
+                        attempts = attempts,
+                        error = %e,
+                        "SDE download failed, retrying in {:?}...",
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
+        }
     }
 
     fn preload_static_tables(conn: &Connection) -> PreloadedStaticTables {
@@ -615,13 +702,14 @@ impl SdeLoader {
     }
 
     pub fn get_item_info(&self, type_id: u32) -> Option<ItemInfo> {
-        if let Ok(cache) = self.item_cache.lock() {
+        {
+            let cache = self.item_cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(res) = cache.get(&type_id) {
                 return res.clone();
             }
         }
 
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         let query = if self.has_packaged_col {
             "SELECT t.typeID, t.typeName, COALESCE(t.packagedVolume, t.volume, 0.01), t.groupID, COALESCE(g.categoryID, 0), t.published 
@@ -653,7 +741,8 @@ impl SdeLoader {
             })
             .ok();
 
-        if let Ok(mut cache) = self.item_cache.lock() {
+        {
+            let mut cache = self.item_cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.insert(type_id, info.clone());
         }
 
@@ -675,7 +764,7 @@ impl SdeLoader {
             return None;
         }
 
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // 1. Exact match on mapSolarSystems
         let mut stmt_sys = conn
@@ -734,7 +823,7 @@ impl SdeLoader {
         if let Some(name) = self.system_names.get(&system_id) {
             return Some(name.clone());
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
@@ -745,7 +834,7 @@ impl SdeLoader {
         if let Some(&sec) = self.system_securities.get(&system_id) {
             return Some(sec);
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT security FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
@@ -756,7 +845,7 @@ impl SdeLoader {
         if let Some(&reg_id) = self.system_regions.get(&system_id) {
             return Some(reg_id);
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT regionID FROM mapSolarSystems WHERE solarSystemID = ?1")
             .ok()?;
@@ -770,20 +859,31 @@ impl SdeLoader {
     ///
     /// # Arguments
     /// * `query` - User input string (e.g. "Jita", "jita 4", "Amarr VIII").
-    /// * `limit` - Maximum number of search results to return.
+    /// * `limit` - Maximum number of search results to return (clamped to 1..=50).
     ///
     /// # Returns
     /// Vector of [`SystemSearchResult`] sorted with prefix matches prioritized over substring matches.
     pub fn search_systems(&self, query: &str, limit: usize) -> Vec<SystemSearchResult> {
-        let cleaned = clean_location_input(query).to_lowercase();
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let bounded_query = if query.len() > MAX_SYSTEM_SEARCH_QUERY_LEN {
+            let mut end = MAX_SYSTEM_SEARCH_QUERY_LEN;
+            while end > 0 && !query.is_char_boundary(end) {
+                end -= 1;
+            }
+            &query[..end]
+        } else {
+            query
+        };
+
+        let effective_limit = limit.min(MAX_SYSTEM_SEARCH_LIMIT);
+        let cleaned = clean_location_input(bounded_query).to_lowercase();
         if cleaned.is_empty() {
             return Vec::new();
         }
 
-        let conn = match self.conn.lock() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // If the user typed something with a Roman or Arabic planet token, e.g. "Jita IV" or "Jita 4"
         // also extract candidate base system name e.g. "jita"
@@ -800,16 +900,18 @@ impl SdeLoader {
         };
 
         let trimmed = base_cand.trim();
-        let prefix_pattern = format!("{}%", trimmed);
-        let contains_pattern = format!("%{}%", trimmed);
+        let lower_trimmed = trimmed.to_lowercase();
+        let escaped_query = escape_sqlite_like(&lower_trimmed);
+        let prefix_pattern = format!("{}%", escaped_query);
+        let contains_pattern = format!("%{}%", escaped_query);
 
         let sql = "SELECT s.solarSystemID, s.solarSystemName, s.security, s.regionID, COALESCE(r.regionName, 'Unknown')
                    FROM mapSolarSystems s
                    LEFT JOIN mapRegions r ON s.regionID = r.regionID
-                   WHERE LOWER(s.solarSystemName) LIKE ?1 OR LOWER(s.solarSystemName) LIKE ?2
+                   WHERE LOWER(s.solarSystemName) LIKE ?1 ESCAPE '\\' OR LOWER(s.solarSystemName) LIKE ?2 ESCAPE '\\'
                    ORDER BY 
                        CASE WHEN LOWER(s.solarSystemName) = ?3 THEN 0
-                            WHEN LOWER(s.solarSystemName) LIKE ?1 THEN 1
+                            WHEN LOWER(s.solarSystemName) LIKE ?1 ESCAPE '\\' THEN 1
                             ELSE 2 END,
                        s.security DESC
                    LIMIT ?4";
@@ -820,7 +922,12 @@ impl SdeLoader {
         };
 
         let rows = stmt.query_map(
-            params![prefix_pattern, contains_pattern, trimmed, limit as i64],
+            params![
+                prefix_pattern,
+                contains_pattern,
+                lower_trimmed,
+                effective_limit as i64
+            ],
             |row| {
                 Ok(SystemSearchResult {
                     system_id: row.get(0)?,
@@ -842,7 +949,7 @@ impl SdeLoader {
         if let Some(&sys_id) = self.station_systems.get(&station_id) {
             return Some(sys_id);
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT solarSystemID FROM staStations WHERE stationID = ?1")
             .ok()?;
@@ -853,7 +960,7 @@ impl SdeLoader {
         if let Some(name) = self.station_names.get(&station_id) {
             return Some(name.clone());
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT stationName FROM staStations WHERE stationID = ?1")
             .ok()?;
@@ -865,7 +972,7 @@ impl SdeLoader {
         if let Some(name) = self.region_names.get(&region_id) {
             return Some(name.clone());
         }
-        let conn = self.conn.lock().ok()?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare_cached("SELECT regionName FROM mapRegions WHERE regionID = ?1")
             .ok()?;
@@ -874,7 +981,7 @@ impl SdeLoader {
 
     /// Loads all solar systems from the `mapSolarSystems` SDE table into in-memory [`SystemNode`] structures.
     pub fn all_systems(&self) -> Result<Vec<SystemNode>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT solarSystemID, solarSystemName, COALESCE(security, 0.0), regionID 
              FROM mapSolarSystems",
@@ -894,7 +1001,7 @@ impl SdeLoader {
 
     /// Loads all stargate jump connections from the `mapSolarSystemJumps` SDE table as `(from, to)` pairs.
     pub fn all_jumps(&self) -> Result<Vec<(u32, u32)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT fromSolarSystemID, toSolarSystemID FROM mapSolarSystemJumps")?;
         let mut rows = stmt.query([])?;
@@ -903,5 +1010,33 @@ impl SdeLoader {
             list.push((row.get(0)?, row.get(1)?));
         }
         Ok(list)
+    }
+
+    /// Returns true if the internal SQLite connection mutex is poisoned.
+    pub fn is_conn_poisoned(&self) -> bool {
+        self.conn.is_poisoned()
+    }
+
+    /// Simulates a thread panic to poison the SQLite connection mutex for reliability verification.
+    #[doc(hidden)]
+    pub fn poison_conn_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.conn.lock().unwrap();
+            panic!("poisoning sde.conn for reliability verification");
+        }));
+    }
+
+    /// Returns true if the internal item cache mutex is poisoned.
+    pub fn is_item_cache_poisoned(&self) -> bool {
+        self.item_cache.is_poisoned()
+    }
+
+    /// Simulates a thread panic to poison the item cache mutex for reliability verification.
+    #[doc(hidden)]
+    pub fn poison_item_cache_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.item_cache.lock().unwrap();
+            panic!("poisoning sde.item_cache for reliability verification");
+        }));
     }
 }

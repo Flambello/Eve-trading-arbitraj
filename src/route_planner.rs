@@ -1,4 +1,4 @@
-use crate::arbitrage::ArbitrageDeal;
+use crate::arbitrage::{push_dedup_destination, ArbitrageDeal, AutopilotNavigable};
 use crate::config::ShipProfile;
 use crate::graph::SystemGraph;
 use serde::{Deserialize, Serialize};
@@ -28,21 +28,21 @@ pub struct TradeRoute {
     pub avg_profit_per_jump: f64,
 }
 
+impl AutopilotNavigable for TradeRoute {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for stop in &self.stops {
+            push_dedup_destination(&mut ids, stop.deal.source_station_id);
+            push_dedup_destination(&mut ids, stop.deal.dest_station_id);
+        }
+        ids
+    }
+}
+
 impl TradeRoute {
     /// Returns the ordered sequence of station IDs for ESI in-game autopilot.
     pub fn ordered_destination_ids(&self) -> Vec<u64> {
-        let mut ids = Vec::new();
-        for stop in &self.stops {
-            let src = stop.deal.source_station_id;
-            let dst = stop.deal.dest_station_id;
-            if ids.last().copied() != Some(src) {
-                ids.push(src);
-            }
-            if ids.last().copied() != Some(dst) {
-                ids.push(dst);
-            }
-        }
-        ids
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a complete in-game flight sheet suitable for EVE Notepad (Alt+N).
@@ -102,6 +102,9 @@ impl TradeRoute {
     }
 }
 
+pub const MAX_ROUTE_CANDIDATE_DEALS: usize = 1_000;
+pub const MAX_ALLOWED_ROUTE_STOPS: usize = 20;
+
 /// Greedy sequential route planner that chains top arbitrage deals into a multi-stop itinerary.
 ///
 /// # Arguments
@@ -123,7 +126,29 @@ pub fn plan_route(
     safe_only: bool,
     max_stops: usize,
 ) -> TradeRoute {
-    let mut unused_deals: Vec<ArbitrageDeal> = deals.to_vec();
+    if max_stops == 0 || deals.is_empty() {
+        return TradeRoute {
+            stops: Vec::new(),
+            waypoints: vec![home_system],
+            waypoint_names: vec![graph
+                .system_name(home_system)
+                .unwrap_or("Unknown")
+                .to_string()],
+            total_jumps: 0,
+            total_profit: 0.0,
+            total_capital_required: 0.0,
+            max_volume_used: 0.0,
+            avg_profit_per_jump: 0.0,
+        };
+    }
+
+    let candidate_pool = if deals.len() > MAX_ROUTE_CANDIDATE_DEALS {
+        &deals[..MAX_ROUTE_CANDIDATE_DEALS]
+    } else {
+        deals
+    };
+    let mut unused_deals: Vec<&ArbitrageDeal> = candidate_pool.iter().collect();
+    let effective_max_stops = max_stops.min(MAX_ALLOWED_ROUTE_STOPS);
     let mut stops = Vec::new();
     let mut current_system = home_system;
     let mut total_jumps = 0;
@@ -133,7 +158,7 @@ pub fn plan_route(
     let mut waypoints = vec![home_system];
     let mut dest_loads: HashMap<(u32, u64), usize> = HashMap::new();
 
-    for step in 1..=max_stops {
+    for step in 1..=effective_max_stops {
         if unused_deals.is_empty() {
             break;
         }
@@ -174,7 +199,7 @@ pub fn plan_route(
             None => break,
         };
 
-        let chosen_deal = unused_deals.remove(chosen_idx);
+        let chosen_deal = unused_deals.swap_remove(chosen_idx);
         let chosen_src_order = chosen_deal.source_order_id;
         let chosen_src_station = chosen_deal.source_station_id;
         let chosen_dest_station = chosen_deal.dest_station_id;
@@ -238,7 +263,7 @@ pub fn plan_route(
 
         stops.push(RouteStop {
             step,
-            deal: chosen_deal,
+            deal: (*chosen_deal).clone(),
             jumps_from_prev: best_leg_jumps,
             prev_system_id: departure_system,
             prev_system_name: prev_name,

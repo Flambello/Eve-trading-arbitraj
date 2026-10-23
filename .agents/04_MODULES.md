@@ -28,14 +28,53 @@ pub const SMALL_HAULER: ShipProfile = ShipProfile {
 pub fn profile_from_str(s: &str) -> anyhow::Result<ShipProfile>;
 // Returns BIG_HAULER for "big", SMALL_HAULER for "small", else error.
 
+// ── Cockpit Themes ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppTheme {
+    #[default]
+    SciFiVoid,
+    NeutralBlack,
+    BlackRed,
+    SolarLight,
+}
+
+impl AppTheme {
+    pub const ALL: &'static [AppTheme] = &[
+        AppTheme::SciFiVoid,
+        AppTheme::NeutralBlack,
+        AppTheme::BlackRed,
+        AppTheme::SolarLight,
+    ];
+
+    pub fn display_name(&self) -> &'static str;
+    pub fn description(&self) -> &'static str;
+    pub fn is_dark(&self) -> bool;
+    pub fn as_str(&self) -> &'static str;
+    pub fn palette(&self) -> crate::ui::theme::ThemePalette;
+}
+
+impl std::fmt::Display for AppTheme { /* prints display_name() */ }
+impl std::str::FromStr for AppTheme { /* parses canonical and alias strings */ }
+
 // ── User config ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct UserConfig { /* see 02_DATA_MODEL.md */ }
+pub struct UserConfig {
+    pub ship: ShipConfig,
+    pub location: LocationConfig,
+    pub scan: ScanConfig,
+    pub filters: FilterConfig,
+    pub fees: FeeConfig,
+    pub cache: CacheConfig,
+    pub sso: SsoConfig,
+    pub theme: AppTheme,
+}
 
 impl UserConfig {
     pub fn load() -> anyhow::Result<Self>;
-    // Reads ~/.config/eve-trade-scout/config.toml.
+    // Reads ~/.config/eve-traveling-merchant/config.toml (or legacy eve-trade-scout).
     // If missing, writes and returns Self::default().
 
     pub fn save(&self) -> anyhow::Result<()>;
@@ -45,7 +84,7 @@ impl UserConfig {
     // Delegates to profile_from_str(&self.ship.profile).
 }
 
-impl Default for UserConfig { /* sensible defaults */ }
+impl Default for UserConfig { /* sensible defaults: Big Hauler, Jita, SciFiVoid theme */ }
 ```
 
 ---
@@ -70,7 +109,6 @@ impl SdeLoader {
     pub fn decompress_and_validate_archive<R: Read>(reader: R, dest_path: &Path) -> anyhow::Result<u64>;
 
     /// Download and decompress the Fuzzwork SQLite dump.
-    /// Shows an indicatif progress bar during download.
     pub async fn download(db_path: &Path) -> anyhow::Result<()>;
 
     /// Look up item metadata from invTypes.
@@ -463,34 +501,100 @@ pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe:
 
 ---
 
-## `src/ui/mod.rs`, `src/ui/gui.rs` & `src/ui/tui.rs`
+## `src/ui/mod.rs` & `src/ui/gui.rs`
 
 ```rust
 // UI Entry Points
 pub fn run_desktop_gui(app: DesktopApp) -> Result<(), eframe::Error>;
 
-pub fn run_tui(
-    deals:             &[ArbitrageDeal],
-    route:             &TradeRoute,
-    ship:              ShipProfile,
-    home_system:       &str,
-    safe_only:         bool,
-    npc_stations_only: bool,
-) -> anyhow::Result<()>;
-
 pub fn format_unit_price(val: f64) -> String;
+
+// Startup Telemetry & Worker Messages
+pub struct StartupProgress {
+    pub stage_index: usize,
+    pub total_stages: usize,
+    pub stage_name: String,
+    pub detail: String,
+    pub percent: f32,
+    pub completed: bool,
+    pub error: Option<String>,
+    pub error_code: Option<ErrorCode>,
+}
+
+pub enum StartupMsg {
+    Progress(StartupProgress),
+    Ready { /* universe dependencies and initial deals */ },
+    Error { code: ErrorCode, message: String },
+}
 ```
 
 ### Desktop GUI Features (`src/ui/gui.rs`)
-- **Theme**: Dark space sci-fi theme with custom palettes (dark slate panels, gold accents, neon cyan highlights, green profit tags).
-- **Background Worker**: Multi-threaded non-blocking startup progress and market scanning using `mpsc::channel`.
+- **Theme**: 4 selectable cockpit themes (Sci-Fi Void, Neutral Black, Black & Red, Solar Light) driven by `ThemePalette`.
+- **Background Worker & Catch-All**: Multi-threaded non-blocking startup progress with a supervisor join handle and channel disconnect detection (`ErrUiWorkerChannel`).
+- **Offline Mode**: Graceful fallback allowing the pilot to inspect configuration, settings, and cached logs when startup fails.
+- **API Methods**:
+  - `poll_startup(&mut self, ctx: &egui::Context)`
+  - `start_scan(&mut self)`
+  - `is_offline(&self) -> bool`
+  - `is_scanning(&self) -> bool`
+  - `status_text(&self) -> &str`
 - **Tabs**:
   - `Deals`: Live filterable arbitrage deals table with item search, sorting, and clipboard copying.
   - `Manifests`: Station-to-station cargo bundling manifests.
   - `Route`: Greedy multi-stop route planner with EVE flight sheet generation.
   - `ChainRoute`: Multi-leg knapsack chain planner.
   - `HubArbitrage`: Inter-hub trading matrix across Jita, Amarr, Dodixie, Rens, and Hek.
-  - `Settings`: Live configuration editor and EVE Online SSO v2 PKCE connection.
+  - `Settings`: Live configuration editor, interactive Cockpit Theme Switcher, and EVE Online SSO v2 PKCE connection.
+
+---
+
+## `src/ui/theme.rs`
+
+```rust
+use eframe::egui::{Color32, Context, Frame, Stroke};
+use crate::config::AppTheme;
+use crate::hub_arbitrage::CoreHub;
+
+pub struct ThemePalette {
+    pub dark_mode: bool,
+    pub bg_app: Color32,
+    pub bg_panel: Color32,
+    pub bg_panel_stroke: Stroke,
+    pub bg_central: Color32,
+    pub card_bg: Color32,
+    pub card_stroke: Stroke,
+    pub card_sub_bg: Color32,
+    pub card_sub_stroke: Stroke,
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub text_muted: Color32,
+    pub accent_primary: Color32,
+    pub accent_primary_text: Color32,
+    pub accent_secondary: Color32,
+    pub accent_secondary_text: Color32,
+    pub success_green: Color32,
+    pub warning_yellow: Color32,
+    pub error_red: Color32,
+    pub info_blue: Color32,
+    pub kpi_card_bg: Color32,
+}
+
+impl ThemePalette {
+    pub fn preview_swatches(&self) -> (Color32, Color32, Color32);
+    pub fn card_frame(&self) -> Frame;
+    pub fn sub_card_frame(&self) -> Frame;
+    pub fn top_panel_frame(&self) -> Frame;
+    pub fn bottom_panel_frame(&self) -> Frame;
+    pub fn central_panel_frame(&self) -> Frame;
+    pub fn rank_silver(&self) -> Color32;
+    pub fn hub_badge_color(&self, hub: Option<CoreHub>) -> Color32;
+    pub fn primary_button<'a>(&self, text: impl Into<egui::WidgetText>) -> egui::Button<'a>;
+    pub fn secondary_button<'a>(&self, text: impl Into<egui::WidgetText>) -> egui::Button<'a>;
+    pub fn apply_to_ctx(&self, ctx: &Context);
+}
+
+pub fn theme_palette(theme: AppTheme) -> ThemePalette;
+```
 
 ---
 
@@ -542,11 +646,12 @@ pub enum ErrorCode {
     ErrConfigLoadFailed,
     ErrConfigSaveFailed,
 
-    // UI (7001..7004)
+    // UI (7001..7005)
     ErrUiRuntimeInit,
     ErrUiWorkerChannel,
     ErrUiAudioPlayback,
     ErrUiCsvExport,
+    ErrUiStartupFailed,
 
     // System (9001)
     ErrSysPanic,
@@ -580,62 +685,42 @@ pub fn init_logging(log_dir: Option<&Path>, default_level: &str) -> Result<Worke
 ## `src/main.rs`
 
 ```rust
-use clap::Parser;
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "eve-merchant",
-    author = "EVE Traveling Merchant",
-    version = "0.1.0",
-    about = "EVE Traveling Merchant — High-profit cross-station arbitrage engine & multi-stop route planner"
-)]
-pub struct Args {
-    #[arg(short, long)]                                               pub ship: Option<String>,
-    #[arg(long)]                                                      pub system: Option<String>,
-    #[arg(long)]                                                      pub regions: Option<String>,
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)] pub adjacent_regions: bool,
-    #[arg(long)]                                                      pub safe: bool,
-    #[arg(long)]                                                      pub unsafe_routes: bool,
-    #[arg(long)]                                                      pub npc_only: bool,
-    #[arg(long, aliases = ["allow-citadels", "include-structures"])]  pub allow_structures: bool,
-    #[arg(long)]                                                      pub min_profit: Option<f64>,
-    #[arg(long)]                                                      pub min_spread: Option<f64>,
-    #[arg(long)]                                                      pub min_roi: Option<f64>,     // Default: 10.0% enforced
-    #[arg(short, long, default_value_t = 25)]                         pub top: usize,
-    #[arg(long, default_value_t = 5)]                                 pub max_stops: usize,
-    #[arg(long)]                                                      pub route: bool,
-    #[arg(long)]                                                      pub gui: bool,
-    #[arg(long)]                                                      pub auto_refresh: bool,
-    #[arg(long)]                                                      pub tui: bool,
-    #[arg(long)]                                                      pub no_ui: bool,
-    #[arg(long)]                                                      pub no_tui: bool,
-    #[arg(long)]                                                      pub export: Option<PathBuf>,
-    #[arg(long)]                                                      pub update_sde: bool,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()>;
+
+async fn run_app() -> anyhow::Result<()>;
+
+fn resolve_sde_path() -> PathBuf;
+fn resolve_cache_dir(cfg_dir: &str) -> PathBuf;
+fn resolve_log_dir() -> PathBuf;
 ```
+
+`main.rs` configures structured daily rotating file logging via `init_logging`, loads user configuration, spawns background universe initialization and regional market fetch tasks via `tokio::spawn` with a panic supervisor channel, and launches the native desktop window via `ui::run_desktop_gui`.
 
 ---
 
 ## Automated Test Suites (`tests/`)
 
-The repository contains 13 dedicated integration test suites providing rigorous test coverage over critical domain logic, invariants, security, SSO, and diagnostics:
+The repository contains 18 dedicated integration test suites providing rigorous test coverage over critical domain logic, invariants, security, SSO, and diagnostics:
 
 | Suite | File | Tests Covered |
 |---|---|---|
 | **Arbitrage Engine** | `tests/test_arbitrage.rs` | Ship profile volume/budget limits, profit-per-jump (PPJ) formula, enforced 10.0% net profitability rejection/acceptance, NPC station ID boundary ($< 10^{12}$ vs $\ge 10^{12}$), station toggle filter, highsec security filtering ($\ge 0.45$), 4-way quantity solver, deal sorting (PPJ DESC, net DESC). |
 | **Chain Route Planner** | `tests/test_chain_route_planner.rs` | Multi-leg chained trade routes, knapsack cargo packing, detour tolerance, beam search candidate exploration, market load limits per destination station. |
+| **Concurrency & Load** | `tests/test_concurrency.rs` | Multi-threaded stress testing, parallel market order fetching, safe shared state mutation. |
 | **Config & Profiles** | `tests/test_config.rs` | Ship profile string parsing (case-insensitivity, aliases, invalid string rejection), `UserConfig` defaults and invariant checks, TOML roundtrip serialization & deserialization. |
 | **Donation Branding** | `tests/test_donation_branding.rs` | In-game ISK donation branding, developer character ID and name verification for tip jar. |
+| **DoS Defense** | `tests/test_dos_defense.rs` | Payload size boundaries, decompression limits, resource exhaustion defense. |
 | **Error Codes Taxonomy** | `tests/test_error_codes.rs` | Taxonomy verification: uniqueness of integer code numbers, valid code ranges (1000..9999), string identifier formatting, JSON serialization/deserialization. |
 | **ESI Models & Deserialization** | `tests/test_esi_models.rs` | JSON order array deserialization, buy vs sell discrimination, `cheapest_sell` and `best_buy` price matching across order books. |
 | **Graph & Pathfinding** | `tests/test_graph.rs` | Solar system security classification (`is_highsec`), Dijkstra jump counting, safe routing bypass around lowsec systems, lowsec destination rejection in safe mode, adjacent region discovery. |
 | **Hub Arbitrage** | `tests/test_hub_arbitrage.rs` | Multi-hub arbitrage matrix across 5 major trade hubs (Jita, Amarr, Dodixie, Rens, Hek), capital allocation, ROI filtering. |
 | **Logging & Diagnostics** | `tests/test_logging.rs` | Initialization of dual-sink logging, file output generation, panic hook interceptor, JSON line schema validation, log retention. |
+| **Reliability & Resilience** | `tests/test_reliability.rs` | Fault recovery, transient HTTP 408 retries, poison lock recovery, atomic file cleanup guards. |
 | **Route Planner** | `tests/test_route_planner.rs` | Empty deal handling, greedy sequential multi-stop deal chaining, cargo volume and budget accumulation, maximum stop constraint enforcement. |
 | **SDE Search** | `tests/test_sde_search.rs` | Solar system substring and fuzzy search, station name resolution, item type lookup from SQLite. |
 | **Security Audit** | `tests/test_security_audit.rs` | Untrusted input validation, path traversal prevention, CSV injection sanitization, numeric edge cases (NaN/Inf pricing). |
 | **SSO Integration** | `tests/test_sso.rs` | EVE Online SSO v2 PKCE OAuth authorization flow, state verification, token exchange and refresh, authenticated client headers. |
+| **Startup Resilience** | `tests/test_startup_resilience.rs` | Application startup supervisor, channel disconnect detection, offline fallback mode safety. |
+| **Cockpit Themes** | `tests/test_theme.rs` | Contrast verification across all 4 themes, adaptive semantic indicators, theme frame generators. |
 

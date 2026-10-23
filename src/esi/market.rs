@@ -1,12 +1,10 @@
 use super::client::EsiClient;
 use super::models::MarketOrder;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 pub struct RegionMarket {
     pub region_id: u32,
-    pub fetched_at: DateTime<Utc>,
     pub sell_orders: HashMap<u32, Vec<MarketOrder>>,
     pub buy_orders: HashMap<u32, Vec<MarketOrder>>,
 }
@@ -39,7 +37,7 @@ pub async fn fetch_region_market_opts(
     let mut buy_orders: HashMap<u32, Vec<MarketOrder>> = HashMap::new();
 
     for order in raw_orders {
-        if order.volume_remain == 0 {
+        if order.volume_remain == 0 || !order.price.is_finite() || order.price <= 0.0 {
             continue;
         }
 
@@ -52,7 +50,6 @@ pub async fn fetch_region_market_opts(
 
     Ok(RegionMarket {
         region_id,
-        fetched_at: Utc::now(),
         sell_orders,
         buy_orders,
     })
@@ -94,6 +91,7 @@ pub async fn fetch_markets_opts(
                 result.insert(rid, market);
             }
             Ok(Err(e)) => {
+                tasks.abort_all();
                 tracing::error!(
                     error_code = %crate::error::ErrorCode::ErrEsiNetworkFailed,
                     error = %e,
@@ -102,6 +100,7 @@ pub async fn fetch_markets_opts(
                 return Err(e);
             }
             Err(join_err) => {
+                tasks.abort_all();
                 tracing::error!(
                     error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
                     error = %join_err,
@@ -118,7 +117,7 @@ pub async fn fetch_markets_opts(
 pub fn cheapest_sell(orders: &[MarketOrder]) -> Option<&MarketOrder> {
     orders
         .iter()
-        .filter(|o| !o.is_buy_order && o.volume_remain > 0)
+        .filter(|o| !o.is_buy_order && o.volume_remain > 0 && o.price.is_finite() && o.price > 0.0)
         .min_by(|a, b| {
             a.price
                 .partial_cmp(&b.price)
@@ -129,10 +128,23 @@ pub fn cheapest_sell(orders: &[MarketOrder]) -> Option<&MarketOrder> {
 pub fn best_buy(orders: &[MarketOrder]) -> Option<&MarketOrder> {
     orders
         .iter()
-        .filter(|o| o.is_buy_order && o.volume_remain > 0)
+        .filter(|o| o.is_buy_order && o.volume_remain > 0 && o.price.is_finite() && o.price > 0.0)
         .max_by(|a, b| {
             a.price
                 .partial_cmp(&b.price)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
+}
+
+/// Counts the total number of sell and buy orders across a collection of regional markets.
+pub fn count_market_orders(markets: &HashMap<u32, RegionMarket>) -> (usize, usize) {
+    let total_sells = markets
+        .values()
+        .map(|m| m.sell_orders.values().map(|v| v.len()).sum::<usize>())
+        .sum();
+    let total_buys = markets
+        .values()
+        .map(|m| m.buy_orders.values().map(|v| v.len()).sum::<usize>())
+        .sum();
+    (total_sells, total_buys)
 }

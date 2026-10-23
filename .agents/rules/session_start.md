@@ -9,10 +9,11 @@ At the beginning of every session in this workspace, the AI assistant MUST:
    - `03_ARCHITECTURE.md`: Module boundaries, async model, and data flow.
    - `04_MODULES.md`: Function contracts and signatures.
    - `05_ALGORITHM.md`: Arbitrage formulas, PPJ ranking, and multi-stop greedy route planner.
-   - `06_UI_UX.md`: Terminal UI (Ratatui) and CLI specification.
+   - `06_UI_UX.md`: Native desktop GUI window (egui/eframe), cockpit themes, and dossier layouts.
    - `07_SETUP_AND_DEPS.md`: Dependencies, Fedora requirements, and configuration file.
    - `08_PACKAGING_AND_PUBLISHING.md`: Distribution, GitHub Actions, and releases.
    - `09_RUST_BEST_PRACTICES_AND_TESTING.md`: Post-edit testing, type safety, and error handling.
+   - `10_ERROR_CODES_AND_LOGGING.md`: Centralized error taxonomy (ErrorCode) and structured logging.
 2. Ensure any new proposal or modification aligns with these specifications.
 
 ## 2. Non-Negotiable Post-Edit Compile & Test Verification

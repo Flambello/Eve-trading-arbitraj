@@ -15,6 +15,9 @@ pub const USER_AGENT_VAL: &str =
     "eve-trade-scout/0.1.0 (https://github.com/Flambello/eve-traveling-merchant; contact: Flambello)";
 pub const MAX_PAGES_LIMIT: u32 = 500;
 pub const MAX_NETWORK_RETRIES: u32 = 5;
+pub const MAX_ESI_PAGE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_ETAG_CACHE_ENTRIES: usize = 50;
+pub const MAX_ETAG_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEtag {
@@ -30,6 +33,50 @@ impl StoredEtag {
         match self.expires {
             Some(exp) => chrono::Utc::now() < exp,
             None => false,
+        }
+    }
+}
+
+/// Reads an HTTP response body with an enforced maximum byte ceiling to prevent unbounded memory allocation.
+pub async fn read_bounded_response_text(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String> {
+    if let Some(len) = resp.content_length() {
+        if len as usize > max_bytes {
+            bail!(
+                "HTTP response Content-Length ({} bytes) exceeded maximum safety limit of {} bytes",
+                len,
+                max_bytes
+            );
+        }
+    }
+
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > max_bytes {
+            bail!(
+                "HTTP response stream exceeded maximum safety limit of {} bytes",
+                max_bytes
+            );
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).context("HTTP response body was not valid UTF-8")
+}
+
+/// Prunes an ETag cache map to ensure it does not exceed capacity, retaining the freshest entries.
+pub fn prune_etag_map(map: &mut HashMap<String, StoredEtag>, max_entries: usize) {
+    // First, prune expired entries
+    map.retain(|_, entry| entry.is_fresh());
+    // If still over capacity, evict entries with soonest expiration
+    if map.len() > max_entries {
+        let mut keys_by_expiry: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> =
+            map.iter().map(|(k, v)| (k.clone(), v.expires)).collect();
+        keys_by_expiry.sort_by_key(|a| a.1);
+        let to_remove = map.len().saturating_sub(max_entries);
+        for (k, _) in keys_by_expiry.into_iter().take(to_remove) {
+            map.remove(&k);
         }
     }
 }
@@ -86,17 +133,31 @@ impl EsiClient {
 
         let etags_file = cache_dir.join("etags.json");
         let etags = if etags_file.exists() {
-            let file_res = std::fs::File::open(&etags_file);
-            let mut map: HashMap<String, StoredEtag> = match file_res {
-                Ok(file) => {
-                    let reader = std::io::BufReader::new(file);
-                    serde_json::from_reader(reader).unwrap_or_default()
-                }
-                Err(_) => HashMap::new(),
+            let file_meta = std::fs::metadata(&etags_file);
+            let file_size_ok = match file_meta {
+                Ok(m) => m.len() <= MAX_ETAG_FILE_BYTES,
+                Err(_) => false,
             };
-            // Prune expired or stale entries upon loading to avoid serving dead market orders
-            map.retain(|_, entry| entry.is_fresh());
-            map
+            if !file_size_ok {
+                tracing::warn!(
+                    error_code = %ErrorCode::ErrEsiEtagCache,
+                    "etags.json exceeded maximum safety file limit ({} bytes); resetting cache",
+                    MAX_ETAG_FILE_BYTES
+                );
+                let _ = std::fs::remove_file(&etags_file);
+                HashMap::new()
+            } else {
+                let file_res = std::fs::File::open(&etags_file);
+                let mut map: HashMap<String, StoredEtag> = match file_res {
+                    Ok(file) => {
+                        let reader = std::io::BufReader::new(file);
+                        serde_json::from_reader(reader).unwrap_or_default()
+                    }
+                    Err(_) => HashMap::new(),
+                };
+                prune_etag_map(&mut map, MAX_ETAG_CACHE_ENTRIES);
+                map
+            }
         } else {
             HashMap::new()
         };
@@ -114,37 +175,23 @@ impl EsiClient {
         let etags_file = self.cache_dir.join("etags.json");
         let mut map = self.etags.lock().await;
         // Prune stale or expired entries before persisting to disk to prevent disk bloat
-        map.retain(|_, entry| entry.is_fresh());
+        prune_etag_map(&mut map, MAX_ETAG_CACHE_ENTRIES);
 
         let tmp_file = self.cache_dir.join("etags.json.tmp");
-        let file = std::fs::File::create(&tmp_file)?;
-        let mut writer = std::io::BufWriter::new(file);
-        serde_json::to_writer(&mut writer, &*map)?;
-        use std::io::Write;
-        writer.flush()?;
-        drop(writer);
-        std::fs::rename(tmp_file, etags_file)?;
-        Ok(())
-    }
-
-    /// Fetches all paginated items from an ESI endpoint.
-    /// Checks `x-pages` header on page 1 and fetches subsequent pages concurrently.
-    /// Respects the ESI `Expires` header (300s TTL). When fresh, returns cached data.
-    pub async fn get_all_pages<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        endpoint: &str,
-        extra_query: &[(&str, String)],
-    ) -> Result<Vec<T>> {
-        self.get_all_pages_opts(endpoint, extra_query, false).await
-    }
-
-    /// Force-fetches all paginated items fresh, bypassing any cached response.
-    pub async fn get_all_pages_fresh<T: Serialize + DeserializeOwned + Send + 'static>(
-        &self,
-        endpoint: &str,
-        extra_query: &[(&str, String)],
-    ) -> Result<Vec<T>> {
-        self.get_all_pages_opts(endpoint, extra_query, true).await
+        let res = (|| -> Result<()> {
+            let file = std::fs::File::create(&tmp_file)?;
+            let mut writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &*map)?;
+            use std::io::Write;
+            writer.flush()?;
+            drop(writer);
+            std::fs::rename(&tmp_file, &etags_file)?;
+            Ok(())
+        })();
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp_file);
+        }
+        res
     }
 
     /// Fetches all paginated items from an ESI endpoint with configurable force_refresh.
@@ -212,7 +259,7 @@ impl EsiClient {
 
         let mut backoff = Duration::from_millis(500);
         let mut attempts = 0u32;
-        let resp = loop {
+        let (body_text, expires_at, etag_hdr, total_pages) = loop {
             attempts += 1;
             let _permit = self.concurrency_sem.acquire().await?;
             let mut req = self.client.get(&url);
@@ -221,10 +268,10 @@ impl EsiClient {
             }
 
             match req.send().await {
-                Ok(r) => {
-                    let status = r.status();
+                Ok(resp) => {
+                    let status = resp.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
-                        let wait_dur = extract_error_limit_reset(r.headers()).unwrap_or(backoff);
+                        let wait_dur = extract_error_limit_reset(resp.headers()).unwrap_or(backoff);
                         if attempts > MAX_NETWORK_RETRIES {
                             tracing::error!(
                                 error_code = %ErrorCode::ErrEsiRateLimited,
@@ -251,7 +298,7 @@ impl EsiClient {
                         tokio::time::sleep(wait_dur).await;
                         backoff = (backoff * 2).min(Duration::from_secs(15));
                         continue;
-                    } else if status.is_server_error() {
+                    } else if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
                         if attempts > MAX_NETWORK_RETRIES {
                             tracing::error!(
                                 error_code = %ErrorCode::ErrEsiServerError,
@@ -289,7 +336,91 @@ impl EsiClient {
                         );
                         bail!("Failed to fetch page 1: status {}", status);
                     }
-                    break r;
+
+                    // Proactive error limit throttling if CCP error limit is dwindling
+                    if let Some(remain) = resp
+                        .headers()
+                        .get("x-esi-error-limit-remain")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u32>().ok())
+                    {
+                        if remain < 20 {
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                        }
+                    }
+
+                    let expires_at = parse_http_expires(&resp, 300);
+                    let etag_hdr = resp
+                        .headers()
+                        .get("etag")
+                        .and_then(|h| h.to_str().ok())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+
+                    let raw_pages = resp
+                        .headers()
+                        .get("x-pages")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(1)
+                        .max(1);
+
+                    if raw_pages > MAX_PAGES_LIMIT {
+                        tracing::error!(
+                            error_code = %ErrorCode::ErrEsiParseFailed,
+                            url = %url,
+                            raw_pages = raw_pages,
+                            "ESI response exceeded maximum safe pagination limit"
+                        );
+                        bail!(
+                            "ESI response exceeded maximum safe pagination limit ({} pages; limit is {})",
+                            raw_pages,
+                            MAX_PAGES_LIMIT
+                        );
+                    }
+                    let total_pages = raw_pages;
+
+                    match read_bounded_response_text(resp, MAX_ESI_PAGE_BYTES).await {
+                        Ok(body) => break (body, expires_at, etag_hdr, total_pages),
+                        Err(e) => {
+                            let err_msg = e.to_string();
+                            if err_msg.contains("exceeded maximum safety limit") {
+                                tracing::error!(
+                                    error_code = %ErrorCode::ErrEsiParseFailed,
+                                    url = %url,
+                                    error = %e,
+                                    "ESI page 1 response payload rejected by safety ceiling"
+                                );
+                                bail!("ESI page 1 rejected: {}", e);
+                            }
+                            if attempts > MAX_NETWORK_RETRIES {
+                                tracing::error!(
+                                    error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                    url = %url,
+                                    attempts = attempts,
+                                    error = %e,
+                                    "ESI page 1 body stream read failed permanently after {} retries: {}",
+                                    attempts,
+                                    e
+                                );
+                                bail!(
+                                    "ESI page 1 body stream read failed after {} retries: {}",
+                                    attempts,
+                                    e
+                                );
+                            }
+                            tracing::warn!(
+                                error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                url = %url,
+                                attempts = attempts,
+                                error = %e,
+                                "ESI page 1 body stream read error, retrying in {:?}...",
+                                backoff
+                            );
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(Duration::from_secs(10));
+                        }
+                    }
                 }
                 Err(e) => {
                     if attempts > MAX_NETWORK_RETRIES {
@@ -322,49 +453,6 @@ impl EsiClient {
             }
         };
 
-        // Proactive error limit throttling if CCP error limit is dwindling
-        if let Some(remain) = resp
-            .headers()
-            .get("x-esi-error-limit-remain")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok())
-        {
-            if remain < 20 {
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-            }
-        }
-
-        let expires_at = parse_http_expires(&resp, 300);
-        let etag_hdr = resp
-            .headers()
-            .get("etag")
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
-        let raw_pages = resp
-            .headers()
-            .get("x-pages")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(1);
-
-        if raw_pages > MAX_PAGES_LIMIT {
-            tracing::error!(
-                error_code = %ErrorCode::ErrEsiParseFailed,
-                url = %url,
-                raw_pages = raw_pages,
-                "ESI response exceeded maximum safe pagination limit"
-            );
-            bail!(
-                "ESI response exceeded maximum safe pagination limit ({} pages; limit is {})",
-                raw_pages,
-                MAX_PAGES_LIMIT
-            );
-        }
-        let total_pages = raw_pages;
-
-        let body_text = resp.text().await?;
         let mut all_items: Vec<T> = serde_json::from_str(&body_text)
             .map_err(|e| {
                 tracing::error!(
@@ -432,7 +520,7 @@ impl EsiClient {
                                     tokio::time::sleep(wait_dur).await;
                                     page_backoff = (page_backoff * 2).min(Duration::from_secs(15));
                                     continue;
-                                } else if status.is_server_error() {
+                                } else if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
                                     if attempts > MAX_NETWORK_RETRIES {
                                         tracing::error!(
                                             error_code = %ErrorCode::ErrEsiServerError,
@@ -467,7 +555,46 @@ impl EsiClient {
                                     );
                                     bail!("Page {} failed with status {}", page, status);
                                 }
-                                break r.text().await?;
+                                match read_bounded_response_text(r, MAX_ESI_PAGE_BYTES).await {
+                                    Ok(body) => break body,
+                                    Err(e) => {
+                                        let err_msg = e.to_string();
+                                        if err_msg.contains("exceeded maximum safety limit") {
+                                            tracing::error!(
+                                                error_code = %ErrorCode::ErrEsiParseFailed,
+                                                page = page,
+                                                url = %u,
+                                                error = %e,
+                                                "ESI page response payload rejected by safety ceiling"
+                                            );
+                                            bail!("Page {} rejected: {}", page, e);
+                                        }
+                                        if attempts > MAX_NETWORK_RETRIES {
+                                            tracing::error!(
+                                                error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                                page = page,
+                                                url = %u,
+                                                attempts = attempts,
+                                                error = %e,
+                                                "ESI page body stream read failed permanently after retries"
+                                            );
+                                            bail!(
+                                                "Page {} body stream read failed after {} retries: {}",
+                                                page,
+                                                attempts,
+                                                e
+                                            );
+                                        }
+                                        tracing::warn!(
+                                            error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                            page = page,
+                                            error = %e,
+                                            "ESI page body stream read error, retrying"
+                                        );
+                                        tokio::time::sleep(page_backoff).await;
+                                        page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 if attempts > MAX_NETWORK_RETRIES {
@@ -529,6 +656,7 @@ impl EsiClient {
         // Cache total order list under explicit expires timestamp
         if let Ok(serialized) = serde_json::to_string(&all_items) {
             let mut map = self.etags.lock().await;
+            prune_etag_map(&mut map, MAX_ETAG_CACHE_ENTRIES.saturating_sub(1));
             map.insert(
                 cache_key,
                 StoredEtag {

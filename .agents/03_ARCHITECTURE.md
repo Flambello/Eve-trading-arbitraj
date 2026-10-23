@@ -6,15 +6,14 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                             USER INTERFACES                                 │
+│                             USER INTERFACE                                  │
 │  ui/gui.rs ── egui/eframe desktop window (live scan, clipboard, styling)    │
-│  ui/tui.rs ── ratatui terminal dashboard (tabs, scrollable tables, hotkeys) │
-│  Headless  ── clap formatted console table, CSV exporter                    │
+│  ui/theme.rs ── 4 cockpit themes, tokenized ThemePalette & contrast system  │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ calls
 ┌──────────────────────────────────────▼──────────────────────────────────────┐
 │                    ORCHESTRATOR & BINARY ENTRY POINT                         │
-│  src/main.rs (eve-merchant bin) ── parses CLI args, initializes runtime     │
+│  src/main.rs (eve-merchant bin) ── initializes logging, starts desktop GUI   │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ invokes
 ┌──────────────────────────────────────▼──────────────────────────────────────┐
@@ -63,9 +62,8 @@
 ### `src/main.rs`
 - Executable binary (`eve-merchant`).
 - Uses Windows GUI subsystem (`windows_subsystem = "windows"`) on release builds to avoid command prompt popup windows on Windows.
-- Automatically launches Desktop GUI by default across all platforms (Windows, Linux, macOS).
-- Deprecated CLI arguments `--tui`, `--no-ui`, and `--no-tui` print deprecation warnings when invoked.
-- Orchestrates SDE check, graph creation, market fetching, deal analysis, and UI launching.
+- Automatically launches Desktop GUI directly across all platforms (Windows, Linux, macOS) without requiring CLI arguments.
+- Orchestrates structured file logging, SDE check, graph creation, market fetching, deal analysis, and UI launching.
 
 ### `src/config.rs`
 - `ShipProfile` constants: `BIG_HAULER` (60k m³ / 500M ISK) and `SMALL_HAULER` (30k m³ / 50M ISK).
@@ -101,9 +99,9 @@
 - Greedy multi-stop sequential trade chaining.
 - Continually re-evaluates remaining capacity and jumps from current stop to the next deal.
 
-### `src/ui/gui.rs` & `src/ui/tui.rs`
-- `gui.rs`: Native desktop GUI window powered by `eframe` / `egui`. Primary, default user interface across all platforms. Includes live scanning thread, item search, clipboard copy buttons, and visual route display.
-- `tui.rs`: Legacy terminal interface built with `ratatui` / `crossterm`. **Deprecated on all platforms (Windows and Linux)** and slated for removal in a future release.
+### `src/ui/gui.rs` & `src/ui/theme.rs`
+- `gui.rs`: Native desktop GUI window powered by `eframe` / `egui`. Primary, default user interface across all platforms. Includes background startup worker supervision, live market scanning thread, item search, clipboard copy buttons, and visual route display.
+- `theme.rs`: Tokenized design system with 4 distinct cockpit themes (`SciFiVoid`, `NeutralBlack`, `BlackRed`, `SolarLight`), dynamic contrast enforcement, and adaptive semantic indicators.
 
 ---
 
@@ -136,9 +134,9 @@ tokio::main (multi-thread scheduler)
 
 ---
 
-## Error Handling
+## Error Handling & Diagnostics
 
-All errors use `anyhow::Error` with context:
+All errors use `anyhow::Error` with contextual descriptions, paired with a standardized machine-readable error taxonomy ([`crate::error::ErrorCode`](file:///mnt/Projects/Eve%20trading%20arbitraj/src/error.rs)):
 
 ```rust
 let orders = client
@@ -147,16 +145,14 @@ let orders = client
     .context("fetching market orders for The Forge")?;
 ```
 
-Custom error variants for ESI-specific cases:
+Structured logging tags errors with standardized error codes:
 
 ```rust
-#[derive(Debug, thiserror::Error)]
-pub enum EsiError {
-    #[error("ESI rate limit hit (HTTP 420), retry after {retry_after}s")]
-    RateLimited { retry_after: u64 },
-    #[error("ESI not found (HTTP 404): {path}")]
-    NotFound { path: String },
-    #[error("ESI server error (HTTP {status}): {body}")]
-    ServerError { status: u16, body: String },
-}
+tracing::error!(
+    target: "eve_trade_scout",
+    error_code = %ErrorCode::ErrEsiNetworkFailed,
+    region_id = region_id,
+    error = %e,
+    "Failed to stream market orders for region"
+);
 ```

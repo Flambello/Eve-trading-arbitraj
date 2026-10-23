@@ -1,9 +1,7 @@
-# UI/UX Design — Desktop GUI & Terminal Interfaces
+# UI/UX Design — Native Desktop GUI
 
-EVE Traveling Merchant provides user interfaces with a **GUI-First Architecture**:
-1. **Native Desktop GUI Window (Universal Default)** (built with [`egui`](https://github.com/emilk/egui) / [`eframe`](https://docs.rs/eframe)): A sleek, dark-mode sci-fi desktop window running natively on Linux (Wayland & X11) and Windows 10/11. Features interactive deal tables, real-time starting system autocomplete, packed corridor manifests, clipboard copy buttons for in-game pasting, visual multi-hop route cards, live market re-scanning, and quick hub presets. This launches automatically by default on all platforms.
-2. **Terminal Interactive Interface (TUI) [DEPRECATED]** (built with [`ratatui`](https://ratatui.rs/) and `crossterm`): Legacy keyboard-navigated terminal dashboard. Deprecated across all platforms and scheduled for future removal.
-3. **Headless CLI Output [DEPRECATED]**: Legacy console output (`--no-ui`) and CSV export (`--export`).
+EVE Traveling Merchant provides a **GUI-First Desktop Architecture**:
+Built with [`egui`](https://github.com/emilk/egui) and [`eframe`](https://docs.rs/eframe), the native desktop application provides a sleek, high-contrast dark-mode sci-fi workstation running on Linux (Wayland & X11) and Windows 10/11. It features interactive sortable deal tables, real-time starting system autocomplete from SQLite SDE, multi-item knapsack corridor manifests, multi-leg beam route plotting, inter-hub trading matrices, live market re-scanning, and 1-click clipboard flight sheet export. The desktop GUI launches automatically on all platforms without requiring CLI flags.
 
 ---
 
@@ -77,6 +75,11 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
   - 1-Click `📋 Copy Autopilot Route` button for immediate in-game trail navigation.
 
 ### F. Settings & Tax Skill Customizer
+- **Cockpit Theme Switcher**:
+  - Interactive selection cards with live preview color chips (surface fill, primary accent, secondary accent).
+  - Displays theme name, descriptive caption, and active status tag (`[ACTIVE]`).
+  - Supports quick 1-click selection via interactive card clicks or radio buttons.
+  - Automatically persists the selected theme to `config.toml` (`theme = "..."`) upon selection.
 - **Skill Sliders**:
   - Broker Fee % (default 3.0%, adjustable down to 1.0% for pilots with *Broker Relations*).
   - Sales Tax % (default 8.0%, adjustable down to 3.6% for pilots with *Accounting*).
@@ -86,196 +89,99 @@ The graphical desktop application provides an immersive, high-contrast dark sci-
   - Sinq Laison (Dodixie IX-20) — Region 10000032
   - Heimatar (Rens VI-8) — Region 10000030
   - Metropolis (Hek VIII-12) — Region 10000042
-- **Feedback Toasts**: Temporary cyan status banners providing tactile confirmation when items/systems/manifests/chains are copied.
+- **Feedback Toasts**: Temporary status banners providing tactile confirmation when items/systems/manifests/chains are copied.
+
+### G. Visual Theme System & Cockpit Color Schemes
+The desktop GUI architecture features a centralized, tokenized design system ([`src/ui/theme.rs`](file:///mnt/Projects/Eve%20trading%20arbitraj/src/ui/theme.rs)) offering four finely tuned cockpit color schemes:
+
+1. **Sci-Fi Void (Default)** (`AppTheme::SciFiVoid` / `"sci_fi_void"`):
+   - **Chassis & Surfaces**: Deep obsidian space navy (`#050712` app background, `#0a0e1e` cards, `#070b18` sidebars).
+   - **Accents**: Neon telemetry cyan (`#00d2ff` primary) and Caldari/EVE gold (`#ffcd00` secondary).
+   - **Aesthetic**: Immersive dark cockpit optimized for long trading sessions in low-light environments.
+2. **Neutral Black** (`AppTheme::NeutralBlack` / `"neutral_black"`):
+   - **Chassis & Surfaces**: True OLED pitch black (`#080808` app background, `#141414` cards, `#1c1c1c` strokes).
+   - **Accents**: Crisp monochrome slate (`#e0e0e0` primary, `#a0a0a0` secondary).
+   - **Aesthetic**: Minimalist, distraction-free stealth interface maximizing screen contrast on modern OLED displays.
+3. **Black & Red** (`AppTheme::BlackRed` / `"black_red"`):
+   - **Chassis & Surfaces**: Triglavian/pirate obsidian surfaces (`#050505` app background, `#101010` cards, `#2a0c10` strokes).
+   - **Accents**: High-saturation combat crimson red (`#ff1e37` primary, `#ff4455` secondary).
+   - **Aesthetic**: Aggressive tactical combat styling tailored for pirate faction and nullsec/lowsec haulers.
+4. **Solar Light** (`AppTheme::SolarLight` / `"solar_light"`):
+   - **Chassis & Surfaces**: Clean daylight workstation (`#f1f5f9` app background, `#ffffff` pure white cards, `#e2e8f0` borders).
+   - **Accents**: Electric enterprise cobalt blue (`#0284c7` primary, `#38bdf8` secondary).
+   - **Aesthetic & Typography**: High-clarity ergonomics featuring pure black-on-white text (`#000000` primary text on `#ffffff` cards) with crisp contrast for high-ambient-light trading.
+
+#### Design System Architecture & Theme Tokens
+All UI rendering dynamically references the active `ThemePalette`:
+- **Dynamic Per-Frame Application (`apply_to_ctx`)**: Injects widget frame colors, selection fills, panel backgrounds, rounding, and text colors directly into `egui::Context` at the beginning of each frame.
+- **Card & Panel Frame Helpers**: `palette.card_frame()`, `palette.sub_card_frame()`, `palette.top_panel_frame()`, `palette.central_panel_frame()`.
+- **Button Helpers**: `palette.primary_button(text)` and `palette.secondary_button(text)` enforce theme-appropriate contrast, padding, and text colors without hardcoding.
+- **Adaptive Semantic Badges**:
+  - `palette.rank_silver()`: Adaptive silver badge ensuring $\ge 0.35$ contrast against both dark and pure white card backgrounds.
+  - `palette.hub_badge_color(hub)`: Tailored trade hub indicator tags (Jita blue, Amarr gold, Dodixie green, Rens orange, Hek purple).
+  - Semantic indicators: `success_green`, `warning_yellow`, `error_red`, `info_blue` maintain $\ge 0.30$ contrast across all 4 themes.
 
 ---
 
-## 2. Terminal Interactive Interface (TUI) [DEPRECATED]
+## 2. Desktop GUI Workstation Tabs
 
-```
-╔══════════════════════════════════════════════╗
-║        EVE Trade Scout  v1.0                 ║
-║     Arbitrage Route Planner for EVE Online   ║
-╚══════════════════════════════════════════════╝
+The application organizes New Eden trading operations into dedicated specialized tabs:
 
-? Select ship profile:
-  ❯  1. Big Hauler   (60 000 m³ / 500 M ISK)
-     2. Small Hauler (30 000 m³ /  50 M ISK)
+### A. Deals Tab (Cross-Station Arbitrage)
+- **Filters**: Real-time substring filter on item names, origin/destination systems, or stations.
+- **Sorting**: Multi-key sortable columns: `Profit / Jump`, `Profit / m³`, `Total Net Profit`, `ROI %`, `Jumps`, `Capital Cost`, `Buy System`, `Sell System`.
+- **Dossier Drawer / Side Panel**: Configurable widescreen docked side panel (`dossier_side_panel = true`) or bottom drawer displaying detailed purchase, sale, and financial metrics.
+- **Action Buttons**: 1-click clipboard copy for `📋 Item`, `📋 Buy Station`, `📋 Sell Station`, and full flight sheet.
 
-? Starting system: Jita
-  ✔ Resolved: Jita (30000142) — The Forge — Security: 0.95
+### B. 📦 Packed Manifests Tab (Knapsack Corridor Consolidation)
+- Groups all separate profitable items flowing along the identical source-destination station corridor.
+- Knapsack cargo optimizer packs items up to ship hold volume and wallet capital limits.
+- Displays individual commodities with required capital, volume share, and net profit.
+- `📋 Shopping List`: 1-click copy formatted for EVE Online Multi-Buy window.
 
-? Regions to scan:
-  [x] The Forge
-  [x] Domain
-  [ ] Heimatar
-  [ ] Sinq Laison
-  [ ] Metropolis
+### C. 🗺️ Multi-Stop Route Tab (Greedy Sequential Itinerary)
+- Chains sequential trades from the starting system.
+- Shows total jumps, total profit, average profit per jump, capital required, and max volume used.
+- `📋 Copy Autopilot Trail`: Copies the waypoint path (`Jita -> Perimeter -> Amarr`) to paste directly into in-game chat or notes.
 
-? Safe route only (avoid lowsec/nullsec)? [Y/n]: Y
+### D. 🔗 Chain Route Plotter (Multi-Leg Optimizer)
+- Beam-search optimizer supporting 1 to 8 legs, intermediate en-route pickups, and 0–5 detour jumps.
+- Recycles capital and frees cargo hold volume upon arriving at destination stations.
+- Step-by-step visual leg cards showing pickup stops, en-route bonus loads, and sell deliveries.
 
-⠸ Fetching market data for 2 regions...
-⠸ Processing 1 243 892 orders...
-✔ Found 847 profitable deals in 4.3 s
-```
+### E. 🏛️ Hub Arbitrage Matrix
+- Matrix price comparison and trade corridor planner across the 5 primary empire trading hubs:
+  - Jita IV-4 (The Forge)
+  - Amarr VIII (Domain)
+  - Dodixie IX-20 (Sinq Laison)
+  - Rens VI-8 (Heimatar)
+  - Hek VIII-12 (Metropolis)
+- Filters for intra-hub trades, NPC seeded trade goods, and primary 4-4 stations only.
 
----
-
-## Main Results Table
-
-```
-╭────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│  Top 20 Arbitrage Deals  [Big Hauler · Starting: Jita · Safe Route]                                    │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- #   Item                  Buy System      Buy Price  Sell System     Sell Price  Qty   Vol(m³) Cost(M)  Profit(M)  ROI%   PPJ
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 1   Pithum C-Type MedSh…  Jita               48.2M   Amarr              60.6M      1    100.0    48.2     12.4    +25.7%  4.13
- 2   Tritanium              Jita                5.00   Rens                6.62  5000k  50 000    25.0      8.1    +32.4%  2.70
- 3   PLEX                   Jita               4.75M   Dodixie            5.30M     10      0.5   47.5      5.5    +15.8%  1.83
- 4   Damage Control II      Perimeter        602.0k   Amarr             704.0k     50    750.0   30.1      5.1    +16.9%  1.70
- 5   Caldari Navy Raven     Jita             420.0M   Hek               440.3M      1  50 000   420.0     20.3    +17.2%  1.69
- ...
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Filters: Net ROI ≥ 10% after taxes · Spread ≥ 3% · Net profit ≥ 1 M ISK · Max volume: 60 000 m³
-```
-
-**Column definitions:**
-
-| Column | Description |
-|---|---|
-| `#` | Rank by profit-per-jump |
-| `Item` | Item name (truncated to 22 chars) |
-| `Buy System` | System where you buy (cheapest sell order) |
-| `Buy Price` | Unit purchase price at source order |
-| `Sell System` | System where you sell (highest buy order) |
-| `Sell Price` | Unit sale price at destination order |
-| `Qty` | Units you can buy (respecting volume + budget) |
-| `Vol(m³)` | Total cargo volume for that quantity |
-| `Cost(M)` | Capital required in millions ISK |
-| `Profit(M)` | Net profit in millions ISK (after taxes) |
-| `ROI%` | **Net Profitability %** after taxes & fees (`net_profit / capital_required * 100`) |
-| `PPJ` | **Profit Per Jump** in millions ISK |
+### F. ⚙️ Settings Tab (`Alt+S`)
+- **Theme Switcher**: Live preview cards for 4 cockpit themes with automatic persistence to `config.toml`.
+- **Pilot EVE SSO Authentication**: 1-click browser login via CCP OAuth 2.0 PKCE flow.
+- **Tax & Fee Skills**: Broker fee % and sales tax % sliders reflecting *Broker Relations* and *Accounting* skills.
+- **Regions & Audio**: Active region toggles and audio notification volume test.
 
 ---
 
-## Route Plan Display
+## 3. In-Game Flight Sheet Integration (`Alt+N`)
 
-After viewing the deal list, user can press `R` to build a route:
-
-```
-╭─────────────────────────────────────────────────────────────╮
-│  Planned Trade Route  (3 stops · 8 jumps · 25.0 M ISK net)  │
-╰─────────────────────────────────────────────────────────────╯
-
- [START]  Jita  (home)
-    │
-    │  2 jumps
-    ▼
- [STOP 1]  Perimeter  →  buy 50x Damage Control II  (30.1 M ISK)
-    │        sell at: Amarr
-    │  4 jumps
-    ▼
- [STOP 2]  Amarr  →  sell 50x Damage Control II  (+5.1 M ISK)
-    │        then buy 1x PLEX  (47.5 M ISK)
-    │  sell at: Dodixie
-    │  2 jumps
-    ▼
- [STOP 3]  Dodixie  →  sell 1x PLEX  (+5.5 M ISK)
-    │
-    ▼
- [END]
-
- Total jumps:   8
- Total profit:  25.0 M ISK
- Profit/jump:   3.1 M ISK/jump
- Volume used:   750.5 / 60 000 m³
- Capital used:  77.6 / 500.0 M ISK
-```
-
----
-
-## Interactive Menu
-
-After results are shown:
+The desktop application formats trade dossiers and routes directly into clean text blocks optimized for EVE Online's in-game Notepad (`Alt+N`):
 
 ```
-[D] Show all deals list
-[R] Build route from top deals
-[F] Change filters (min profit, min spread)
-[S] Change ship profile
-[L] Change starting location
-[E] Export deals to CSV
-[Q] Quit
+═══════════════════════════════════════════════════════════
+🚀 EVE TRADE FLIGHT SHEET: Pithum C-Type Medium Shield Booster
+Net Profit: +12.40M ISK | Net ROI: +25.7% | Distance: 3 Jumps
+═══════════════════════════════════════════════════════════
+
+▶ 1. BUY AT: Jita IV - Moon 4 - Caldari Navy Assembly Plant (Jita)
+     Quantity: 1 units | Buy Price: 48.20M ISK | Capital: 48.20M ISK | Vol: 100.0 m³
+
+▶ 2. SELL AT: Amarr VIII (Oris) - Emperor Family Academy (Amarr)
+     Sell Price: 60.60M ISK | Revenue: 60.60M ISK | Net Return: +12.40M ISK
+═══════════════════════════════════════════════════════════
 ```
 
----
-
-## Progress Indicators
-
-All long-running operations show a Rich spinner:
-
-```
-⠸ Downloading SDE database (115 MB)... [=====>    ] 62%
-⠸ Fetching The Forge market orders (page 3 / 12)...
-⠸ Computing jump distances for 847 deals...
-✔ Done in 4.3 s
-```
-
----
-
-## Error Display
-
-```
-⚠ Warning: Could not resolve system "Jitaa" — did you mean "Jita"?
-✘ Error: ESI rate limit hit (HTTP 420). Waiting 60 s before retry...
-⚠ Deal #4: source system "Stacmon" is lowsec — excluded (safe mode on)
-```
-
----
-
-## Config Display (`--show-config`)
-
-```
-Current configuration:
-  Ship profile:    Big Hauler (60 000 m³ / 500 M ISK)
-  Home system:     Jita
-  Regions:         The Forge (and adjacent regions)
-  Min profit:      1 000 000 ISK
-  Min spread:      5.0%
-  Broker fee:      3.0%
-  Sales tax:       8.0%
-  Safe route only: Yes
-  Config file:     ~/.config/eve-traveling-merchant/config.toml
-```
-
----
-
-## CLI Arguments
-
-```
-Usage: eve-merchant [OPTIONS]
-
-Options:
-  -s, --ship <SHIP>                    Ship profile: 'big' (60k m³, 500M) or 'small' (30k m³, 50M)
-      --system <SYSTEM>                Starting solar system name [default: Jita]
-      --regions <REGIONS>              Comma-separated region IDs [default: 10000002]
-      --adjacent-regions <BOOL>        Automatically scan stargate-connected neighbor regions [default: true]
-      --safe                           Force highsec safe route only (avoid lowsec/nullsec)
-      --unsafe-routes                  Allow lowsec and nullsec routes
-      --npc-only                       Restrict search strictly to NPC stations (guaranteed public docking)
-      --allow-structures               Allow player-owned structures (Upwell Citadels) in search pool
-      --min-profit <MIN_PROFIT>        Minimum net profit in ISK [default: 1000000]
-      --min-spread <MIN_SPREAD>        Minimum price spread percentage [default: 3.0]
-      --min-roi <MIN_ROI>              Minimum net ROI % after taxes [default: 10.0]
-  -t, --top <TOP>                      Number of top deals to display in CLI mode [default: 25]
-      --max-stops <MAX_STOPS>          Maximum stops in route [default: 5]
-      --route                          Print planned multi-stop route
-      --gui                            Force desktop GUI window mode (egui native window; default on all platforms)
-      --auto-refresh                   Automatically refresh market data every 5 minutes in GUI mode
-      --tui                            [DEPRECATED] Force terminal TUI mode (ratatui) - terminal mode is deprecated
-      --no-ui                          [DEPRECATED] Disable interactive UI (GUI & TUI) and output directly to console
-      --no-tui                         [DEPRECATED] Disable interactive TUI and output directly to console
-      --export <EXPORT>                Export found deals to CSV file
-      --update-sde                     Force update / re-download of SDE database
-  -h, --help                           Print help
-```
+Pilots can paste these manifests into EVE Notepad or fleet chat, enabling instant 1-click station docking navigation using in-game link autolinking.

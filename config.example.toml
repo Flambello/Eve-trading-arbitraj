@@ -2,8 +2,13 @@
 # Saved automatically to ~/.config/eve-traveling-merchant/config.toml (Linux)
 # or %APPDATA%\eve-traveling-merchant\config.toml (Windows).
 
+theme = "sci_fi_void"                # Cockpit theme: "sci_fi_void" (default), "neutral_black", "black_red", or "solar_light"
+
 [ship]
 profile = "big"                      # "big" (60,000 m³ / 500M ISK) or "small" (30,000 m³ / 50M ISK)
+use_custom_ship = false              # Enable custom vessel cargo and anti-gank ISK collateral sizing
+custom_cargo_vol = 60000.0           # Custom cargo volume in m³
+custom_budget_isk = 500000000.0      # Custom trip collateral budget in ISK
 
 [location]
 home_system = "Jita"                 # Starting solar system for jump distance calculations
@@ -34,3 +39,28 @@ sde_max_age_days = 30                # Maximum age before re-downloading SDE SQL
 client_id = ""                       # Optional custom Client ID override (empty = built-in public ID)
 callback_port = 37373                # Local TCP port for OAuth callback (default: 37373)
 auto_sync_location = false           # Automatically update starting system from active character
+
+[ui]
+ui_scale = 1.0                       # Display scale factor (0.75 to 1.50)
+is_fullscreen = false                # Launch in borderless fullscreen mode
+dossier_side_panel = true            # Widescreen deal dossier docking: true for side panel, false for bottom drawer
+compact_kpi = true                   # Telemetry bar layout: true for compact pills, false for full cards
+max_route_stops = 5                  # Maximum stops in chained trade route
+
+[view]
+hide_npc_trades = false              # Hide NPC-seeded commodities from results
+max_deals_per_order = 2              # Maximum deals displayed per station order pair
+min_profit_filter_m = 0.0            # Deals filter: minimum net profit threshold (in Millions ISK)
+max_jumps_filter = 0                 # Deals filter: maximum travel jumps (0 = unlimited)
+deal_sort_by = "profit_per_jump"     # Default deal sorting column
+deal_sort_descending = true          # Default sort order: true for descending
+chain_max_legs = 4                   # Multi-leg route optimizer maximum hops
+chain_max_dest_loads = 2             # Max loads per destination
+chain_include_npc = true             # Include NPC seeded items in chains
+chain_detour_enabled = true          # Enable en-route detour pickups
+chain_max_detour = 2                 # Maximum detour hops off direct path
+hub_source_hub = "Jita"              # Core hub arbitrage origin hub
+hub_dest_hub = "Amarr"               # Core hub arbitrage destination hub
+hub_include_npc = true               # Include NPC trades in hub corridor matrix
+hub_major_stations_only = false      # Only show primary 4-4 hub stations
+hub_min_profit_m = 0.5               # Core hub minimum profit threshold (in Millions ISK)

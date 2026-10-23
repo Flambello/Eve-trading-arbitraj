@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Startup Failure Catch-All & Resilience Subsystem**: Implemented a comprehensive, non-crashing initialization supervisor across `src/main.rs` and `src/ui/gui.rs`:
+  - **Error Taxonomy Expansion (`ERR_UI_STARTUP_FAILED`)**: Registered standardized error code `ErrorCode::ErrUiStartupFailed` (`7005` / `"ERR_UI_STARTUP_FAILED"`) for top-level initialization sequence failures.
+  - **Top-Level `main()` Catch-All**: Wrapped application entry point in safe error-trapping execution with preserved `LoggingGuard` to guarantee disk flushing of critical diagnostic logs before exit.
+  - **Background Worker Supervisor**: Spawned dedicated supervisor task to monitor the background loading thread, trapping worker task panics (`ERR_SYS_PANIC`) or cancellations.
+  - **Channel Disconnection Detection**: Enhanced `DesktopApp::poll_startup()` to detect background receiver disconnection (`TryRecvError::Disconnected`) and transition to `ERR_UI_WORKER_CHANNEL` instead of indefinitely hanging on the splash screen.
+  - **High-Visibility Splash Diagnostic Badge**: Added machine-readable error code badge (`[ERR_UI_STARTUP_FAILED]`), failure stage indicator, detailed error descriptions, and an accessible "Enter Offline Mode" button to the loading splash screen.
+  - **Defensive Offline Guards**: Hardened `DesktopApp` against uninitialized SDE/ESI access in offline mode with safe fallback defaults.
+  - **Startup Resilience Test Suite**: Added `tests/test_startup_resilience.rs` validating channel disconnection recovery, error messaging, offline fallback, and profile resilience.
+- **Visual Theme System & Cockpit Color Schemes**: Introduced a tokenized styling architecture (`src/ui/theme.rs`) offering four finely tuned cockpit themes:
+  - **Sci-Fi Void (Default)**: Deep obsidian space navy with neon telemetry cyan and Caldari/EVE gold accents.
+  - **Neutral Black**: True OLED pitch black with crisp monochrome contrast.
+  - **Black & Red**: Triglavian/pirate obsidian surfaces with high-saturation tactical crimson red accents.
+  - **Solar Light**: High-clarity daylight workstation featuring pure black-on-white text (`#000000` text on `#ffffff` cards) with cobalt blue accents.
+- **Interactive Theme Switcher**: Added responsive theme selection cards with live preview color chips, descriptions, active badges, and persistent configuration in `config.toml` (`theme = "sci_fi_void"`).
+- **Theme Test Suite**: Added comprehensive automated tests in `tests/test_theme.rs` verifying color contrast, frame generators, context styling, dark mode classification, semantic indicators, button contrasts, and hub badges.
+
+### Changed
+- **Cross-Tab Theme Integration**: Harmonized visual styles across the entire application:
+  - **NPC Hub Arbitrage**: Replaced hardcoded panels, button fills, and hub badges with dynamic theme tokens, adaptive silver badges, and brand primary/secondary buttons.
+  - **Deals Table & Dossier**: Applied theme-aware row highlights, gold/silver/bronze rank badges, and highsec security pills.
+  - **Manifests & Route Planner**: Upgraded flight sheet timelines, origin/destination cards, and knapsack cargo tables to utilize theme frame tokens.
+  - **Executive Telemetry & Top Bar**: Styled KPI summary cards, filter bars, and quick hub buttons using active theme surfaces.
+
 ## [0.2.0] - 2026-10-16
 
 ### Removed

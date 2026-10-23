@@ -10,7 +10,7 @@ EVE Trade Scout employs a production-grade dual-sink telemetry system powered by
 
 1. **Terminal Console Sink (`stdout`)**:
    - Compact, human-readable ANSI-colored log formatting.
-   - Respects user terminal capabilities and TUI raw mode guards.
+   - Respects user terminal capabilities and ANSI color support.
    - Configurable via `RUST_LOG` environment variable (default: `info`).
 
 2. **Persistent Structured File Sink (`logs/app.log.YYYY-MM-DD`)**:
@@ -67,7 +67,7 @@ Every non-trivial failure condition in the application emits a standardized `Err
 
 | Code ID | Constant Identifier | HTTP/Sys Equivalent | Description | Recommended Resolution |
 |---|---|---|---|---|
-| `1001` | `ERR_SDE_NOT_FOUND` | `ENOENT` | SDE SQLite database file not found on disk or at configured path. | Verify `data/eve_sde.sqlite` exists or launch with `--update-sde` to download. |
+| `1001` | `ERR_SDE_NOT_FOUND` | `ENOENT` | SDE SQLite database file not found on disk or at configured path. | Verify `data/eve_sde.sqlite` exists or restart application to automatically download. |
 | `1002` | `ERR_SDE_DOWNLOAD_FAILED` | HTTP 5xx / Net | Remote download from CCP/Fuzzwork failed. | Check internet connection or CCP server status; inspect DNS settings. |
 | `1003` | `ERR_SDE_DECOMPRESSION_FAILED` | Corrupt | Gzip decompression failed or SQLite magic header invalid. | Delete corrupted `data/eve_sde.sqlite.bz2` or `.sqlite` and re-download. |
 | `1004` | `ERR_SDE_DECOMPRESSION_BOMB` | Security | Decompressed payload exceeded safety ceiling (1.5 GB). | Reject archive; verify source URL points to trusted CCP / Fuzzwork repository. |
@@ -93,12 +93,12 @@ Every non-trivial failure condition in the application emits a standardized `Err
 | Code ID | Constant Identifier | HTTP/Sys Equivalent | Description | Recommended Resolution |
 |---|---|---|---|---|
 | `3001` | `ERR_SSO_CONFIG_INVALID` | 400 | Custom client ID or SSO configuration invalid. | Verify custom client ID contains only alphanumeric characters or remove to use default public ID. |
-| `3002` | `ERR_SSO_AUTH_SERVER_FAILED` | `EADDRINUSE` | Loopback TCP listener could not bind for OAuth callback. | Free port `127.0.0.1:8080` or `127.0.0.1:37428` from conflicting processes. |
+| `3002` | `ERR_SSO_AUTH_SERVER_FAILED` | `EADDRINUSE` | Loopback TCP listener could not bind for OAuth callback. | Free port `127.0.0.1:37373` from conflicting processes. |
 | `3003` | `ERR_SSO_TOKEN_EXCHANGE` | HTTP 400 / 401 | OAuth authorization code exchange with `login.eveonline.com` failed. | Ensure authorization code hasn't expired and PKCE code verifier is valid. |
 | `3004` | `ERR_SSO_TOKEN_REFRESH` | HTTP 400 / 401 | Refresh token rejected or revoked by CCP SSO. | Re-authenticate character via desktop GUI SSO login button. |
-| `3005` | `ERR_SSO_TOKEN_SAVE` | I/O / Perms | Failed to save token file or set secure `0600` permissions. | Verify directory permissions on token path (`~/.config/eve-trade-scout/sso_token.json`). |
+| `3005` | `ERR_SSO_TOKEN_SAVE` | I/O / Perms | Failed to save token file or set secure `0600` permissions. | Verify directory permissions on token path (`~/.config/eve-traveling-merchant/sso_token.json`). |
 | `3006` | `ERR_SSO_LOCATION_FAILED` | HTTP 401 / 403 / 404 | Character live location query failed. | Check character online status and ensure `esi-location.read_location.v1` scope is granted. |
-| `3007` | `ERR_SSO_AUTOPILOT_FAILED` | HTTP 401 / 403 / 500 | Waypoint injection failed. | Ensure EVE client is running, character is logged in, and `esi-ui.open_window.v1` scope granted. |
+| `3007` | `ERR_SSO_AUTOPILOT_FAILED` | HTTP 401 / 403 / 500 | Waypoint injection failed. | Ensure EVE client is running, character is logged in, and `esi-ui.write_waypoint.v1` scope granted. |
 
 ### 4000–4999: Stargate Topology & Pathfinding
 
@@ -125,10 +125,11 @@ Every non-trivial failure condition in the application emits a standardized `Err
 
 | Code ID | Constant Identifier | Description | Recommended Resolution |
 |---|---|---|---|
-| `7001` | `ERR_UI_RUNTIME_INIT` | Failed to initialize async runtime, desktop GUI, or TUI. | Verify graphics drivers, display server (`DISPLAY` / `WAYLAND_DISPLAY`), or terminal. |
+| `7001` | `ERR_UI_RUNTIME_INIT` | Failed to initialize async runtime or native desktop GUI window. | Verify graphics drivers or display server (`DISPLAY` / `WAYLAND_DISPLAY`). |
 | `7002` | `ERR_UI_WORKER_CHANNEL` | Background worker thread channel disconnected or thread panicked. | Check logs for preceding panic or worker thread termination. |
 | `7003` | `ERR_UI_AUDIO_PLAYBACK` | Sound alert audio output failed (ALSA / PulseAudio / PipeWire). | Verify sound device configuration or disable sound alerts in settings. |
 | `7004` | `ERR_UI_CSV_EXPORT` | Failed to write CSV export to disk (deals or manifests). | Ensure destination directory exists, is writable, and is not a symlink. |
+| `7005` | `ERR_UI_STARTUP_FAILED` | Application startup initialization sequence failed across one or more subsystems. | Inspect error code badge on splash screen, check logs for root cause, or click 'Enter Offline Mode'. |
 
 ### 9000–9999: System & Panic Handling
 
@@ -139,6 +140,13 @@ Every non-trivial failure condition in the application emits a standardized `Err
 ---
 
 ## 4. Diagnostics & Troubleshooting Guide
+
+### Startup Failure Recovery & Splash Telemetry
+
+If application startup encounters any fatal error (missing SDE database, offline ESI network, invalid configuration, or unexpected worker panic):
+1. **Machine-Readable Badge**: The loading splash screen displays a prominent red `ErrorCode` badge (e.g. `[ERR_SDE_NOT_FOUND]`, `[ERR_UI_WORKER_CHANNEL]`, `[ERR_UI_STARTUP_FAILED]`).
+2. **Offline Mode Bypass**: Pilots can click **"Enter Offline Mode"** to enter the workstation, inspect settings, and review cached telemetry without restarting the process.
+3. **Supervisor Task Interception**: Background startup worker panics are caught by a dedicated supervisor task and logged with `ERR_SYS_PANIC` before relaying an actionable error card to the GUI.
 
 ### Inspecting Live Logs
 

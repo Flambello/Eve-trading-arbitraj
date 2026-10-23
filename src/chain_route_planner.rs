@@ -1,4 +1,4 @@
-use crate::arbitrage::ArbitrageDeal;
+use crate::arbitrage::{push_dedup_destination, ArbitrageDeal, AutopilotNavigable};
 use crate::graph::SystemGraph;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -60,27 +60,27 @@ pub struct ChainRoute {
     pub waypoint_names: Vec<String>,
 }
 
-impl ChainRoute {
-    /// Returns the ordered sequence of unique station / system IDs for ESI in-game autopilot.
-    pub fn ordered_destination_ids(&self) -> Vec<u64> {
+impl AutopilotNavigable for ChainRoute {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
         let mut ids = Vec::new();
         for leg in &self.legs {
             for pickup in &leg.pickups {
                 for slot in &pickup.cargo_loaded {
-                    let st_id = slot.deal.source_station_id;
-                    if ids.last().copied() != Some(st_id) {
-                        ids.push(st_id);
-                    }
+                    push_dedup_destination(&mut ids, slot.deal.source_station_id);
                 }
             }
             for slot in &leg.sell.cargo_sold {
-                let st_id = slot.deal.dest_station_id;
-                if ids.last().copied() != Some(st_id) {
-                    ids.push(st_id);
-                }
+                push_dedup_destination(&mut ids, slot.deal.dest_station_id);
             }
         }
         ids
+    }
+}
+
+impl ChainRoute {
+    /// Returns the ordered sequence of unique station / system IDs for ESI in-game autopilot.
+    pub fn ordered_destination_ids(&self) -> Vec<u64> {
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a complete in-game flight dossier suitable for EVE Notepad (Alt+N).
@@ -245,6 +245,57 @@ pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe:
     detour_cost_with_direct(from, waypoint, to, direct, graph, safe)
 }
 
+pub const MAX_ENROUTE_CANDIDATES: usize = 15;
+
+/// Gathers candidate en-route pickup systems along a path from `source` to `dest`,
+/// filtered by detour threshold and sorted in ascending order of detour jumps.
+pub fn gather_enroute_candidates<'a, 'b>(
+    source: u32,
+    dest: u32,
+    direct_jumps: u32,
+    deals_by_source: &'b HashMap<u32, Vec<&'a ArbitrageDeal>>,
+    graph: &SystemGraph,
+    config: &ChainConfig,
+) -> Vec<(u32, u32, &'b Vec<&'a ArbitrageDeal>)> {
+    let mut candidates = Vec::new();
+    let max_detour = if config.detour_enabled {
+        config.max_detour_jumps
+    } else {
+        0
+    };
+
+    for (&sys_id, sys_deals) in deals_by_source {
+        if sys_id == source || sys_id == dest {
+            continue;
+        }
+
+        // Only evaluate systems that actually contain deals terminating at `dest`
+        if !sys_deals.iter().any(|d| d.dest_system_id == dest) {
+            continue;
+        }
+
+        // Fast-pruning: if distance from source alone exceeds (direct_jumps + max_detour),
+        // it is impossible by triangle inequality for (j1 + j2 - direct_jumps) to be <= max_detour.
+        let j1 = graph.jump_count(source, sys_id, config.safe_only);
+        if j1 >= 9999 || (direct_jumps < 9999 && j1 > direct_jumps + max_detour) {
+            continue;
+        }
+
+        let j2 = graph.jump_count(sys_id, dest, config.safe_only);
+        if j2 >= 9999 {
+            continue;
+        }
+
+        let detour = (j1 + j2).saturating_sub(direct_jumps);
+        if detour <= max_detour {
+            candidates.push((sys_id, detour, sys_deals));
+        }
+    }
+    candidates.sort_by_key(|&(_, d, _)| d);
+    candidates.truncate(MAX_ENROUTE_CANDIDATES);
+    candidates
+}
+
 /// Result of finite-stock constrained knapsack packing across route stops and legs.
 #[derive(Debug, Clone)]
 pub struct ConstrainedPackResult {
@@ -379,7 +430,12 @@ pub fn knapsack_pack_constrained(
         let unit_cost = deal.buy_price;
         let unit_profit = deal.net_profit / (deal.quantity.max(1) as f64);
 
-        if unit_vol <= 0.0 || unit_cost <= 0.0 {
+        if !unit_vol.is_finite()
+            || !unit_cost.is_finite()
+            || !unit_profit.is_finite()
+            || unit_vol <= 0.0
+            || unit_cost <= 0.0
+        {
             continue;
         }
 
@@ -537,7 +593,13 @@ pub fn find_chain_routes(
     graph: &SystemGraph,
     config: &ChainConfig,
 ) -> Vec<ChainRoute> {
-    if deals.is_empty() || config.max_legs == 0 {
+    if deals.is_empty()
+        || config.max_legs == 0
+        || !config.ship_max_volume.is_finite()
+        || config.ship_max_volume <= 0.0
+        || !config.ship_max_budget.is_finite()
+        || config.ship_max_budget <= 0.0
+    {
         return Vec::new();
     }
 
@@ -685,31 +747,14 @@ pub fn find_chain_routes(
                 let direct_jumps = graph.jump_count(current_pos, target_dest, config.safe_only);
                 if direct_jumps < 9999 {
                     if current_rem_vol > 0.001 && current_rem_isk > 0.001 {
-                        // Gather potential en-route systems
-                        let mut candidates_enroute = Vec::new();
-                        for (&sys_id, sys_deals) in &deals_by_source {
-                            if sys_id == current_pos || sys_id == target_dest {
-                                continue;
-                            }
-                            let detour = detour_cost_with_direct(
-                                current_pos,
-                                sys_id,
-                                target_dest,
-                                direct_jumps,
-                                graph,
-                                config.safe_only,
-                            );
-                            if config.detour_enabled {
-                                if detour <= config.max_detour_jumps {
-                                    candidates_enroute.push((sys_id, detour, sys_deals));
-                                }
-                            } else if detour == 0 {
-                                candidates_enroute.push((sys_id, 0, sys_deals));
-                            }
-                        }
-
-                        // Sort by detour jumps ASC
-                        candidates_enroute.sort_by_key(|&(_, d, _)| d);
+                        let candidates_enroute = gather_enroute_candidates(
+                            current_pos,
+                            target_dest,
+                            direct_jumps,
+                            &deals_by_source,
+                            graph,
+                            config,
+                        );
 
                         for (enroute_sys, detour, enroute_deals) in candidates_enroute {
                             if current_rem_vol <= 0.001 || current_rem_isk <= 0.001 {
@@ -900,6 +945,9 @@ pub fn find_chain_routes(
                 let j = graph.jump_count(candidate.current_system, src_sys, config.safe_only);
                 if j < min_dist {
                     min_dist = j;
+                    if min_dist == 0 {
+                        break;
+                    }
                 }
             }
 
@@ -941,6 +989,23 @@ pub fn find_chain_routes(
                 }
                 let j_src_dst = graph.jump_count(src_sys, dst_sys, config.safe_only);
                 if j_src_dst >= 9999 {
+                    continue;
+                }
+
+                // Check if any deals in this corridor are available before full knapsack allocation
+                let has_viable = corr_deals.iter().any(|d| {
+                    !candidate.used_deal_keys.contains(&(
+                        d.type_id,
+                        d.source_station_id,
+                        d.dest_station_id,
+                    )) && !candidate
+                        .exhausted_source_stations
+                        .contains(&(d.type_id, d.source_station_id))
+                        && !candidate
+                            .exhausted_dest_stations
+                            .contains(&(d.type_id, d.dest_station_id))
+                });
+                if !has_viable {
                     continue;
                 }
 
@@ -1032,29 +1097,14 @@ pub fn find_chain_routes(
                 // En-route bonus pickups between src_sys and dst_sys (only if cargo hold has room)
                 if current_rem_vol > 0.001 && current_rem_isk > 0.001 {
                     let direct_jumps = graph.jump_count(src_sys, dst_sys, config.safe_only);
-                    let mut candidates_enroute = Vec::new();
-                    for (&sys_id, sys_deals) in &deals_by_source {
-                        if sys_id == src_sys || sys_id == dst_sys {
-                            continue;
-                        }
-                        let detour = detour_cost_with_direct(
-                            src_sys,
-                            sys_id,
-                            dst_sys,
-                            direct_jumps,
-                            graph,
-                            config.safe_only,
-                        );
-                        if config.detour_enabled {
-                            if detour <= config.max_detour_jumps {
-                                candidates_enroute.push((sys_id, detour, sys_deals));
-                            }
-                        } else if detour == 0 {
-                            candidates_enroute.push((sys_id, 0, sys_deals));
-                        }
-                    }
-
-                    candidates_enroute.sort_by_key(|&(_, d, _)| d);
+                    let candidates_enroute = gather_enroute_candidates(
+                        src_sys,
+                        dst_sys,
+                        direct_jumps,
+                        &deals_by_source,
+                        graph,
+                        config,
+                    );
 
                     for (enroute_sys, detour, enroute_deals) in candidates_enroute {
                         if current_rem_vol <= 0.001 || current_rem_isk <= 0.001 {

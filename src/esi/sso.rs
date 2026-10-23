@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex as TokioMutex;
 
 pub const DEFAULT_PUBLIC_CLIENT_ID: &str = "5793fc7aa2cb49e385d3cfb5d52061c7";
 pub const DEFAULT_CALLBACK_PORT: u16 = 37373;
@@ -49,32 +50,31 @@ impl std::fmt::Debug for SsoToken {
     }
 }
 
+/// Returns the current Unix timestamp in seconds, defaulting to i64::MAX on clock error to fail closed (expired).
+pub fn current_unix_time() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(i64::MAX)
+}
+
 impl SsoToken {
     /// Returns true if the token is expired or within 60 seconds of expiration.
     pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        now >= (self.expires_at - 60)
+        let now = current_unix_time();
+        now >= self.expires_at.saturating_sub(60)
     }
 
     /// Returns true if the token needs proactive refresh (within 300 seconds / 5 minutes of expiration).
     pub fn needs_refresh(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        now >= (self.expires_at - 300)
+        let now = current_unix_time();
+        now >= self.expires_at.saturating_sub(300)
     }
 
     /// Returns the number of seconds until token expiration (or 0 if expired).
     pub fn seconds_until_expiration(&self) -> i64 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        (self.expires_at - now).max(0)
+        let now = current_unix_time();
+        self.expires_at.saturating_sub(now).max(0)
     }
 }
 
@@ -129,9 +129,18 @@ pub fn load_saved_token() -> Option<SsoToken> {
 }
 
 /// Persists the SSO token to disk with restricted permissions (0600 on Unix) to prevent local reading of OAuth tokens.
+/// Uses an atomic temporary file write and rename pattern to prevent file corruption during unexpected termination.
 pub fn save_token(token: &SsoToken) -> Result<()> {
+    let path = token_storage_path();
+    let tmp_path = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     let res = (|| -> Result<()> {
-        let path = token_storage_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
             #[cfg(unix)]
@@ -152,19 +161,22 @@ pub fn save_token(token: &SsoToken) -> Result<()> {
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
-                .open(&path)?;
+                .open(&tmp_path)?;
             let mut perms = file.metadata()?.permissions();
             perms.set_mode(0o600);
             let _ = file.set_permissions(perms);
             file.write_all(data.as_bytes())?;
+            file.flush()?;
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, data)?;
+            std::fs::write(&tmp_path, data.as_bytes())?;
         }
+        std::fs::rename(&tmp_path, &path)?;
         Ok(())
     })();
     if let Err(ref e) = res {
+        let _ = std::fs::remove_file(&tmp_path);
         tracing::error!(
             error_code = %ErrorCode::ErrSsoTokenSave,
             error = %e,
@@ -418,7 +430,23 @@ pub fn urldecode_simple(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Listens on 127.0.0.1:<port> for the OAuth callback from the browser.
+/// Formats an RFC 8252 compliant HTTP 400 Bad Request response with defensive security headers.
+fn format_http_400_response(body: &str) -> String {
+    format!(
+        "HTTP/1.1 400 Bad Request\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         X-Frame-Options: DENY\r\n\
+         Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         Cache-Control: no-store, no-cache, must-revalidate\r\n\
+         Connection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+}
+
+/// Listens on `127.0.0.1:<port>` for the OAuth callback from the browser.
 /// Returns the authorization code once received.
 pub async fn listen_for_auth_code(
     port: u16,
@@ -491,20 +519,10 @@ pub async fn listen_for_auth_code(
 
             // RFC 8252: Ensure request starts strictly with GET /callback?
             if !first_line.starts_with("GET /callback?") {
-                let err_body = "Invalid callback path or HTTP method.";
-                let response = format!(
-                    "HTTP/1.1 400 Bad Request\r\n\
-                     Content-Type: text/plain; charset=utf-8\r\n\
-                     Content-Length: {}\r\n\
-                     X-Frame-Options: DENY\r\n\
-                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
-                     X-Content-Type-Options: nosniff\r\n\
-                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
-                     Connection: close\r\n\r\n{}",
-                    err_body.len(),
-                    err_body
-                );
+                let response = format_http_400_response("Invalid callback path or HTTP method.");
                 let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                let _ = socket.shutdown().await;
                 continue;
             }
 
@@ -514,20 +532,10 @@ pub async fn listen_for_auth_code(
                 lower.starts_with("host: localhost") || lower.starts_with("host: 127.0.0.1")
             });
             if !has_valid_host {
-                let err_body = "Invalid Host header.";
-                let response = format!(
-                    "HTTP/1.1 400 Bad Request\r\n\
-                     Content-Type: text/plain; charset=utf-8\r\n\
-                     Content-Length: {}\r\n\
-                     X-Frame-Options: DENY\r\n\
-                     Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
-                     X-Content-Type-Options: nosniff\r\n\
-                     Cache-Control: no-store, no-cache, must-revalidate\r\n\
-                     Connection: close\r\n\r\n{}",
-                    err_body.len(),
-                    err_body
-                );
+                let response = format_http_400_response("Invalid Host header.");
                 let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                let _ = socket.shutdown().await;
                 continue;
             }
 
@@ -545,8 +553,7 @@ pub async fn listen_for_auth_code(
             let mut oauth_error_desc = None;
 
             for pair in query_str.split('&') {
-                let mut parts = pair.split('=');
-                if let (Some(k), Some(v)) = (parts.next(), parts.next()) {
+                if let Some((k, v)) = pair.split_once('=') {
                     if k == "code" {
                         code = Some(urldecode_simple(v));
                     } else if k == "state" {
@@ -559,8 +566,24 @@ pub async fn listen_for_auth_code(
                 }
             }
 
-            // Immediately handle user cancellation or denial without hanging for 3 minutes
+            // Immediately handle user cancellation or denial without hanging for 3 minutes,
+            // but REQUIRE and verify the state parameter to prevent unauthenticated DoS / CSRF cancellation
             if let Some(err) = oauth_error {
+                let is_valid_state = state
+                    .as_deref()
+                    .map(|s| constant_time_eq(s.as_bytes(), expected_state.as_bytes()))
+                    .unwrap_or(false);
+
+                if !is_valid_state {
+                    let response = format_http_400_response(
+                        "Invalid or missing state in OAuth error callback.",
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
+                    let _ = socket.shutdown().await;
+                    continue;
+                }
+
                 let desc = oauth_error_desc
                     .unwrap_or_else(|| "Authorization was cancelled or denied by user".to_string());
                 let cancel_html = format!(
@@ -640,19 +663,8 @@ pub async fn listen_for_auth_code(
             }
 
             // Fallback 400 response for invalid requests or state mismatch with defensive security headers
-            let err_body = "Invalid authorization callback or state mismatch.";
-            let response = format!(
-                "HTTP/1.1 400 Bad Request\r\n\
-                 Content-Type: text/plain; charset=utf-8\r\n\
-                 Content-Length: {}\r\n\
-                 X-Frame-Options: DENY\r\n\
-                 Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n\
-                 X-Content-Type-Options: nosniff\r\n\
-                 Cache-Control: no-store, no-cache, must-revalidate\r\n\
-                 Connection: close\r\n\r\n{}",
-                err_body.len(),
-                err_body
-            );
+            let response =
+                format_http_400_response("Invalid authorization callback or state mismatch.");
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
             let _ = socket.shutdown().await;
@@ -664,13 +676,27 @@ pub async fn listen_for_auth_code(
         .map_err(|_| anyhow::anyhow!("SSO authorization timed out waiting for browser callback."))?
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
     #[serde(default)]
     pub refresh_token: Option<String>,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Exchanges the PKCE authorization code for an access token and refresh token.
@@ -735,15 +761,18 @@ pub async fn exchange_code_for_token_at_url(
         .await
         .context("Failed to parse SSO token response")?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let expires_at = now + token_data.expires_in;
+    let now = current_unix_time();
+    let expires_at = now + token_data.expires_in.max(0);
 
-    // Decode character name and character ID from JWT access token payload
-    let (character_id, character_name) = parse_jwt_character_claims(&token_data.access_token)
-        .context("Failed to extract valid character claims from SSO access token")?;
+    // Decode character name, ID, and scopes from JWT access token payload
+    let (character_id, character_name, scopes) =
+        parse_jwt_character_claims_with_scopes(&token_data.access_token)
+            .context("Failed to extract valid character claims from SSO access token")?;
+
+    // If scopes were provided in JWT claims, enforce the primary required waypoint scope
+    if !scopes.is_empty() && !scopes.iter().any(|s| s == "esi-ui.write_waypoint.v1") {
+        bail!("SSO access token is missing required scope 'esi-ui.write_waypoint.v1'");
+    }
 
     let refresh_token = token_data
         .refresh_token
@@ -773,15 +802,6 @@ pub async fn ensure_fresh_token(
     ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, false).await
 }
 
-/// Force-refreshes the access token unconditionally using the refresh token.
-pub async fn ensure_fresh_token_force(
-    client: &reqwest::Client,
-    client_id: &str,
-    token: &mut SsoToken,
-) -> Result<()> {
-    ensure_fresh_token_opts(client, SSO_TOKEN_URL, client_id, token, true).await
-}
-
 /// Refreshes the access token using the refresh token against the specified token endpoint URL.
 pub async fn ensure_fresh_token_at_url(
     client: &reqwest::Client,
@@ -791,6 +811,8 @@ pub async fn ensure_fresh_token_at_url(
 ) -> Result<()> {
     ensure_fresh_token_opts(client, token_url, client_id, token, false).await
 }
+
+static REFRESH_MUTEX: TokioMutex<()> = TokioMutex::const_new(());
 
 /// Refreshes the access token with optional force flag (bypasses expiration check when force is true).
 pub async fn ensure_fresh_token_opts(
@@ -802,6 +824,21 @@ pub async fn ensure_fresh_token_opts(
 ) -> Result<()> {
     if !force && !token.needs_refresh() {
         return Ok(());
+    }
+
+    let _guard = REFRESH_MUTEX.lock().await;
+
+    // Double-checked locking: check if another thread already refreshed the token
+    if !force {
+        if let Some(saved) = load_saved_token() {
+            if saved.character_id == token.character_id && !saved.needs_refresh() {
+                *token = saved;
+                return Ok(());
+            }
+        }
+        if !token.needs_refresh() {
+            return Ok(());
+        }
     }
 
     let effective_client_id: String = if !client_id.trim().is_empty() {
@@ -827,8 +864,17 @@ pub async fn ensure_fresh_token_opts(
         .context("Failed to refresh SSO access token")?;
 
     if !resp.status().is_success() {
+        let status = resp.status();
         let err_text = resp.text().await.unwrap_or_default();
-        if err_text.contains("invalid_grant") {
+        let err_lower = err_text.to_ascii_lowercase();
+
+        if err_lower.contains("invalid_grant")
+            || status == reqwest::StatusCode::UNAUTHORIZED
+            || (status == reqwest::StatusCode::BAD_REQUEST
+                && (err_lower.contains("revoked")
+                    || err_lower.contains("unauthorized_client")
+                    || err_lower.contains("invalid_token")))
+        {
             let _ = delete_saved_token();
             tracing::error!(
                 error_code = %ErrorCode::ErrSsoTokenRefresh,
@@ -850,10 +896,7 @@ pub async fn ensure_fresh_token_opts(
         .await
         .context("Failed to parse refreshed SSO token response")?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let now = current_unix_time();
 
     token.access_token = token_data.access_token;
     token.token_type = token_data.token_type;
@@ -862,19 +905,11 @@ pub async fn ensure_fresh_token_opts(
     if let Some(new_rt) = token_data.refresh_token.filter(|s| !s.trim().is_empty()) {
         token.refresh_token = new_rt;
     }
-    token.expires_at = now + token_data.expires_in;
+    token.expires_at = now + token_data.expires_in.max(0);
     token.client_id = Some(effective_client_id);
 
     save_token(token)?;
     Ok(())
-}
-
-/// Proactively refreshes the saved token if it needs refresh (within 5 minutes of expiration or expired).
-pub async fn refresh_saved_token_if_needed(
-    client: &reqwest::Client,
-    client_id: &str,
-) -> Result<Option<SsoToken>> {
-    refresh_saved_token_opts(client, client_id, false).await
 }
 
 /// Refreshes the saved token with optional force override (bypasses expiration check when force is true).
@@ -896,8 +931,21 @@ pub async fn refresh_saved_token_opts(
     Ok(Some(token))
 }
 
-/// Decodes the payload segment of a JWT token to extract `name` and `sub` (CHARACTER:EVE:<id>).
-pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
+/// Extracts granted OAuth scopes from JWT claims payload.
+pub fn extract_jwt_scopes(claims: &serde_json::Value) -> Vec<String> {
+    if let Some(arr) = claims.get("scp").and_then(|s| s.as_array()) {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    } else if let Some(s) = claims.get("scp").and_then(|s| s.as_str()) {
+        s.split_whitespace().map(|s| s.to_string()).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Decodes the payload segment of a JWT token to extract character ID, name, and granted scopes.
+pub fn parse_jwt_character_claims_with_scopes(jwt: &str) -> Option<(u64, String, Vec<String>)> {
     let mut parts = jwt.split('.');
     let _header = parts.next()?;
     let payload_b64 = parts.next()?;
@@ -928,8 +976,18 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
         })
         .filter(|&id| id > 0)?;
 
-    Some((character_id, name))
+    let scopes = extract_jwt_scopes(&v);
+
+    Some((character_id, name, scopes))
 }
+
+/// Decodes the payload segment of a JWT token to extract `name` and `sub` (`CHARACTER:EVE:<id>`).
+pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
+    parse_jwt_character_claims_with_scopes(jwt).map(|(id, name, _)| (id, name))
+}
+
+pub const MAX_AUTOPILOT_WAYPOINTS: usize = 50;
+pub const MAX_WAYPOINTS_BATCH_DURATION_SECS: u64 = 45;
 
 /// Injects an ordered sequence of waypoints (station IDs and/or system IDs) directly into the running EVE client.
 ///
@@ -945,104 +1003,128 @@ pub async fn push_waypoints_to_client_at_url(
         bail!("No waypoints to inject into EVE client");
     }
 
-    let mut injected_count = 0;
-
-    for (idx, &dest_id) in destination_ids.iter().enumerate() {
-        let is_first = idx == 0;
-        let url = format!(
-            "{}?destination_id={}&add_to_beginning=false&clear_other_waypoints={}",
-            waypoint_base_url, dest_id, is_first
+    let destinations = if destination_ids.len() > MAX_AUTOPILOT_WAYPOINTS {
+        tracing::warn!(
+            count = destination_ids.len(),
+            max = MAX_AUTOPILOT_WAYPOINTS,
+            "Autopilot waypoint list exceeded defensive ceiling; truncating to maximum allowed waypoints"
         );
+        &destination_ids[..MAX_AUTOPILOT_WAYPOINTS]
+    } else {
+        destination_ids
+    };
 
-        let mut attempts = 0u32;
-        let mut backoff = std::time::Duration::from_millis(500);
-        let resp = loop {
-            attempts += 1;
-            let resp_res = client
-                .post(&url)
-                .bearer_auth(access_token)
-                .header("User-Agent", USER_AGENT_VAL)
-                .send()
-                .await;
+    let push_batch_fut = async {
+        let mut injected_count = 0;
 
-            match resp_res {
-                Ok(r) => {
-                    let status = r.status();
-                    if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420)
-                        && attempts <= 3
-                    {
-                        let wait_dur = r
-                            .headers()
-                            .get("x-esi-error-limit-reset")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
-                            .unwrap_or(backoff);
-                        tracing::warn!(
-                            error_code = %ErrorCode::ErrEsiRateLimited,
-                            destination_id = dest_id,
-                            wait = ?wait_dur,
-                            "Waypoint injection rate-limited (HTTP {}). Backing off...",
-                            status
-                        );
-                        tokio::time::sleep(wait_dur).await;
-                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
-                        continue;
-                    }
-                    break r;
-                }
-                Err(e) => {
-                    if attempts <= 3 {
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
-                        continue;
-                    }
-                    return Err(e).with_context(|| {
-                        format!("Failed to send waypoint for destination_id {}", dest_id)
-                    });
-                }
-            }
-        };
-
-        if !resp.status().is_success() && resp.status().as_u16() != 204 {
-            let status = resp.status();
-            let err = resp.text().await.unwrap_or_default();
-            let sanitized = sanitize_sso_error(&err);
-            tracing::error!(
-                error_code = %ErrorCode::ErrSsoAutopilotFailed,
-                destination_id = dest_id,
-                error = %sanitized,
-                "ESI rejected waypoint injection into client HUD"
+        for (idx, &dest_id) in destinations.iter().enumerate() {
+            let is_first = idx == 0;
+            let url = format!(
+                "{}?destination_id={}&add_to_beginning=false&clear_other_waypoints={}",
+                waypoint_base_url, dest_id, is_first
             );
-            if status.as_u16() == 401 {
-                bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+
+            let mut attempts = 0u32;
+            let mut backoff = std::time::Duration::from_millis(500);
+            let resp = loop {
+                attempts += 1;
+                let resp_res = client
+                    .post(&url)
+                    .bearer_auth(access_token)
+                    .header("User-Agent", USER_AGENT_VAL)
+                    .send()
+                    .await;
+
+                match resp_res {
+                    Ok(r) => {
+                        let status = r.status();
+                        if (status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || status.as_u16() == 420)
+                            && attempts <= 3
+                        {
+                            let wait_dur = r
+                                .headers()
+                                .get("x-esi-error-limit-reset")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
+                                .unwrap_or(backoff);
+                            tracing::warn!(
+                                error_code = %ErrorCode::ErrEsiRateLimited,
+                                destination_id = dest_id,
+                                wait = ?wait_dur,
+                                "Waypoint injection rate-limited (HTTP {}). Backing off...",
+                                status
+                            );
+                            tokio::time::sleep(wait_dur).await;
+                            backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                            continue;
+                        }
+                        break r;
+                    }
+                    Err(e) => {
+                        if attempts <= 3 {
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                            continue;
+                        }
+                        return Err(e).with_context(|| {
+                            format!("Failed to send waypoint for destination_id {}", dest_id)
+                        });
+                    }
+                }
+            };
+
+            if !resp.status().is_success() && resp.status().as_u16() != 204 {
+                let status = resp.status();
+                let err = resp.text().await.unwrap_or_default();
+                let sanitized = sanitize_sso_error(&err);
+                tracing::error!(
+                    error_code = %ErrorCode::ErrSsoAutopilotFailed,
+                    destination_id = dest_id,
+                    error = %sanitized,
+                    "ESI rejected waypoint injection into client HUD"
+                );
+                if status.as_u16() == 401 {
+                    bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+                }
+                bail!(
+                    "ESI rejected waypoint {} (destination {}): {}",
+                    idx + 1,
+                    dest_id,
+                    sanitized
+                );
             }
-            bail!(
-                "ESI rejected waypoint {} (destination {}): {}",
-                idx + 1,
-                dest_id,
-                sanitized
-            );
+
+            injected_count += 1;
+
+            // Small pause between ESI waypoint calls to prevent burst rate-limiting
+            if idx + 1 < destinations.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
         }
 
-        injected_count += 1;
+        Ok(injected_count)
+    };
 
-        // Small pause between ESI waypoint calls to prevent burst rate-limiting
-        if idx + 1 < destination_ids.len() {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        }
-    }
+    let injected_count = tokio::time::timeout(
+        std::time::Duration::from_secs(MAX_WAYPOINTS_BATCH_DURATION_SECS),
+        push_batch_fut,
+    )
+    .await
+    .map_err(|_| {
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoAutopilotFailed,
+            timeout_secs = MAX_WAYPOINTS_BATCH_DURATION_SECS,
+            "Batch waypoint injection timed out"
+        );
+        anyhow::anyhow!(
+            "Autopilot waypoint injection timed out after {} seconds",
+            MAX_WAYPOINTS_BATCH_DURATION_SECS
+        )
+    })??;
 
     Ok(injected_count)
-}
-
-/// Injects an ordered sequence of waypoints directly into the running EVE client using default ESI endpoint.
-pub async fn push_waypoints_to_client(
-    client: &reqwest::Client,
-    access_token: &str,
-    destination_ids: &[u64],
-) -> Result<usize> {
-    push_waypoints_to_client_at_url(client, ESI_WAYPOINT_URL, access_token, destination_ids).await
 }
 
 /// Orchestrates full PKCE login flow: generates keys, launches browser, listens on localhost, exchanges code.
@@ -1169,13 +1251,74 @@ pub async fn fetch_character_location_at_url(
         token.character_id
     );
 
-    let resp = client
-        .get(&url)
-        .header("User-Agent", USER_AGENT_VAL)
-        .header("Authorization", format!("Bearer {}", token.access_token))
-        .send()
-        .await
-        .context("Failed to query live character location from ESI")?;
+    let mut attempts = 0u32;
+    let mut backoff = std::time::Duration::from_millis(500);
+    let resp = loop {
+        attempts += 1;
+        let resp_res = client
+            .get(&url)
+            .header("User-Agent", USER_AGENT_VAL)
+            .header("Authorization", format!("Bearer {}", token.access_token))
+            .send()
+            .await;
+
+        match resp_res {
+            Ok(r) => {
+                let status = r.status();
+                if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420)
+                    && attempts <= 3
+                {
+                    let wait_dur = r
+                        .headers()
+                        .get("x-esi-error-limit-reset")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
+                        .unwrap_or(backoff);
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiRateLimited,
+                        character_id = token.character_id,
+                        wait = ?wait_dur,
+                        "Character location query rate-limited (HTTP {}). Backing off...",
+                        status
+                    );
+                    tokio::time::sleep(wait_dur).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                    continue;
+                }
+                if (status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT)
+                    && attempts <= 3
+                {
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiServerError,
+                        character_id = token.character_id,
+                        status = %status,
+                        "Character location query server error. Retrying in {:?}...",
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                    continue;
+                }
+                break r;
+            }
+            Err(e) => {
+                if attempts <= 3 {
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiNetworkFailed,
+                        character_id = token.character_id,
+                        error = %e,
+                        "Character location network error. Retrying in {:?}...",
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                    continue;
+                }
+                return Err(e).context("Failed to query live character location from ESI");
+            }
+        }
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -1207,14 +1350,6 @@ pub async fn fetch_character_location_at_url(
         .context("Failed to parse ESI character location JSON")?;
 
     Ok(loc)
-}
-
-/// Queries the live character location from ESI for an authenticated character.
-pub async fn fetch_character_location(
-    client: &reqwest::Client,
-    token: &SsoToken,
-) -> Result<CharacterLocation> {
-    fetch_character_location_at_url(client, "https://esi.evetech.net", token).await
 }
 
 /// Loads the saved token, refreshes it if needed, and fetches the character's live location with custom URLs.

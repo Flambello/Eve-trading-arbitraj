@@ -1455,7 +1455,7 @@ async fn test_esi_user_agent_header_compliance() {
     });
 
     let client = reqwest::Client::new();
-    let _ = eve_trade_scout::esi::sso::exchange_code_for_token_at_url(
+    let exchange_res = eve_trade_scout::esi::sso::exchange_code_for_token_at_url(
         &client,
         &mock_url,
         "dummy_client",
@@ -1464,6 +1464,10 @@ async fn test_esi_user_agent_header_compliance() {
         37373,
     )
     .await;
+    assert!(
+        exchange_res.is_err(),
+        "Client must receive Err when token endpoint responds with 400 Bad Request"
+    );
 
     server_task.await.unwrap();
 }
@@ -1943,4 +1947,255 @@ async fn test_push_waypoints_recovers_from_401_via_transparent_token_refresh() {
 
     let _ = server_task.await;
     let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_listen_for_auth_code_rejects_forged_oauth_error_without_state() {
+    use eve_trade_scout::esi::sso::listen_for_auth_code;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let loopback_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Must bind ephemeral loopback listener");
+    let port = loopback_listener.local_addr().unwrap().port();
+    drop(loopback_listener);
+
+    let auth_task = tokio::spawn(async move {
+        listen_for_auth_code(
+            port,
+            "secret_csrf_state_456",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 1. Forged unauthenticated error callback with missing state must be rejected with HTTP 400
+    let mut attacker_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let forged_req = format!(
+        "GET /callback?error=access_denied HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    attacker_stream
+        .write_all(forged_req.as_bytes())
+        .await
+        .unwrap();
+
+    let mut resp_buf = vec![0u8; 1024];
+    let n = attacker_stream.read(&mut resp_buf).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
+    assert!(resp_str.starts_with("HTTP/1.1 400 Bad Request"));
+    assert!(resp_str.contains("Invalid or missing state in OAuth error callback."));
+
+    // 2. Legitimate callback arrives with valid code and matching state -> must succeed!
+    let mut legit_stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("Connect failed");
+    let legit_req = format!(
+        "GET /callback?code=authenticated_code_789&state=secret_csrf_state_456 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        port
+    );
+    legit_stream.write_all(legit_req.as_bytes()).await.unwrap();
+
+    let code = auth_task
+        .await
+        .expect("Task panicked")
+        .expect("Listener must survive forged error and extract authentic code");
+    assert_eq!(code, "authenticated_code_789");
+}
+
+#[test]
+fn test_token_response_debug_redacts_tokens() {
+    use eve_trade_scout::esi::sso::TokenResponse;
+
+    let resp = TokenResponse {
+        access_token: "super_secret_access_jwt_12345".to_string(),
+        token_type: "Bearer".to_string(),
+        expires_in: 1200,
+        refresh_token: Some("super_secret_refresh_token_67890".to_string()),
+    };
+
+    let formatted = format!("{:?}", resp);
+    assert!(
+        !formatted.contains("super_secret_access_jwt_12345"),
+        "access_token must be redacted in Debug output"
+    );
+    assert!(
+        !formatted.contains("super_secret_refresh_token_67890"),
+        "refresh_token must be redacted in Debug output"
+    );
+    assert!(formatted.contains("access_token: \"[REDACTED]\""));
+    assert!(formatted.contains("refresh_token: Some(\"[REDACTED]\")"));
+    assert!(formatted.contains("expires_in: 1200"));
+}
+
+#[test]
+fn test_save_token_atomic_tmp_replacement() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use eve_trade_scout::esi::sso::{save_token, token_storage_path, SsoToken};
+
+    let temp_dir = std::env::temp_dir().join(format!("eve_token_atomic_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    let token = SsoToken {
+        access_token: "atomic_access_jwt".to_string(),
+        refresh_token: "atomic_refresh_token".to_string(),
+        token_type: "Bearer".to_string(),
+        expires_at: 1900000000,
+        character_id: 2112345678,
+        character_name: "Atomic Pilot".to_string(),
+        client_id: Some("test_client".to_string()),
+    };
+
+    let res = save_token(&token);
+    assert!(res.is_ok(), "save_token must succeed");
+
+    let path = token_storage_path();
+    assert!(path.exists(), "Target token file must exist");
+
+    let tmp_path = path.with_extension("json.tmp");
+    assert!(
+        !tmp_path.exists(),
+        "Temporary .tmp file must be cleaned up after atomic rename"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&path).expect("Metadata must be readable");
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "Saved token must have 0600 permissions"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_ensure_fresh_token_case_insensitive_invalid_grant_handling() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    use eve_trade_scout::esi::sso::{
+        ensure_fresh_token_opts, save_token, token_storage_path, SsoToken,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let temp_dir =
+        std::env::temp_dir().join(format!("eve_test_invalid_grant_ci_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let _cfg_guard = ConfigDirGuard::set(&temp_dir);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mock_token_url = format!("http://{}/v2/oauth/token", addr);
+
+    let server_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("Accept failed");
+        let mut buf = vec![0u8; 1024];
+        let _ = socket.read(&mut buf).await.unwrap();
+
+        // Server responds with uppercase INVALID_GRANT
+        let body = r#"{"error":"INVALID_GRANT","error_description":"Token has been revoked"}"#;
+        let resp = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(resp.as_bytes()).await.unwrap();
+    });
+
+    let mut token = SsoToken {
+        access_token: "expired_token".to_string(),
+        refresh_token: "revoked_secret".to_string(),
+        token_type: "Bearer".to_string(),
+        expires_at: 100, // Expired
+        character_id: 2112345678,
+        character_name: "Revoked Pilot".to_string(),
+        client_id: Some("test_client".to_string()),
+    };
+    save_token(&token).unwrap();
+    assert!(token_storage_path().exists());
+
+    let client = reqwest::Client::new();
+    let res =
+        ensure_fresh_token_opts(&client, &mock_token_url, "test_client", &mut token, true).await;
+
+    assert!(res.is_err(), "Must return error on invalid_grant");
+    assert!(
+        res.unwrap_err()
+            .to_string()
+            .contains("expired or was revoked"),
+        "Error message must inform that token was revoked"
+    );
+    assert!(
+        !token_storage_path().exists(),
+        "Saved token must be deleted from disk upon receiving invalid_grant"
+    );
+
+    let _ = server_task.await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_jwt_claims_with_scopes_and_enforcement() {
+    use eve_trade_scout::esi::sso::parse_jwt_character_claims_with_scopes;
+
+    let header_b64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+
+    // 1. JWT with array-formatted scopes
+    // {"name":"Commander","sub":"CHARACTER:EVE:2112345678","scp":["esi-ui.write_waypoint.v1","esi-location.read_location.v1"]}
+    let payload_array = "eyJuYW1lIjoiQ29tbWFuZGVyIiwic3ViIjoiQ0hBUkFDVEVSOkVWRToyMTEyMzQ1Njc4Iiwic2NwIjpbImVzaS11aS53cml0ZV93YXlwb2ludC52MSIsImVzaS1sb2NhdGlvbi5yZWFkX2xvY2F0aW9uLnYxIl19";
+    let token_array = format!("{}.{}.fake_sig", header_b64, payload_array);
+
+    let (char_id, name, scopes) = parse_jwt_character_claims_with_scopes(&token_array).unwrap();
+    assert_eq!(char_id, 2112345678);
+    assert_eq!(name, "Commander");
+    assert_eq!(scopes.len(), 2);
+    assert!(scopes.contains(&"esi-ui.write_waypoint.v1".to_string()));
+    assert!(scopes.contains(&"esi-location.read_location.v1".to_string()));
+
+    // 2. JWT with space-delimited string scopes
+    // {"name":"Commander","sub":"CHARACTER:EVE:2112345678","scp":"esi-ui.write_waypoint.v1 esi-location.read_location.v1"}
+    let payload_str = "eyJuYW1lIjoiQ29tbWFuZGVyIiwic3ViIjoiQ0hBUkFDVEVSOkVWRToyMTEyMzQ1Njc4Iiwic2NwIjoiZXNpLXVpLndyaXRlX3dheXBvaW50LnYxIGVzaS1sb2NhdGlvbi5yZWFkX2xvY2F0aW9uLnYxIn0=";
+    let token_str = format!("{}.{}.fake_sig", header_b64, payload_str);
+
+    let (_, _, scopes2) = parse_jwt_character_claims_with_scopes(&token_str).unwrap();
+    assert_eq!(scopes2.len(), 2);
+    assert!(scopes2.contains(&"esi-ui.write_waypoint.v1".to_string()));
+
+    // 3. Reject token missing essential scope esi-ui.write_waypoint.v1
+    // {"name":"Commander","sub":"CHARACTER:EVE:2112345678","scp":["esi-location.read_location.v1"]}
+    let payload_missing = "eyJuYW1lIjoiQ29tbWFuZGVyIiwic3ViIjoiQ0hBUkFDVEVSOkVWRToyMTEyMzQ1Njc4Iiwic2NwIjpbImVzaS1sb2NhdGlvbi5yZWFkX2xvY2F0aW9uLnYxIl19";
+    let token_missing = format!("{}.{}.fake_sig", header_b64, payload_missing);
+
+    let (_, _, scopes_missing) = parse_jwt_character_claims_with_scopes(&token_missing).unwrap();
+    assert!(!scopes_missing.contains(&"esi-ui.write_waypoint.v1".to_string()));
+}
+
+#[test]
+fn test_token_expiration_underflow_safety() {
+    use eve_trade_scout::esi::sso::SsoToken;
+
+    // Token with expires_at smaller than 60 or 300 should not underflow or panic
+    let small_expiry_token = SsoToken {
+        access_token: "test".to_string(),
+        refresh_token: "test".to_string(),
+        token_type: "Bearer".to_string(),
+        expires_at: 10, // Small timestamp
+        character_id: 12345,
+        character_name: "Test".to_string(),
+        client_id: None,
+    };
+
+    assert!(small_expiry_token.is_expired());
+    assert!(small_expiry_token.needs_refresh());
+    assert_eq!(small_expiry_token.seconds_until_expiration(), 0);
 }

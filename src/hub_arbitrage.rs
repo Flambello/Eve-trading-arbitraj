@@ -138,12 +138,42 @@ impl Default for HubFilterOptions {
     }
 }
 
+/// Zero-allocation case-insensitive ASCII substring search.
+#[inline]
+pub fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let n_len = needle.len();
+    if n_len == 0 {
+        return true;
+    }
+    if haystack.len() < n_len {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(n_len)
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// Zero-allocation case-insensitive ASCII string comparison for sort closures.
+#[inline]
+pub fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        let ord = x.to_ascii_lowercase().cmp(&y.to_ascii_lowercase());
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    a_bytes.len().cmp(&b_bytes.len())
+}
+
 /// Filter arbitrage deals strictly between core empire trade hubs.
 pub fn filter_hub_deals<'a>(
     deals: &'a [ArbitrageDeal],
     opts: &HubFilterOptions,
 ) -> Vec<&'a ArbitrageDeal> {
-    let query = opts.search_query.trim().to_lowercase();
+    let query = opts.search_query.trim();
 
     deals
         .iter()
@@ -199,11 +229,11 @@ pub fn filter_hub_deals<'a>(
                 return false;
             }
 
-            // Item or station text search
+            // Item or station text search (Zero-Allocation)
             if !query.is_empty() {
-                let item_match = d.item_name.to_lowercase().contains(&query);
-                let src_match = d.source_station_name.to_lowercase().contains(&query);
-                let dst_match = d.dest_station_name.to_lowercase().contains(&query);
+                let item_match = contains_ignore_ascii_case(&d.item_name, query);
+                let src_match = contains_ignore_ascii_case(&d.source_station_name, query);
+                let dst_match = contains_ignore_ascii_case(&d.dest_station_name, query);
                 if !item_match && !src_match && !dst_match {
                     return false;
                 }
@@ -293,21 +323,17 @@ pub fn hub_corridor_destination_ids(
     dest_hub: CoreHub,
     manifest: &Option<ConstrainedPackResult>,
 ) -> Vec<u64> {
+    let mut ids = Vec::with_capacity(2);
     if let Some(m) = manifest {
         if let Some(first) = m.packed.first() {
-            let src = first.deal.source_station_id;
-            let dst = first.deal.dest_station_id;
-            if src == dst {
-                return vec![src];
-            } else {
-                return vec![src, dst];
-            }
+            crate::arbitrage::push_dedup_destination(&mut ids, first.deal.source_station_id);
+            crate::arbitrage::push_dedup_destination(&mut ids, first.deal.dest_station_id);
+            return ids;
         }
     }
-    vec![
-        source_hub.primary_station_id(),
-        dest_hub.primary_station_id(),
-    ]
+    crate::arbitrage::push_dedup_destination(&mut ids, source_hub.primary_station_id());
+    crate::arbitrage::push_dedup_destination(&mut ids, dest_hub.primary_station_id());
+    ids
 }
 
 /// Formats a complete in-game flight sheet for EVE Notepad (Alt+N) for a hub trade run.

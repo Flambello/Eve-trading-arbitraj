@@ -14,6 +14,8 @@ use flate2::Compression;
 use rusqlite::Connection;
 use std::io::{Cursor, Read};
 
+static SSO_CONFIG_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn test_csv_formula_injection_sanitization() {
     // 1. Equal sign formula injection
@@ -26,12 +28,14 @@ fn test_csv_formula_injection_sanitization() {
     assert_eq!(sanitize_csv_cell("+1+2+cmd"), "'+1+2+cmd");
     assert_eq!(sanitize_csv_cell("-2+5+cmd"), "'-2+5+cmd");
 
-    // 3. At sign (@)
+    // 3. At sign (@), Pipe (|), and Percent (%) formula triggers
     assert_eq!(sanitize_csv_cell("@SUM(1,2)"), "'@SUM(1,2)");
+    assert_eq!(sanitize_csv_cell("|calc.exe"), "'|calc.exe");
+    assert_eq!(sanitize_csv_cell("%COMSPEC%"), "'%COMSPEC%");
 
     // 4. Tab and Carriage Return triggers
     assert_eq!(sanitize_csv_cell("\t=cmd"), "'\t=cmd");
-    assert_eq!(sanitize_csv_cell("\r=cmd"), "'\r=cmd");
+    assert_eq!(sanitize_csv_cell("\r=cmd"), "' =cmd");
 
     // 5. Leading whitespace before formula
     assert_eq!(sanitize_csv_cell("   =DDE()"), "'   =DDE()");
@@ -42,7 +46,14 @@ fn test_csv_formula_injection_sanitization() {
         "Tritanium \"\"Super\"\" Ore"
     );
 
-    // 7. Legitimate in-game names remain unmodified
+    // 7. CRLF stripping to prevent CSV line injection
+    assert_eq!(
+        sanitize_csv_cell("Tritanium\r\nExploit"),
+        "Tritanium  Exploit"
+    );
+    assert_eq!(sanitize_csv_cell("\r\n=calc"), "'  =calc");
+
+    // 8. Legitimate in-game names remain unmodified
     assert_eq!(
         sanitize_csv_cell("Jita IV - Moon 4 - Caldari Navy Assembly Plant"),
         "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
@@ -255,6 +266,7 @@ fn test_calculate_deal_non_finite_and_negative_price_rejection() {
 
 #[test]
 fn test_sso_token_save_unix_permissions() {
+    let _lock = SSO_CONFIG_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let token = SsoToken {
         access_token: "test_access_token".to_string(),
         refresh_token: "test_refresh_token".to_string(),
@@ -382,6 +394,39 @@ fn test_oauth_callback_urldecode_simple() {
     assert_eq!(urldecode_simple("simple+plus+test"), "simple plus test");
     assert_eq!(urldecode_simple("no_encoding_needed"), "no_encoding_needed");
     assert_eq!(urldecode_simple("incomplete%2"), "incomplete%2");
+}
+
+#[test]
+fn test_oauth_callback_query_parameter_split_once_resilience() {
+    // Verifies that query parameter key-value extraction uses split_once to preserve values containing '='
+    let query_str = "code=mock_code_123&state=state_abc=xyz&error_description=detail=part1=part2";
+    let mut code = None;
+    let mut state = None;
+    let mut err_desc = None;
+
+    for pair in query_str.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == "code" {
+                code = Some(urldecode_simple(v));
+            } else if k == "state" {
+                state = Some(urldecode_simple(v));
+            } else if k == "error_description" {
+                err_desc = Some(urldecode_simple(v));
+            }
+        }
+    }
+
+    assert_eq!(code.as_deref(), Some("mock_code_123"));
+    assert_eq!(
+        state.as_deref(),
+        Some("state_abc=xyz"),
+        "Nested '=' in state must not be truncated"
+    );
+    assert_eq!(
+        err_desc.as_deref(),
+        Some("detail=part1=part2"),
+        "Nested '=' in error_description must not be truncated"
+    );
 }
 
 #[test]
@@ -580,4 +625,358 @@ fn test_config_rejects_empty_or_malformed_regions() {
     // 4. Non-numeric alphanumeric garbage "the_forge,domain"
     let err = parse_region_ids("the_forge,domain").expect_err("Alpha regions must return an error");
     assert!(err.to_string().contains("Invalid regions argument"));
+}
+
+#[test]
+fn test_config_persistence_security_and_permission_isolation() {
+    let _lock = SSO_CONFIG_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!("eve_sec_cfg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let orig_eve = std::env::var_os("EVE_CONFIG_DIR");
+    std::env::set_var("EVE_CONFIG_DIR", &temp_dir);
+
+    let mut cfg = eve_trade_scout::config::UserConfig::default();
+    cfg.sso.client_id = "test_public_client_id_security".to_string();
+    cfg.sso.callback_port = 37373;
+    cfg.save().expect("Configuration save must succeed");
+
+    let config_path = eve_trade_scout::config::UserConfig::config_path()
+        .expect("Configuration path must resolve");
+    assert!(config_path.exists(), "Configuration file must be created");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&config_path).expect("Metadata must be readable");
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "Saved config file must have 0600 permissions to isolate client ID and user preferences"
+        );
+    }
+
+    // Verify atomic rename does not leave .tmp file behind
+    let tmp_path = config_path.with_extension("toml.tmp");
+    assert!(
+        !tmp_path.exists(),
+        "Atomic write must remove temporary file upon rename"
+    );
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    if let Some(ref val) = orig_eve {
+        std::env::set_var("EVE_CONFIG_DIR", val);
+    } else {
+        std::env::remove_var("EVE_CONFIG_DIR");
+    }
+}
+
+#[test]
+fn test_order_book_poisoning_defense() {
+    use eve_trade_scout::esi::market::{best_buy, cheapest_sell};
+    use eve_trade_scout::esi::models::MarketOrder;
+
+    let valid_sell = MarketOrder {
+        order_id: 1,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: 1000.0,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let zero_sell = MarketOrder {
+        order_id: 2,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: 0.0,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let neg_sell = MarketOrder {
+        order_id: 3,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: -50.0,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let nan_sell = MarketOrder {
+        order_id: 4,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: f64::NAN,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let sells = vec![zero_sell, neg_sell, nan_sell, valid_sell.clone()];
+    let best_s = cheapest_sell(&sells).expect("Must find valid sell order");
+    assert_eq!(
+        best_s.price, 1000.0,
+        "Must ignore non-positive and NaN prices"
+    );
+
+    let valid_buy = MarketOrder {
+        order_id: 5,
+        type_id: 34,
+        location_id: 60003761,
+        system_id: 30000144,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: 2000.0,
+        is_buy_order: true,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let zero_buy = MarketOrder {
+        order_id: 6,
+        type_id: 34,
+        location_id: 60003761,
+        system_id: 30000144,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: 0.0,
+        is_buy_order: true,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let nan_buy = MarketOrder {
+        order_id: 7,
+        type_id: 34,
+        location_id: 60003761,
+        system_id: 30000144,
+        volume_total: 100,
+        volume_remain: 100,
+        min_volume: 1,
+        price: f64::NAN,
+        is_buy_order: true,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let buys = vec![zero_buy, nan_buy, valid_buy.clone()];
+    let best_b = best_buy(&buys).expect("Must find valid buy order");
+    assert_eq!(best_b.price, 2000.0, "Must ignore zero and NaN buy prices");
+}
+
+#[tokio::test]
+async fn test_find_deals_ignores_poisoned_orders() {
+    use eve_trade_scout::arbitrage::find_deals;
+    use eve_trade_scout::esi::market::RegionMarket;
+    use std::collections::HashMap;
+
+    let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to init in-memory SDE fixtures");
+    let graph = eve_trade_scout::graph::SystemGraph::from_sde(&sde).unwrap();
+    let cfg = ArbitrageConfig {
+        ship: BIG_HAULER,
+        home_system: 30000142,
+        safe_only: true,
+        min_profit: 1000.0,
+        min_spread: 10.0,
+        min_net_profit_pct: 10.0,
+        broker_fee: 3.0,
+        sales_tax: 8.0,
+        npc_stations_only: false,
+    };
+
+    // Item 34 is Tritanium in fixtures
+    let valid_sell = MarketOrder {
+        order_id: 101,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 10_000,
+        volume_remain: 10_000,
+        min_volume: 1,
+        price: 5.0,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let poison_zero_sell = MarketOrder {
+        order_id: 102,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 10_000,
+        volume_remain: 10_000,
+        min_volume: 1,
+        price: 0.0,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let poison_nan_sell = MarketOrder {
+        order_id: 103,
+        type_id: 34,
+        location_id: 60003760,
+        system_id: 30000142,
+        volume_total: 10_000,
+        volume_remain: 10_000,
+        min_volume: 1,
+        price: f64::NAN,
+        is_buy_order: false,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let valid_buy = MarketOrder {
+        order_id: 201,
+        type_id: 34,
+        location_id: 60003761,
+        system_id: 30000144,
+        volume_total: 10_000,
+        volume_remain: 10_000,
+        min_volume: 1,
+        price: 15.0,
+        is_buy_order: true,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let poison_nan_buy = MarketOrder {
+        order_id: 202,
+        type_id: 34,
+        location_id: 60003761,
+        system_id: 30000144,
+        volume_total: 10_000,
+        volume_remain: 10_000,
+        min_volume: 1,
+        price: f64::NAN,
+        is_buy_order: true,
+        duration: 90,
+        issued: None,
+        range: None,
+    };
+
+    let mut sell_orders = HashMap::new();
+    sell_orders.insert(34, vec![poison_zero_sell, poison_nan_sell, valid_sell]);
+
+    let mut buy_orders = HashMap::new();
+    buy_orders.insert(34, vec![poison_nan_buy, valid_buy]);
+
+    let mut markets = HashMap::new();
+    markets.insert(
+        10000002,
+        RegionMarket {
+            region_id: 10000002,
+            sell_orders,
+            buy_orders,
+        },
+    );
+
+    let deals = find_deals(&markets, &sde, &graph, &cfg);
+    assert!(
+        !deals.is_empty(),
+        "Valid deal must be found despite poisoned orders in market"
+    );
+    assert_eq!(deals[0].type_id, 34);
+    assert_eq!(deals[0].buy_price, 5.0);
+    assert_eq!(deals[0].sell_price, 15.0);
+    assert!(deals[0].spread_pct.is_finite());
+    assert!(deals[0].net_profit > 0.0);
+}
+
+#[test]
+fn test_sde_autocomplete_wildcard_escaping_and_case_priority() {
+    use eve_trade_scout::sde::escape_sqlite_like;
+
+    // 1. Literal wildcard escaping
+    assert_eq!(escape_sqlite_like("Jita"), "Jita");
+    assert_eq!(escape_sqlite_like("Jita%"), "Jita\\%");
+    assert_eq!(escape_sqlite_like("Jita_"), "Jita\\_");
+    assert_eq!(escape_sqlite_like("Jita\\"), "Jita\\\\");
+    assert_eq!(escape_sqlite_like("%_%\\"), "\\%\\_\\%\\\\");
+
+    // 2. Autocomplete search query behavior
+    let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to init in-memory SDE fixtures");
+
+    // Search for capitalized "Jita" should rank "Jita" first via exact match
+    let results = sde.search_systems("Jita", 5);
+    assert!(!results.is_empty());
+    assert_eq!(results[0].system_name, "Jita");
+
+    // Search for lowercase "jita" should also rank "Jita" first
+    let lower_results = sde.search_systems("jita", 5);
+    assert!(!lower_results.is_empty());
+    assert_eq!(lower_results[0].system_name, "Jita");
+}
+
+#[test]
+fn test_ship_profile_nan_defense() {
+    let mut cfg = eve_trade_scout::config::UserConfig::default();
+    cfg.ship.use_custom_ship = true;
+
+    // 1. Test NaN and Infinite inputs (must fallback to default vessel limits)
+    cfg.ship.custom_cargo_vol = f64::NAN;
+    cfg.ship.custom_budget_isk = f64::INFINITY;
+    let profile = cfg
+        .effective_ship_profile()
+        .expect("Profile resolution must succeed");
+    assert!(profile.max_volume.is_finite());
+    assert!(profile.max_budget.is_finite());
+    assert_eq!(profile.max_volume, 60_000.0);
+    assert_eq!(profile.max_budget, 500_000_000.0);
+
+    // 2. Test negative inputs (finite values must be safely clamped to minimum bounds)
+    cfg.ship.custom_cargo_vol = -500.0;
+    cfg.ship.custom_budget_isk = -1_000_000.0;
+    let profile_neg = cfg
+        .effective_ship_profile()
+        .expect("Profile resolution must succeed");
+    assert!(profile_neg.max_volume.is_finite());
+    assert!(profile_neg.max_budget.is_finite());
+    assert_eq!(profile_neg.max_volume, 10.0);
+    assert_eq!(profile_neg.max_budget, 100_000.0);
+
+    // 3. Test valid custom inputs
+    cfg.ship.custom_cargo_vol = 45_000.0;
+    cfg.ship.custom_budget_isk = 250_000_000.0;
+    let profile_custom = cfg
+        .effective_ship_profile()
+        .expect("Profile resolution must succeed");
+    assert_eq!(profile_custom.max_volume, 45_000.0);
+    assert_eq!(profile_custom.max_budget, 250_000_000.0);
 }

@@ -51,19 +51,14 @@ petgraph     = "0.6"
 # LRU cache for jump-count memoization
 lru          = "0.12"
 
-# Terminal UI
-ratatui      = "0.28"
-crossterm    = "0.28"
-
 # Desktop GUI (egui / eframe)
 eframe       = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui_extras  = { version = "0.28", features = ["default"] }
 
-# CLI argument parsing
-clap         = { version = "4.5",  features = ["derive"] }
-
-# Progress bars (SDE download, market fetch)
-indicatif    = "0.17"
+# Structured logging & telemetry
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender   = "0.2"
 
 # Error handling
 anyhow       = "1.0"
@@ -146,7 +141,7 @@ On first run it will:
 1. Create `~/.config/eve-traveling-merchant/config.toml` with defaults
 2. Download the SDE SQLite database to `data/eve_sde.sqlite` (~115 MB compressed → ~650 MB)
 3. Build the stargate graph in memory (~2–3 s)
-4. Open the native desktop GUI window (or TUI if headless)
+4. Open the native desktop GUI window (`egui`/`eframe`)
 
 Subsequent runs skip the SDE download (auto-checks every 30 days).
 
@@ -258,8 +253,11 @@ cargo test
 
 ## Updating the SDE
 
+The application automatically verifies SDE freshness on startup. If the local database is missing or older than `sde_max_age_days` (default 30 days in `config.toml`), a fresh dump is downloaded automatically. To force an immediate re-download:
+
 ```bash
-./target/release/eve-merchant --update-sde
+rm -f data/eve_sde.sqlite
+# Next application launch will re-download the latest Fuzzwork dump
 ```
 
 ---

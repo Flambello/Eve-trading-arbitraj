@@ -6,6 +6,10 @@ use crate::sde::{ItemInfo, SdeLoader};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub const MAX_STATIONS_PER_TYPE: usize = 50;
+pub const MAX_DEALS_COLLECTED: usize = 50_000;
+pub const MAX_MANIFEST_CANDIDATE_DEALS: usize = 10_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArbitrageDeal {
     pub type_id: u32,
@@ -118,12 +122,18 @@ pub fn find_deals(
     cfg: &ArbitrageConfig,
 ) -> Vec<ArbitrageDeal> {
     // 1. Find cheapest sell order and highest buy order per (type_id, station_id) directly
-    let mut best_sells_by_type_station: HashMap<(u32, u64), &MarketOrder> = HashMap::new();
-    let mut best_buys_by_type_station: HashMap<(u32, u64), &MarketOrder> = HashMap::new();
+    let mut best_sells_by_type_station: HashMap<(u32, u64), &MarketOrder> =
+        HashMap::with_capacity(4096);
+    let mut best_buys_by_type_station: HashMap<(u32, u64), &MarketOrder> =
+        HashMap::with_capacity(4096);
 
     for market in markets.values() {
         for (&type_id, orders) in &market.sell_orders {
             for o in orders {
+                // Strictly require positive finite prices to prevent order-book poisoning
+                if !o.price.is_finite() || o.price <= 0.0 {
+                    continue;
+                }
                 // Strictly exclude lowsec and nullsec systems: only highsec allowed
                 if !graph.is_highsec(o.system_id) {
                     continue;
@@ -143,6 +153,10 @@ pub fn find_deals(
 
         for (&type_id, orders) in &market.buy_orders {
             for o in orders {
+                // Strictly require positive finite prices to prevent order-book poisoning
+                if !o.price.is_finite() || o.price <= 0.0 {
+                    continue;
+                }
                 // Strictly exclude lowsec and nullsec systems: only highsec allowed
                 if !graph.is_highsec(o.system_id) {
                     continue;
@@ -161,18 +175,34 @@ pub fn find_deals(
         }
     }
 
-    // 2. Group deduplicated station bests by type_id
-    let mut sells_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    // 2. Group deduplicated station bests by type_id and bound station cross-product
+    let mut sells_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::with_capacity(1024);
     for ((type_id, _), order) in best_sells_by_type_station {
         sells_by_type.entry(type_id).or_default().push(order);
     }
+    for list in sells_by_type.values_mut() {
+        list.sort_unstable_by(|a, b| {
+            a.price
+                .partial_cmp(&b.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        list.truncate(MAX_STATIONS_PER_TYPE);
+    }
 
-    let mut buys_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    let mut buys_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::with_capacity(1024);
     for ((type_id, _), order) in best_buys_by_type_station {
         buys_by_type.entry(type_id).or_default().push(order);
     }
+    for list in buys_by_type.values_mut() {
+        list.sort_unstable_by(|a, b| {
+            b.price
+                .partial_cmp(&a.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        list.truncate(MAX_STATIONS_PER_TYPE);
+    }
 
-    let mut deals = Vec::new();
+    let mut deals = Vec::with_capacity(2048);
 
     // 3. For each type_id that exists in both buys and sells
     for (&type_id, sell_list) in &sells_by_type {
@@ -186,8 +216,16 @@ pub fn find_deals(
             _ => continue,
         };
 
+        let mut hit_ceiling = false;
+
         // Test all (source_station, dest_station) pairs
         for &src_order in sell_list {
+            // Early prune: skip source stations unreachable from home in safe mode
+            if cfg.safe_only && graph.jump_count(cfg.home_system, src_order.system_id, true) >= 9999
+            {
+                continue;
+            }
+
             for &dst_order in buy_list {
                 // Must be cross-station trade (not same station)
                 if src_order.location_id == dst_order.location_id {
@@ -208,8 +246,22 @@ pub fn find_deals(
                     calculate_deal(type_id, &item_info, src_order, dst_order, cfg, sde, graph)
                 {
                     deals.push(deal);
+                    if deals.len() >= MAX_DEALS_COLLECTED {
+                        tracing::warn!(
+                            max_deals = MAX_DEALS_COLLECTED,
+                            "Arbitrage candidate deal collection reached defensive safety ceiling; truncating search"
+                        );
+                        hit_ceiling = true;
+                        break;
+                    }
                 }
             }
+            if hit_ceiling {
+                break;
+            }
+        }
+        if hit_ceiling {
+            break;
         }
     }
 
@@ -254,6 +306,23 @@ pub fn calculate_deal(
 
     // Validate prices are positive and finite (reject NaN, Infinity, zero, negative)
     if !buy_price.is_finite() || !sell_price.is_finite() || buy_price <= 0.0 || sell_price <= 0.0 {
+        return None;
+    }
+
+    // Validate config parameters and item dimensions are finite and valid
+    if !cfg.broker_fee.is_finite()
+        || cfg.broker_fee < 0.0
+        || !cfg.sales_tax.is_finite()
+        || cfg.sales_tax < 0.0
+        || !cfg.ship.max_volume.is_finite()
+        || cfg.ship.max_volume <= 0.0
+        || !cfg.ship.max_budget.is_finite()
+        || cfg.ship.max_budget <= 0.0
+        || !item.packaged_volume.is_finite()
+        || item.packaged_volume <= 0.0
+        || !cfg.min_profit.is_finite()
+        || !cfg.min_net_profit_pct.is_finite()
+    {
         return None;
     }
 
@@ -447,9 +516,15 @@ pub fn bundle_route_cargo(
     deals: &[ArbitrageDeal],
     ship: ShipProfile,
 ) -> Vec<TradeCorridorManifest> {
+    let candidate_deals = if deals.len() > MAX_MANIFEST_CANDIDATE_DEALS {
+        &deals[..MAX_MANIFEST_CANDIDATE_DEALS]
+    } else {
+        deals
+    };
+
     // Group deals by (source_station_id, dest_station_id)
     let mut by_corridor: HashMap<(u64, u64), Vec<&ArbitrageDeal>> = HashMap::new();
-    for deal in deals {
+    for deal in candidate_deals {
         by_corridor
             .entry((deal.source_station_id, deal.dest_station_id))
             .or_default()
@@ -543,22 +618,25 @@ pub fn bundle_route_cargo(
     manifests
 }
 
-/// Neutralize CSV Formula Injection (CWE-1236).
-/// If a cell starts with formula trigger characters (`=`, `+`, `-`, `@`, `\t`, `\r`),
+/// Neutralize CSV Formula Injection (CWE-1236) and CRLF injection.
+/// If a cell starts with formula trigger characters (`=`, `+`, `-`, `@`, `|`, `%`, `\t`, `\r`),
 /// prepends a single quote `'` so spreadsheet applications treat it strictly as literal text.
-/// Also escapes internal double quotes (`"` -> `""`).
+/// Strips raw newline characters (`\r`, `\n`) to prevent CSV line injection, and escapes internal double quotes (`"` -> `""`).
 pub fn sanitize_csv_cell(val: &str) -> String {
-    let trimmed = val.trim_start();
+    let clean = val.replace(['\r', '\n'], " ");
+    let trimmed = clean.trim_start();
     let escaped = if trimmed.starts_with('=')
         || trimmed.starts_with('+')
         || trimmed.starts_with('-')
         || trimmed.starts_with('@')
+        || trimmed.starts_with('|')
+        || trimmed.starts_with('%')
         || trimmed.starts_with('\t')
         || trimmed.starts_with('\r')
     {
-        format!("'{}", val)
+        format!("'{}", clean)
     } else {
-        val.to_string()
+        clean
     };
     escaped.replace('"', "\"\"")
 }
@@ -640,14 +718,32 @@ pub fn prune_redundant_order_deals(
     filter_deals_by_order_limit(deals.iter().cloned(), max_per_sell, max_per_buy, |d| d)
 }
 
+/// Abstraction for route entities that yield an ordered sequence of EVE station IDs for autopilot injection.
+pub trait AutopilotNavigable {
+    fn ordered_destination_ids(&self) -> Vec<u64>;
+}
+
+/// Appends a destination ID to a sequence if it differs from the last destination (deduplication).
+#[inline]
+pub fn push_dedup_destination(ids: &mut Vec<u64>, dest_id: u64) {
+    if ids.last().copied() != Some(dest_id) {
+        ids.push(dest_id);
+    }
+}
+
+impl AutopilotNavigable for ArbitrageDeal {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::with_capacity(2);
+        push_dedup_destination(&mut ids, self.source_station_id);
+        push_dedup_destination(&mut ids, self.dest_station_id);
+        ids
+    }
+}
+
 impl ArbitrageDeal {
     /// Returns the station destination IDs for pushing to EVE Autopilot HUD.
     pub fn ordered_destination_ids(&self) -> Vec<u64> {
-        if self.source_station_id == self.dest_station_id {
-            vec![self.source_station_id]
-        } else {
-            vec![self.source_station_id, self.dest_station_id]
-        }
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a clean flight sheet for EVE Notepad (Alt+N).
@@ -688,20 +784,21 @@ impl ArbitrageDeal {
     }
 }
 
+impl AutopilotNavigable for TradeCorridorManifest {
+    fn ordered_destination_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::with_capacity(2);
+        if let Some(first) = self.deals.first() {
+            push_dedup_destination(&mut ids, first.source_station_id);
+            push_dedup_destination(&mut ids, first.dest_station_id);
+        }
+        ids
+    }
+}
+
 impl TradeCorridorManifest {
     /// Returns the station destination IDs for pushing to EVE Autopilot HUD.
     pub fn ordered_destination_ids(&self) -> Vec<u64> {
-        if let Some(first) = self.deals.first() {
-            let src = first.source_station_id;
-            let dst = first.dest_station_id;
-            if src == dst {
-                vec![src]
-            } else {
-                vec![src, dst]
-            }
-        } else {
-            Vec::new()
-        }
+        <Self as AutopilotNavigable>::ordered_destination_ids(self)
     }
 
     /// Formats a clean flight sheet for EVE Notepad (Alt+N).

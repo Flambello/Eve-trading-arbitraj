@@ -200,7 +200,9 @@ fn test_sde_loader_item_cache_poison_recovery_and_persistence() {
     );
 
     // Initial item query works and populates cache
-    let tritanium = sde.get_item_info(34).expect("Tritanium must exist in fixture");
+    let tritanium = sde
+        .get_item_info(34)
+        .expect("Tritanium must exist in fixture");
     assert_eq!(tritanium.name, "Tritanium");
 
     // Intentionally poison the item_cache mutex to simulate a worker thread panic
@@ -217,7 +219,9 @@ fn test_sde_loader_item_cache_poison_recovery_and_persistence() {
     assert_eq!(tritanium_recovered.name, "Tritanium");
 
     // 2. Verify cache insertion still functions under poison: query an uncached item (Pyerite: 35)
-    let pyerite = sde.get_item_info(35).expect("Pyerite must exist in fixture");
+    let pyerite = sde
+        .get_item_info(35)
+        .expect("Pyerite must exist in fixture");
     assert_eq!(pyerite.name, "Pyerite");
 
     // 3. Query Pyerite a second time to ensure the newly cached value is retained and retrieved
@@ -317,6 +321,7 @@ fn test_sso_concurrent_save_token_atomic_tmp_uniqueness() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_sso_concurrent_ensure_fresh_token_double_checked_locking() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -389,7 +394,11 @@ async fn test_sso_concurrent_ensure_fresh_token_double_checked_locking() {
 
     for handle in tasks {
         let res = handle.await.expect("Task failed");
-        assert!(res.is_ok(), "ensure_fresh_token_opts must succeed: {:?}", res);
+        assert!(
+            res.is_ok(),
+            "ensure_fresh_token_opts must succeed: {:?}",
+            res
+        );
         let fresh_tok = res.unwrap();
         assert_eq!(fresh_tok.access_token, "brand_new_access_token");
         assert_eq!(fresh_tok.refresh_token, "rotated_refresh_token");

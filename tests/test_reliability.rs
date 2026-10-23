@@ -155,8 +155,7 @@ async fn test_save_cache_cleans_up_tmp_file_on_error() {
 
     // Create a directory at the destination path `etags.json` so that renaming tmp_file to etags_file fails
     let target_etags_file = temp_cache_dir.join("etags.json");
-    std::fs::create_dir(&target_etags_file)
-        .expect("Failed to create blocking dir at target path");
+    std::fs::create_dir(&target_etags_file).expect("Failed to create blocking dir at target path");
 
     let res = client.save_cache().await;
     assert!(
@@ -225,17 +224,26 @@ fn test_chain_route_nan_and_non_finite_defensive_safety() {
         ..Default::default()
     };
     let routes = find_chain_routes(std::slice::from_ref(&deal), &graph, &config);
-    assert!(routes.is_empty(), "Must return empty vec for NaN cargo capacity");
+    assert!(
+        routes.is_empty(),
+        "Must return empty vec for NaN cargo capacity"
+    );
 
     config.ship_max_volume = 30_000.0;
     config.ship_max_budget = f64::NAN;
     let routes = find_chain_routes(std::slice::from_ref(&deal), &graph, &config);
-    assert!(routes.is_empty(), "Must return empty vec for NaN max budget");
+    assert!(
+        routes.is_empty(),
+        "Must return empty vec for NaN max budget"
+    );
 
     config.ship_max_volume = -50.0;
     config.ship_max_budget = 50_000_000.0;
     let routes = find_chain_routes(std::slice::from_ref(&deal), &graph, &config);
-    assert!(routes.is_empty(), "Must return empty vec for negative cargo capacity");
+    assert!(
+        routes.is_empty(),
+        "Must return empty vec for negative cargo capacity"
+    );
 
     // 2. knapsack_pack_constrained must skip deals with NaN volume_used or non-finite unit economics
     let mut bad_deal = deal.clone();
@@ -274,7 +282,8 @@ fn test_arbitrage_deal_negative_or_nan_fees_rejected() {
     use eve_trade_scout::esi::models::MarketOrder;
     use eve_trade_scout::sde::ItemInfo;
 
-    let sde = SdeLoader::in_memory_with_fixtures().expect("Failed to initialize in-memory SDE fixtures");
+    let sde =
+        SdeLoader::in_memory_with_fixtures().expect("Failed to initialize in-memory SDE fixtures");
     let graph = SystemGraph::from_sde(&sde).unwrap();
 
     let mut cfg = ArbitrageConfig {
@@ -424,8 +433,12 @@ async fn test_fetch_character_location_retry_resilience() {
         let (mut socket1, _) = listener.accept().await.expect("Accept 1 failed");
         let mut buf1 = vec![0u8; 1024];
         let _ = socket1.read(&mut buf1).await.expect("Read 1 failed");
-        let resp_500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        socket1.write_all(resp_500.as_bytes()).await.expect("Write 1 failed");
+        let resp_500 =
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        socket1
+            .write_all(resp_500.as_bytes())
+            .await
+            .expect("Write 1 failed");
         let _ = socket1.flush().await;
 
         // Second connection: return HTTP 200 OK with valid location JSON
@@ -438,7 +451,10 @@ async fn test_fetch_character_location_retry_resilience() {
             body.len(),
             body
         );
-        socket2.write_all(resp_200.as_bytes()).await.expect("Write 2 failed");
+        socket2
+            .write_all(resp_200.as_bytes())
+            .await
+            .expect("Write 2 failed");
         let _ = socket2.flush().await;
     });
 
@@ -468,12 +484,11 @@ async fn test_fetch_character_location_retry_resilience() {
 
 #[tokio::test]
 async fn test_esi_client_http_408_retry_resilience() {
-    use eve_trade_scout::esi::EsiClient;
     use eve_trade_scout::esi::models::MarketOrder;
+    use eve_trade_scout::esi::EsiClient;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let temp_cache_dir =
-        std::env::temp_dir().join(format!("eve_408_test_{}", std::process::id()));
+    let temp_cache_dir = std::env::temp_dir().join(format!("eve_408_test_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&temp_cache_dir);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -487,8 +502,12 @@ async fn test_esi_client_http_408_retry_resilience() {
         let (mut socket1, _) = listener.accept().await.expect("Accept 1 failed");
         let mut buf1 = vec![0u8; 1024];
         let _ = socket1.read(&mut buf1).await.expect("Read 1 failed");
-        let resp_408 = "HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-        socket1.write_all(resp_408.as_bytes()).await.expect("Write 1 failed");
+        let resp_408 =
+            "HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        socket1
+            .write_all(resp_408.as_bytes())
+            .await
+            .expect("Write 1 failed");
         let _ = socket1.flush().await;
 
         // Attempt 2: return HTTP 200 OK with empty order array
@@ -501,7 +520,10 @@ async fn test_esi_client_http_408_retry_resilience() {
             body.len(),
             body
         );
-        socket2.write_all(resp_200.as_bytes()).await.expect("Write 2 failed");
+        socket2
+            .write_all(resp_200.as_bytes())
+            .await
+            .expect("Write 2 failed");
         let _ = socket2.flush().await;
     });
 

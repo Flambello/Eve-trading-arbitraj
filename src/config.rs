@@ -639,7 +639,9 @@ impl UserConfig {
                 default_custom_cargo_vol()
             };
             let max_budget = if self.ship.custom_budget_isk.is_finite() {
-                self.ship.custom_budget_isk.clamp(100_000.0, 100_000_000_000.0)
+                self.ship
+                    .custom_budget_isk
+                    .clamp(100_000.0, 100_000_000_000.0)
             } else {
                 default_custom_budget_isk()
             };

@@ -1074,7 +1074,8 @@ impl DesktopApp {
                             if self.auto_refresh && self.sound_alerts_enabled {
                                 for d in &deals {
                                     if d.net_profit_pct >= self.sound_min_roi_pct {
-                                        let key = (d.type_id, d.source_station_id, d.dest_station_id);
+                                        let key =
+                                            (d.type_id, d.source_station_id, d.dest_station_id);
                                         if !self.alerted_deal_keys.contains(&key) {
                                             self.alerted_deal_keys.insert(key);
                                             new_high_profit_count += 1;
@@ -1131,7 +1132,8 @@ impl DesktopApp {
                         error_code = %crate::error::ErrorCode::ErrUiWorkerChannel,
                         "Market scan worker thread disconnected unexpectedly"
                     );
-                    self.status_text = "[!] Market scan worker terminated unexpectedly.".to_string();
+                    self.status_text =
+                        "[!] Market scan worker terminated unexpectedly.".to_string();
                     self.set_toast("Market scan worker failed unexpectedly. You may retry.");
                 }
                 Err(TryRecvError::Empty) => {}
@@ -1151,7 +1153,10 @@ impl DesktopApp {
                         Some(0)
                     };
                     if count > 0 {
-                        self.set_toast(format!("Found {} optimized chained trade route(s)!", count));
+                        self.set_toast(format!(
+                            "Found {} optimized chained trade route(s)!",
+                            count
+                        ));
                     } else {
                         self.set_toast("No chain routes found with current parameters.");
                     }
@@ -1340,7 +1345,6 @@ impl DesktopApp {
             }
         }
     }
-
 
     #[doc(hidden)]
     pub fn is_chain_running(&self) -> bool {

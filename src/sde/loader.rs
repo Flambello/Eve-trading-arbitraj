@@ -202,6 +202,9 @@ impl<'a> Drop for TempFileCleanupGuard<'a> {
     }
 }
 
+pub const MAX_SYSTEM_SEARCH_QUERY_LEN: usize = 64;
+pub const MAX_SYSTEM_SEARCH_LIMIT: usize = 50;
+
 pub struct SdeLoader {
     conn: Mutex<Connection>,
     has_inv_volumes: bool,
@@ -856,12 +859,26 @@ impl SdeLoader {
     ///
     /// # Arguments
     /// * `query` - User input string (e.g. "Jita", "jita 4", "Amarr VIII").
-    /// * `limit` - Maximum number of search results to return.
+    /// * `limit` - Maximum number of search results to return (clamped to 1..=50).
     ///
     /// # Returns
     /// Vector of [`SystemSearchResult`] sorted with prefix matches prioritized over substring matches.
     pub fn search_systems(&self, query: &str, limit: usize) -> Vec<SystemSearchResult> {
-        let cleaned = clean_location_input(query).to_lowercase();
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let bounded_query = if query.len() > MAX_SYSTEM_SEARCH_QUERY_LEN {
+            let mut end = MAX_SYSTEM_SEARCH_QUERY_LEN;
+            while end > 0 && !query.is_char_boundary(end) {
+                end -= 1;
+            }
+            &query[..end]
+        } else {
+            query
+        };
+
+        let effective_limit = limit.min(MAX_SYSTEM_SEARCH_LIMIT);
+        let cleaned = clean_location_input(bounded_query).to_lowercase();
         if cleaned.is_empty() {
             return Vec::new();
         }
@@ -905,7 +922,12 @@ impl SdeLoader {
         };
 
         let rows = stmt.query_map(
-            params![prefix_pattern, contains_pattern, lower_trimmed, limit as i64],
+            params![
+                prefix_pattern,
+                contains_pattern,
+                lower_trimmed,
+                effective_limit as i64
+            ],
             |row| {
                 Ok(SystemSearchResult {
                     system_id: row.get(0)?,

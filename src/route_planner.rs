@@ -102,6 +102,9 @@ impl TradeRoute {
     }
 }
 
+pub const MAX_ROUTE_CANDIDATE_DEALS: usize = 1_000;
+pub const MAX_ALLOWED_ROUTE_STOPS: usize = 20;
+
 /// Greedy sequential route planner that chains top arbitrage deals into a multi-stop itinerary.
 ///
 /// # Arguments
@@ -123,7 +126,29 @@ pub fn plan_route(
     safe_only: bool,
     max_stops: usize,
 ) -> TradeRoute {
-    let mut unused_deals: Vec<ArbitrageDeal> = deals.to_vec();
+    if max_stops == 0 || deals.is_empty() {
+        return TradeRoute {
+            stops: Vec::new(),
+            waypoints: vec![home_system],
+            waypoint_names: vec![graph
+                .system_name(home_system)
+                .unwrap_or("Unknown")
+                .to_string()],
+            total_jumps: 0,
+            total_profit: 0.0,
+            total_capital_required: 0.0,
+            max_volume_used: 0.0,
+            avg_profit_per_jump: 0.0,
+        };
+    }
+
+    let candidate_pool = if deals.len() > MAX_ROUTE_CANDIDATE_DEALS {
+        &deals[..MAX_ROUTE_CANDIDATE_DEALS]
+    } else {
+        deals
+    };
+    let mut unused_deals: Vec<ArbitrageDeal> = candidate_pool.to_vec();
+    let effective_max_stops = max_stops.min(MAX_ALLOWED_ROUTE_STOPS);
     let mut stops = Vec::new();
     let mut current_system = home_system;
     let mut total_jumps = 0;
@@ -133,7 +158,7 @@ pub fn plan_route(
     let mut waypoints = vec![home_system];
     let mut dest_loads: HashMap<(u32, u64), usize> = HashMap::new();
 
-    for step in 1..=max_stops {
+    for step in 1..=effective_max_stops {
         if unused_deals.is_empty() {
             break;
         }

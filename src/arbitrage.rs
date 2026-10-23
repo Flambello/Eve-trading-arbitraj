@@ -6,6 +6,10 @@ use crate::sde::{ItemInfo, SdeLoader};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub const MAX_STATIONS_PER_TYPE: usize = 50;
+pub const MAX_DEALS_COLLECTED: usize = 50_000;
+pub const MAX_MANIFEST_CANDIDATE_DEALS: usize = 10_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArbitrageDeal {
     pub type_id: u32,
@@ -169,15 +173,31 @@ pub fn find_deals(
         }
     }
 
-    // 2. Group deduplicated station bests by type_id
+    // 2. Group deduplicated station bests by type_id and bound station cross-product
     let mut sells_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
     for ((type_id, _), order) in best_sells_by_type_station {
         sells_by_type.entry(type_id).or_default().push(order);
+    }
+    for list in sells_by_type.values_mut() {
+        list.sort_unstable_by(|a, b| {
+            a.price
+                .partial_cmp(&b.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        list.truncate(MAX_STATIONS_PER_TYPE);
     }
 
     let mut buys_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
     for ((type_id, _), order) in best_buys_by_type_station {
         buys_by_type.entry(type_id).or_default().push(order);
+    }
+    for list in buys_by_type.values_mut() {
+        list.sort_unstable_by(|a, b| {
+            b.price
+                .partial_cmp(&a.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        list.truncate(MAX_STATIONS_PER_TYPE);
     }
 
     let mut deals = Vec::new();
@@ -193,6 +213,8 @@ pub fn find_deals(
             Some(info) if info.published => info,
             _ => continue,
         };
+
+        let mut hit_ceiling = false;
 
         // Test all (source_station, dest_station) pairs
         for &src_order in sell_list {
@@ -216,8 +238,22 @@ pub fn find_deals(
                     calculate_deal(type_id, &item_info, src_order, dst_order, cfg, sde, graph)
                 {
                     deals.push(deal);
+                    if deals.len() >= MAX_DEALS_COLLECTED {
+                        tracing::warn!(
+                            max_deals = MAX_DEALS_COLLECTED,
+                            "Arbitrage candidate deal collection reached defensive safety ceiling; truncating search"
+                        );
+                        hit_ceiling = true;
+                        break;
+                    }
                 }
             }
+            if hit_ceiling {
+                break;
+            }
+        }
+        if hit_ceiling {
+            break;
         }
     }
 
@@ -472,9 +508,15 @@ pub fn bundle_route_cargo(
     deals: &[ArbitrageDeal],
     ship: ShipProfile,
 ) -> Vec<TradeCorridorManifest> {
+    let candidate_deals = if deals.len() > MAX_MANIFEST_CANDIDATE_DEALS {
+        &deals[..MAX_MANIFEST_CANDIDATE_DEALS]
+    } else {
+        deals
+    };
+
     // Group deals by (source_station_id, dest_station_id)
     let mut by_corridor: HashMap<(u64, u64), Vec<&ArbitrageDeal>> = HashMap::new();
-    for deal in deals {
+    for deal in candidate_deals {
         by_corridor
             .entry((deal.source_station_id, deal.dest_station_id))
             .or_default()

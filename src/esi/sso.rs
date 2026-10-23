@@ -986,6 +986,9 @@ pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
     parse_jwt_character_claims_with_scopes(jwt).map(|(id, name, _)| (id, name))
 }
 
+pub const MAX_AUTOPILOT_WAYPOINTS: usize = 50;
+pub const MAX_WAYPOINTS_BATCH_DURATION_SECS: u64 = 45;
+
 /// Injects an ordered sequence of waypoints (station IDs and/or system IDs) directly into the running EVE client.
 ///
 /// For the first waypoint: `clear_other_waypoints = true`
@@ -1000,93 +1003,126 @@ pub async fn push_waypoints_to_client_at_url(
         bail!("No waypoints to inject into EVE client");
     }
 
-    let mut injected_count = 0;
-
-    for (idx, &dest_id) in destination_ids.iter().enumerate() {
-        let is_first = idx == 0;
-        let url = format!(
-            "{}?destination_id={}&add_to_beginning=false&clear_other_waypoints={}",
-            waypoint_base_url, dest_id, is_first
+    let destinations = if destination_ids.len() > MAX_AUTOPILOT_WAYPOINTS {
+        tracing::warn!(
+            count = destination_ids.len(),
+            max = MAX_AUTOPILOT_WAYPOINTS,
+            "Autopilot waypoint list exceeded defensive ceiling; truncating to maximum allowed waypoints"
         );
+        &destination_ids[..MAX_AUTOPILOT_WAYPOINTS]
+    } else {
+        destination_ids
+    };
 
-        let mut attempts = 0u32;
-        let mut backoff = std::time::Duration::from_millis(500);
-        let resp = loop {
-            attempts += 1;
-            let resp_res = client
-                .post(&url)
-                .bearer_auth(access_token)
-                .header("User-Agent", USER_AGENT_VAL)
-                .send()
-                .await;
+    let push_batch_fut = async {
+        let mut injected_count = 0;
 
-            match resp_res {
-                Ok(r) => {
-                    let status = r.status();
-                    if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420)
-                        && attempts <= 3
-                    {
-                        let wait_dur = r
-                            .headers()
-                            .get("x-esi-error-limit-reset")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
-                            .unwrap_or(backoff);
-                        tracing::warn!(
-                            error_code = %ErrorCode::ErrEsiRateLimited,
-                            destination_id = dest_id,
-                            wait = ?wait_dur,
-                            "Waypoint injection rate-limited (HTTP {}). Backing off...",
-                            status
-                        );
-                        tokio::time::sleep(wait_dur).await;
-                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
-                        continue;
-                    }
-                    break r;
-                }
-                Err(e) => {
-                    if attempts <= 3 {
-                        tokio::time::sleep(backoff).await;
-                        backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
-                        continue;
-                    }
-                    return Err(e).with_context(|| {
-                        format!("Failed to send waypoint for destination_id {}", dest_id)
-                    });
-                }
-            }
-        };
-
-        if !resp.status().is_success() && resp.status().as_u16() != 204 {
-            let status = resp.status();
-            let err = resp.text().await.unwrap_or_default();
-            let sanitized = sanitize_sso_error(&err);
-            tracing::error!(
-                error_code = %ErrorCode::ErrSsoAutopilotFailed,
-                destination_id = dest_id,
-                error = %sanitized,
-                "ESI rejected waypoint injection into client HUD"
+        for (idx, &dest_id) in destinations.iter().enumerate() {
+            let is_first = idx == 0;
+            let url = format!(
+                "{}?destination_id={}&add_to_beginning=false&clear_other_waypoints={}",
+                waypoint_base_url, dest_id, is_first
             );
-            if status.as_u16() == 401 {
-                bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+
+            let mut attempts = 0u32;
+            let mut backoff = std::time::Duration::from_millis(500);
+            let resp = loop {
+                attempts += 1;
+                let resp_res = client
+                    .post(&url)
+                    .bearer_auth(access_token)
+                    .header("User-Agent", USER_AGENT_VAL)
+                    .send()
+                    .await;
+
+                match resp_res {
+                    Ok(r) => {
+                        let status = r.status();
+                        if (status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                            || status.as_u16() == 420)
+                            && attempts <= 3
+                        {
+                            let wait_dur = r
+                                .headers()
+                                .get("x-esi-error-limit-reset")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
+                                .unwrap_or(backoff);
+                            tracing::warn!(
+                                error_code = %ErrorCode::ErrEsiRateLimited,
+                                destination_id = dest_id,
+                                wait = ?wait_dur,
+                                "Waypoint injection rate-limited (HTTP {}). Backing off...",
+                                status
+                            );
+                            tokio::time::sleep(wait_dur).await;
+                            backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                            continue;
+                        }
+                        break r;
+                    }
+                    Err(e) => {
+                        if attempts <= 3 {
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                            continue;
+                        }
+                        return Err(e).with_context(|| {
+                            format!("Failed to send waypoint for destination_id {}", dest_id)
+                        });
+                    }
+                }
+            };
+
+            if !resp.status().is_success() && resp.status().as_u16() != 204 {
+                let status = resp.status();
+                let err = resp.text().await.unwrap_or_default();
+                let sanitized = sanitize_sso_error(&err);
+                tracing::error!(
+                    error_code = %ErrorCode::ErrSsoAutopilotFailed,
+                    destination_id = dest_id,
+                    error = %sanitized,
+                    "ESI rejected waypoint injection into client HUD"
+                );
+                if status.as_u16() == 401 {
+                    bail!("EVE character authorization session has expired or was revoked (HTTP 401). Please re-connect your character in Settings.");
+                }
+                bail!(
+                    "ESI rejected waypoint {} (destination {}): {}",
+                    idx + 1,
+                    dest_id,
+                    sanitized
+                );
             }
-            bail!(
-                "ESI rejected waypoint {} (destination {}): {}",
-                idx + 1,
-                dest_id,
-                sanitized
-            );
+
+            injected_count += 1;
+
+            // Small pause between ESI waypoint calls to prevent burst rate-limiting
+            if idx + 1 < destinations.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
         }
 
-        injected_count += 1;
+        Ok(injected_count)
+    };
 
-        // Small pause between ESI waypoint calls to prevent burst rate-limiting
-        if idx + 1 < destination_ids.len() {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        }
-    }
+    let injected_count = tokio::time::timeout(
+        std::time::Duration::from_secs(MAX_WAYPOINTS_BATCH_DURATION_SECS),
+        push_batch_fut,
+    )
+    .await
+    .map_err(|_| {
+        tracing::error!(
+            error_code = %ErrorCode::ErrSsoAutopilotFailed,
+            timeout_secs = MAX_WAYPOINTS_BATCH_DURATION_SECS,
+            "Batch waypoint injection timed out"
+        );
+        anyhow::anyhow!(
+            "Autopilot waypoint injection timed out after {} seconds",
+            MAX_WAYPOINTS_BATCH_DURATION_SECS
+        )
+    })??;
 
     Ok(injected_count)
 }

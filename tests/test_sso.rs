@@ -1979,7 +1979,10 @@ async fn test_listen_for_auth_code_rejects_forged_oauth_error_without_state() {
         "GET /callback?error=access_denied HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
         port
     );
-    attacker_stream.write_all(forged_req.as_bytes()).await.unwrap();
+    attacker_stream
+        .write_all(forged_req.as_bytes())
+        .await
+        .unwrap();
 
     let mut resp_buf = vec![0u8; 1024];
     let n = attacker_stream.read(&mut resp_buf).await.unwrap();
@@ -2076,6 +2079,7 @@ fn test_save_token_atomic_tmp_replacement() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_ensure_fresh_token_case_insensitive_invalid_grant_handling() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     use eve_trade_scout::esi::sso::{
@@ -2172,8 +2176,7 @@ fn test_jwt_claims_with_scopes_and_enforcement() {
     let payload_missing = "eyJuYW1lIjoiQ29tbWFuZGVyIiwic3ViIjoiQ0hBUkFDVEVSOkVWRToyMTEyMzQ1Njc4Iiwic2NwIjpbImVzaS1sb2NhdGlvbi5yZWFkX2xvY2F0aW9uLnYxIl19";
     let token_missing = format!("{}.{}.fake_sig", header_b64, payload_missing);
 
-    let (_, _, scopes_missing) =
-        parse_jwt_character_claims_with_scopes(&token_missing).unwrap();
+    let (_, _, scopes_missing) = parse_jwt_character_claims_with_scopes(&token_missing).unwrap();
     assert!(!scopes_missing.contains(&"esi-ui.write_waypoint.v1".to_string()));
 }
 
@@ -2196,4 +2199,3 @@ fn test_token_expiration_underflow_safety() {
     assert!(small_expiry_token.needs_refresh());
     assert_eq!(small_expiry_token.seconds_until_expiration(), 0);
 }
-

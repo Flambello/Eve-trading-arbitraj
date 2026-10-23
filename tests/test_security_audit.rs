@@ -51,10 +51,7 @@ fn test_csv_formula_injection_sanitization() {
         sanitize_csv_cell("Tritanium\r\nExploit"),
         "Tritanium  Exploit"
     );
-    assert_eq!(
-        sanitize_csv_cell("\r\n=calc"),
-        "'  =calc"
-    );
+    assert_eq!(sanitize_csv_cell("\r\n=calc"), "'  =calc");
 
     // 8. Legitimate in-game names remain unmodified
     assert_eq!(
@@ -743,7 +740,10 @@ fn test_order_book_poisoning_defense() {
 
     let sells = vec![zero_sell, neg_sell, nan_sell, valid_sell.clone()];
     let best_s = cheapest_sell(&sells).expect("Must find valid sell order");
-    assert_eq!(best_s.price, 1000.0, "Must ignore non-positive and NaN prices");
+    assert_eq!(
+        best_s.price, 1000.0,
+        "Must ignore non-positive and NaN prices"
+    );
 
     let valid_buy = MarketOrder {
         order_id: 5,
@@ -908,7 +908,10 @@ async fn test_find_deals_ignores_poisoned_orders() {
     );
 
     let deals = find_deals(&markets, &sde, &graph, &cfg);
-    assert!(!deals.is_empty(), "Valid deal must be found despite poisoned orders in market");
+    assert!(
+        !deals.is_empty(),
+        "Valid deal must be found despite poisoned orders in market"
+    );
     assert_eq!(deals[0].type_id, 34);
     assert_eq!(deals[0].buy_price, 5.0);
     assert_eq!(deals[0].sell_price, 15.0);
@@ -949,7 +952,9 @@ fn test_ship_profile_nan_defense() {
     // 1. Test NaN and Infinite inputs (must fallback to default vessel limits)
     cfg.ship.custom_cargo_vol = f64::NAN;
     cfg.ship.custom_budget_isk = f64::INFINITY;
-    let profile = cfg.effective_ship_profile().expect("Profile resolution must succeed");
+    let profile = cfg
+        .effective_ship_profile()
+        .expect("Profile resolution must succeed");
     assert!(profile.max_volume.is_finite());
     assert!(profile.max_budget.is_finite());
     assert_eq!(profile.max_volume, 60_000.0);
@@ -958,7 +963,9 @@ fn test_ship_profile_nan_defense() {
     // 2. Test negative inputs (finite values must be safely clamped to minimum bounds)
     cfg.ship.custom_cargo_vol = -500.0;
     cfg.ship.custom_budget_isk = -1_000_000.0;
-    let profile_neg = cfg.effective_ship_profile().expect("Profile resolution must succeed");
+    let profile_neg = cfg
+        .effective_ship_profile()
+        .expect("Profile resolution must succeed");
     assert!(profile_neg.max_volume.is_finite());
     assert!(profile_neg.max_budget.is_finite());
     assert_eq!(profile_neg.max_volume, 10.0);
@@ -967,7 +974,9 @@ fn test_ship_profile_nan_defense() {
     // 3. Test valid custom inputs
     cfg.ship.custom_cargo_vol = 45_000.0;
     cfg.ship.custom_budget_isk = 250_000_000.0;
-    let profile_custom = cfg.effective_ship_profile().expect("Profile resolution must succeed");
+    let profile_custom = cfg
+        .effective_ship_profile()
+        .expect("Profile resolution must succeed");
     assert_eq!(profile_custom.max_volume, 45_000.0);
     assert_eq!(profile_custom.max_budget, 250_000_000.0);
 }

@@ -245,6 +245,8 @@ pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe:
     detour_cost_with_direct(from, waypoint, to, direct, graph, safe)
 }
 
+pub const MAX_ENROUTE_CANDIDATES: usize = 15;
+
 /// Gathers candidate en-route pickup systems along a path from `source` to `dest`,
 /// filtered by detour threshold and sorted in ascending order of detour jumps.
 pub fn gather_enroute_candidates<'a, 'b>(
@@ -256,21 +258,36 @@ pub fn gather_enroute_candidates<'a, 'b>(
     config: &ChainConfig,
 ) -> Vec<(u32, u32, &'b Vec<&'a ArbitrageDeal>)> {
     let mut candidates = Vec::new();
+    let max_detour = if config.detour_enabled {
+        config.max_detour_jumps
+    } else {
+        0
+    };
+
     for (&sys_id, sys_deals) in deals_by_source {
         if sys_id == source || sys_id == dest {
             continue;
         }
-        let detour =
-            detour_cost_with_direct(source, sys_id, dest, direct_jumps, graph, config.safe_only);
-        if config.detour_enabled {
-            if detour <= config.max_detour_jumps {
-                candidates.push((sys_id, detour, sys_deals));
-            }
-        } else if detour == 0 {
-            candidates.push((sys_id, 0, sys_deals));
+
+        // Fast-pruning: if distance from source alone exceeds (direct_jumps + max_detour),
+        // it is impossible by triangle inequality for (j1 + j2 - direct_jumps) to be <= max_detour.
+        let j1 = graph.jump_count(source, sys_id, config.safe_only);
+        if j1 >= 9999 || (direct_jumps < 9999 && j1 > direct_jumps + max_detour) {
+            continue;
+        }
+
+        let j2 = graph.jump_count(sys_id, dest, config.safe_only);
+        if j2 >= 9999 {
+            continue;
+        }
+
+        let detour = (j1 + j2).saturating_sub(direct_jumps);
+        if detour <= max_detour {
+            candidates.push((sys_id, detour, sys_deals));
         }
     }
     candidates.sort_by_key(|&(_, d, _)| d);
+    candidates.truncate(MAX_ENROUTE_CANDIDATES);
     candidates
 }
 

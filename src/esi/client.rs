@@ -198,7 +198,7 @@ impl EsiClient {
 
         let mut backoff = Duration::from_millis(500);
         let mut attempts = 0u32;
-        let resp = loop {
+        let (body_text, expires_at, etag_hdr, total_pages) = loop {
             attempts += 1;
             let _permit = self.concurrency_sem.acquire().await?;
             let mut req = self.client.get(&url);
@@ -207,10 +207,10 @@ impl EsiClient {
             }
 
             match req.send().await {
-                Ok(r) => {
-                    let status = r.status();
+                Ok(resp) => {
+                    let status = resp.status();
                     if status == StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420 {
-                        let wait_dur = extract_error_limit_reset(r.headers()).unwrap_or(backoff);
+                        let wait_dur = extract_error_limit_reset(resp.headers()).unwrap_or(backoff);
                         if attempts > MAX_NETWORK_RETRIES {
                             tracing::error!(
                                 error_code = %ErrorCode::ErrEsiRateLimited,
@@ -237,7 +237,7 @@ impl EsiClient {
                         tokio::time::sleep(wait_dur).await;
                         backoff = (backoff * 2).min(Duration::from_secs(15));
                         continue;
-                    } else if status.is_server_error() {
+                    } else if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
                         if attempts > MAX_NETWORK_RETRIES {
                             tracing::error!(
                                 error_code = %ErrorCode::ErrEsiServerError,
@@ -275,7 +275,81 @@ impl EsiClient {
                         );
                         bail!("Failed to fetch page 1: status {}", status);
                     }
-                    break r;
+
+                    // Proactive error limit throttling if CCP error limit is dwindling
+                    if let Some(remain) = resp
+                        .headers()
+                        .get("x-esi-error-limit-remain")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u32>().ok())
+                    {
+                        if remain < 20 {
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                        }
+                    }
+
+                    let expires_at = parse_http_expires(&resp, 300);
+                    let etag_hdr = resp
+                        .headers()
+                        .get("etag")
+                        .and_then(|h| h.to_str().ok())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+
+                    let raw_pages = resp
+                        .headers()
+                        .get("x-pages")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(1)
+                        .max(1);
+
+                    if raw_pages > MAX_PAGES_LIMIT {
+                        tracing::error!(
+                            error_code = %ErrorCode::ErrEsiParseFailed,
+                            url = %url,
+                            raw_pages = raw_pages,
+                            "ESI response exceeded maximum safe pagination limit"
+                        );
+                        bail!(
+                            "ESI response exceeded maximum safe pagination limit ({} pages; limit is {})",
+                            raw_pages,
+                            MAX_PAGES_LIMIT
+                        );
+                    }
+                    let total_pages = raw_pages;
+
+                    match resp.text().await {
+                        Ok(body) => break (body, expires_at, etag_hdr, total_pages),
+                        Err(e) => {
+                            if attempts > MAX_NETWORK_RETRIES {
+                                tracing::error!(
+                                    error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                    url = %url,
+                                    attempts = attempts,
+                                    error = %e,
+                                    "ESI page 1 body stream read failed permanently after {} retries: {}",
+                                    attempts,
+                                    e
+                                );
+                                bail!(
+                                    "ESI page 1 body stream read failed after {} retries: {}",
+                                    attempts,
+                                    e
+                                );
+                            }
+                            tracing::warn!(
+                                error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                url = %url,
+                                attempts = attempts,
+                                error = %e,
+                                "ESI page 1 body stream read error, retrying in {:?}...",
+                                backoff
+                            );
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(Duration::from_secs(10));
+                        }
+                    }
                 }
                 Err(e) => {
                     if attempts > MAX_NETWORK_RETRIES {
@@ -308,49 +382,6 @@ impl EsiClient {
             }
         };
 
-        // Proactive error limit throttling if CCP error limit is dwindling
-        if let Some(remain) = resp
-            .headers()
-            .get("x-esi-error-limit-remain")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok())
-        {
-            if remain < 20 {
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-            }
-        }
-
-        let expires_at = parse_http_expires(&resp, 300);
-        let etag_hdr = resp
-            .headers()
-            .get("etag")
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-
-        let raw_pages = resp
-            .headers()
-            .get("x-pages")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(1);
-
-        if raw_pages > MAX_PAGES_LIMIT {
-            tracing::error!(
-                error_code = %ErrorCode::ErrEsiParseFailed,
-                url = %url,
-                raw_pages = raw_pages,
-                "ESI response exceeded maximum safe pagination limit"
-            );
-            bail!(
-                "ESI response exceeded maximum safe pagination limit ({} pages; limit is {})",
-                raw_pages,
-                MAX_PAGES_LIMIT
-            );
-        }
-        let total_pages = raw_pages;
-
-        let body_text = resp.text().await?;
         let mut all_items: Vec<T> = serde_json::from_str(&body_text)
             .map_err(|e| {
                 tracing::error!(
@@ -418,7 +449,7 @@ impl EsiClient {
                                     tokio::time::sleep(wait_dur).await;
                                     page_backoff = (page_backoff * 2).min(Duration::from_secs(15));
                                     continue;
-                                } else if status.is_server_error() {
+                                } else if status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT {
                                     if attempts > MAX_NETWORK_RETRIES {
                                         tracing::error!(
                                             error_code = %ErrorCode::ErrEsiServerError,
@@ -453,7 +484,35 @@ impl EsiClient {
                                     );
                                     bail!("Page {} failed with status {}", page, status);
                                 }
-                                break r.text().await?;
+                                match r.text().await {
+                                    Ok(body) => break body,
+                                    Err(e) => {
+                                        if attempts > MAX_NETWORK_RETRIES {
+                                            tracing::error!(
+                                                error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                                page = page,
+                                                url = %u,
+                                                attempts = attempts,
+                                                error = %e,
+                                                "ESI page body stream read failed permanently after retries"
+                                            );
+                                            bail!(
+                                                "Page {} body stream read failed after {} retries: {}",
+                                                page,
+                                                attempts,
+                                                e
+                                            );
+                                        }
+                                        tracing::warn!(
+                                            error_code = %ErrorCode::ErrEsiNetworkFailed,
+                                            page = page,
+                                            error = %e,
+                                            "ESI page body stream read error, retrying"
+                                        );
+                                        tokio::time::sleep(page_backoff).await;
+                                        page_backoff = (page_backoff * 2).min(Duration::from_secs(10));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 if attempts > MAX_NETWORK_RETRIES {

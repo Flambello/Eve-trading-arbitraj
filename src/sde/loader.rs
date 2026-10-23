@@ -489,9 +489,12 @@ impl SdeLoader {
         // Verify SQLite database magic header bytes
         {
             let mut header = [0u8; 16];
-            let mut check_file = File::open(&temp_db_path)?;
-            check_file.read_exact(&mut header)?;
-            if &header != b"SQLite format 3\0" {
+            let is_valid = {
+                let mut check_file = File::open(&temp_db_path)?;
+                check_file.read_exact(&mut header)?;
+                &header == b"SQLite format 3\0"
+            };
+            if !is_valid {
                 let _ = std::fs::remove_file(&temp_db_path);
                 tracing::error!(
                     error_code = %ErrorCode::ErrSdeDecompressionFailed,
@@ -528,61 +531,105 @@ impl SdeLoader {
             .timeout(Duration::from_secs(600))
             .build()?;
 
-        let mut resp = client
-            .get(FUZZWORK_SDE_URL)
-            .send()
-            .await
-            .context("Failed to initiate SDE download from Fuzzwork")?;
-
-        if !resp.status().is_success() {
-            bail!("Failed to download SDE: HTTP {}", resp.status());
-        }
-
-        if let Some(len) = resp.content_length() {
-            if !(MIN_SDE_COMPRESSED_BYTES..=MAX_SDE_COMPRESSED_BYTES).contains(&len) {
-                bail!(
-                    "SDE archive Content-Length out of bounds ({} bytes; expected {} to {} bytes)",
-                    len,
-                    MIN_SDE_COMPRESSED_BYTES,
-                    MAX_SDE_COMPRESSED_BYTES
-                );
-            }
-        }
-
         let temp_gz_path = dest_path.with_extension("sqlite.gz.part");
-        let gz_guard = TempFileCleanupGuard::new(&temp_gz_path);
-        let mut file = File::create(&temp_gz_path)?;
+        let mut attempts = 0u32;
+        let mut backoff = Duration::from_secs(1);
 
-        let mut downloaded_bytes = 0u64;
-        while let Some(chunk) = resp.chunk().await? {
-            downloaded_bytes += chunk.len() as u64;
-            if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
-                bail!(
-                    "SDE download exceeded maximum allowed size threshold ({} bytes)",
-                    MAX_SDE_COMPRESSED_BYTES
-                );
+        loop {
+            attempts += 1;
+            let _ = std::fs::remove_file(&temp_gz_path);
+            let gz_guard = TempFileCleanupGuard::new(&temp_gz_path);
+
+            let download_result: Result<()> = async {
+                let mut resp = client
+                    .get(FUZZWORK_SDE_URL)
+                    .send()
+                    .await
+                    .context("Failed to initiate SDE download from Fuzzwork")?;
+
+                if !resp.status().is_success() {
+                    bail!("Failed to download SDE: HTTP {}", resp.status());
+                }
+
+                if let Some(len) = resp.content_length() {
+                    if !(MIN_SDE_COMPRESSED_BYTES..=MAX_SDE_COMPRESSED_BYTES).contains(&len) {
+                        bail!(
+                            "SDE archive Content-Length out of bounds ({} bytes; expected {} to {} bytes)",
+                            len,
+                            MIN_SDE_COMPRESSED_BYTES,
+                            MAX_SDE_COMPRESSED_BYTES
+                        );
+                    }
+                }
+
+                let mut file = File::create(&temp_gz_path)?;
+                let mut downloaded_bytes = 0u64;
+                while let Some(chunk) = resp.chunk().await? {
+                    downloaded_bytes += chunk.len() as u64;
+                    if downloaded_bytes > MAX_SDE_COMPRESSED_BYTES {
+                        bail!(
+                            "SDE download exceeded maximum allowed size threshold ({} bytes)",
+                            MAX_SDE_COMPRESSED_BYTES
+                        );
+                    }
+                    file.write_all(&chunk)?;
+                }
+                file.flush()?;
+                drop(file);
+                Ok(())
             }
-            file.write_all(&chunk)?;
+            .await;
+
+            match download_result {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "eve_trade_scout",
+                        "Decompressing gzip archive into SQLite database..."
+                    );
+                    let compressed_file = File::open(&temp_gz_path)?;
+                    let decomp_res = Self::decompress_and_validate_archive(
+                        BufReader::new(compressed_file),
+                        dest_path,
+                    );
+                    decomp_res?;
+                    drop(gz_guard);
+
+                    tracing::info!(
+                        target: "eve_trade_scout",
+                        path = ?dest_path,
+                        "SDE database ready"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    drop(gz_guard);
+                    if attempts >= 3 {
+                        tracing::error!(
+                            target: "eve_trade_scout",
+                            error_code = %ErrorCode::ErrSdeDownloadFailed,
+                            attempts = attempts,
+                            error = %e,
+                            "SDE download failed permanently after {} attempts",
+                            attempts
+                        );
+                        return Err(e).context(format!(
+                            "Failed to download SDE database after {} attempts",
+                            attempts
+                        ));
+                    }
+                    tracing::warn!(
+                        target: "eve_trade_scout",
+                        error_code = %ErrorCode::ErrSdeDownloadFailed,
+                        attempts = attempts,
+                        error = %e,
+                        "SDE download failed, retrying in {:?}...",
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
         }
-        file.flush()?;
-        drop(file);
-
-        tracing::info!(
-            target: "eve_trade_scout",
-            "Decompressing gzip archive into SQLite database..."
-        );
-        let compressed_file = File::open(&temp_gz_path)?;
-        let decomp_res =
-            Self::decompress_and_validate_archive(BufReader::new(compressed_file), dest_path);
-        decomp_res?;
-        drop(gz_guard);
-
-        tracing::info!(
-            target: "eve_trade_scout",
-            path = ?dest_path,
-            "SDE database ready"
-        );
-        Ok(())
     }
 
     fn preload_static_tables(conn: &Connection) -> PreloadedStaticTables {

@@ -408,7 +408,12 @@ pub fn knapsack_pack_constrained(
         let unit_cost = deal.buy_price;
         let unit_profit = deal.net_profit / (deal.quantity.max(1) as f64);
 
-        if unit_vol <= 0.0 || unit_cost <= 0.0 {
+        if !unit_vol.is_finite()
+            || !unit_cost.is_finite()
+            || !unit_profit.is_finite()
+            || unit_vol <= 0.0
+            || unit_cost <= 0.0
+        {
             continue;
         }
 
@@ -566,7 +571,13 @@ pub fn find_chain_routes(
     graph: &SystemGraph,
     config: &ChainConfig,
 ) -> Vec<ChainRoute> {
-    if deals.is_empty() || config.max_legs == 0 {
+    if deals.is_empty()
+        || config.max_legs == 0
+        || !config.ship_max_volume.is_finite()
+        || config.ship_max_volume <= 0.0
+        || !config.ship_max_budget.is_finite()
+        || config.ship_max_budget <= 0.0
+    {
         return Vec::new();
     }
 

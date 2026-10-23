@@ -1836,7 +1836,9 @@ impl DesktopApp {
             self.sde = Some(sde);
             self.graph = Some(graph);
             self.esi = Some(esi);
-            self.home_system = home_system_name;
+            if self.is_startup || self.home_system == "Jita" || self.home_system.is_empty() {
+                self.home_system = home_system_name;
+            }
             self.deals = deals;
             self.manifests = manifests;
             self.route = route;

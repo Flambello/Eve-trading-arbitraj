@@ -265,6 +265,23 @@ pub fn calculate_deal(
         return None;
     }
 
+    // Validate config parameters and item dimensions are finite and valid
+    if !cfg.broker_fee.is_finite()
+        || cfg.broker_fee < 0.0
+        || !cfg.sales_tax.is_finite()
+        || cfg.sales_tax < 0.0
+        || !cfg.ship.max_volume.is_finite()
+        || cfg.ship.max_volume <= 0.0
+        || !cfg.ship.max_budget.is_finite()
+        || cfg.ship.max_budget <= 0.0
+        || !item.packaged_volume.is_finite()
+        || item.packaged_volume <= 0.0
+        || !cfg.min_profit.is_finite()
+        || !cfg.min_net_profit_pct.is_finite()
+    {
+        return None;
+    }
+
     let src_system_id = src_order.system_id;
     let dst_system_id = dst_order.system_id;
     let src_station = src_order.location_id;

@@ -1215,13 +1215,74 @@ pub async fn fetch_character_location_at_url(
         token.character_id
     );
 
-    let resp = client
-        .get(&url)
-        .header("User-Agent", USER_AGENT_VAL)
-        .header("Authorization", format!("Bearer {}", token.access_token))
-        .send()
-        .await
-        .context("Failed to query live character location from ESI")?;
+    let mut attempts = 0u32;
+    let mut backoff = std::time::Duration::from_millis(500);
+    let resp = loop {
+        attempts += 1;
+        let resp_res = client
+            .get(&url)
+            .header("User-Agent", USER_AGENT_VAL)
+            .header("Authorization", format!("Bearer {}", token.access_token))
+            .send()
+            .await;
+
+        match resp_res {
+            Ok(r) => {
+                let status = r.status();
+                if (status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.as_u16() == 420)
+                    && attempts <= 3
+                {
+                    let wait_dur = r
+                        .headers()
+                        .get("x-esi-error-limit-reset")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(|s| std::time::Duration::from_secs(s.max(1) + 1))
+                        .unwrap_or(backoff);
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiRateLimited,
+                        character_id = token.character_id,
+                        wait = ?wait_dur,
+                        "Character location query rate-limited (HTTP {}). Backing off...",
+                        status
+                    );
+                    tokio::time::sleep(wait_dur).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                    continue;
+                }
+                if (status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT)
+                    && attempts <= 3
+                {
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiServerError,
+                        character_id = token.character_id,
+                        status = %status,
+                        "Character location query server error. Retrying in {:?}...",
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                    continue;
+                }
+                break r;
+            }
+            Err(e) => {
+                if attempts <= 3 {
+                    tracing::warn!(
+                        error_code = %ErrorCode::ErrEsiNetworkFailed,
+                        character_id = token.character_id,
+                        error = %e,
+                        "Character location network error. Retrying in {:?}...",
+                        backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+                    continue;
+                }
+                return Err(e).context("Failed to query live character location from ESI");
+            }
+        }
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();

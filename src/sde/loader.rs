@@ -84,6 +84,19 @@ pub fn arabic_to_roman(mut n: u32) -> String {
     out
 }
 
+/// Escapes SQLite LIKE wildcard characters (`%`, `_`) and the escape character (`\`)
+/// so user queries are matched literally.
+pub fn escape_sqlite_like(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for c in input.chars() {
+        if c == '%' || c == '_' || c == '\\' {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
 /// Parse a Roman numeral string case-insensitively (e.g. "IV" -> 4, "x" -> 10, "VIII" -> 8).
 pub fn roman_to_arabic(s: &str) -> Option<u32> {
     let s = s.trim();
@@ -800,16 +813,18 @@ impl SdeLoader {
         };
 
         let trimmed = base_cand.trim();
-        let prefix_pattern = format!("{}%", trimmed);
-        let contains_pattern = format!("%{}%", trimmed);
+        let lower_trimmed = trimmed.to_lowercase();
+        let escaped_query = escape_sqlite_like(&lower_trimmed);
+        let prefix_pattern = format!("{}%", escaped_query);
+        let contains_pattern = format!("%{}%", escaped_query);
 
         let sql = "SELECT s.solarSystemID, s.solarSystemName, s.security, s.regionID, COALESCE(r.regionName, 'Unknown')
                    FROM mapSolarSystems s
                    LEFT JOIN mapRegions r ON s.regionID = r.regionID
-                   WHERE LOWER(s.solarSystemName) LIKE ?1 OR LOWER(s.solarSystemName) LIKE ?2
+                   WHERE LOWER(s.solarSystemName) LIKE ?1 ESCAPE '\\' OR LOWER(s.solarSystemName) LIKE ?2 ESCAPE '\\'
                    ORDER BY 
                        CASE WHEN LOWER(s.solarSystemName) = ?3 THEN 0
-                            WHEN LOWER(s.solarSystemName) LIKE ?1 THEN 1
+                            WHEN LOWER(s.solarSystemName) LIKE ?1 ESCAPE '\\' THEN 1
                             ELSE 2 END,
                        s.security DESC
                    LIMIT ?4";
@@ -820,7 +835,7 @@ impl SdeLoader {
         };
 
         let rows = stmt.query_map(
-            params![prefix_pattern, contains_pattern, trimmed, limit as i64],
+            params![prefix_pattern, contains_pattern, lower_trimmed, limit as i64],
             |row| {
                 Ok(SystemSearchResult {
                     system_id: row.get(0)?,

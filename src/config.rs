@@ -632,13 +632,20 @@ impl UserConfig {
     /// and anti-gank collateral budget if custom ship mode is enabled.
     pub fn effective_ship_profile(&self) -> Result<ShipProfile> {
         if self.ship.use_custom_ship {
+            let max_volume = if self.ship.custom_cargo_vol.is_finite() {
+                self.ship.custom_cargo_vol.clamp(10.0, 1_500_000.0)
+            } else {
+                default_custom_cargo_vol()
+            };
+            let max_budget = if self.ship.custom_budget_isk.is_finite() {
+                self.ship.custom_budget_isk.clamp(100_000.0, 100_000_000_000.0)
+            } else {
+                default_custom_budget_isk()
+            };
             Ok(ShipProfile {
                 name: "Custom Vessel Profile",
-                max_volume: self.ship.custom_cargo_vol.clamp(10.0, 1_500_000.0),
-                max_budget: self
-                    .ship
-                    .custom_budget_isk
-                    .clamp(100_000.0, 100_000_000_000.0),
+                max_volume,
+                max_budget,
             })
         } else {
             self.ship_profile()

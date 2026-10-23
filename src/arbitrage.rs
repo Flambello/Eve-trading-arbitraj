@@ -124,6 +124,10 @@ pub fn find_deals(
     for market in markets.values() {
         for (&type_id, orders) in &market.sell_orders {
             for o in orders {
+                // Strictly require positive finite prices to prevent order-book poisoning
+                if !o.price.is_finite() || o.price <= 0.0 {
+                    continue;
+                }
                 // Strictly exclude lowsec and nullsec systems: only highsec allowed
                 if !graph.is_highsec(o.system_id) {
                     continue;
@@ -143,6 +147,10 @@ pub fn find_deals(
 
         for (&type_id, orders) in &market.buy_orders {
             for o in orders {
+                // Strictly require positive finite prices to prevent order-book poisoning
+                if !o.price.is_finite() || o.price <= 0.0 {
+                    continue;
+                }
                 // Strictly exclude lowsec and nullsec systems: only highsec allowed
                 if !graph.is_highsec(o.system_id) {
                     continue;
@@ -543,22 +551,25 @@ pub fn bundle_route_cargo(
     manifests
 }
 
-/// Neutralize CSV Formula Injection (CWE-1236).
-/// If a cell starts with formula trigger characters (`=`, `+`, `-`, `@`, `\t`, `\r`),
+/// Neutralize CSV Formula Injection (CWE-1236) and CRLF injection.
+/// If a cell starts with formula trigger characters (`=`, `+`, `-`, `@`, `|`, `%`, `\t`, `\r`),
 /// prepends a single quote `'` so spreadsheet applications treat it strictly as literal text.
-/// Also escapes internal double quotes (`"` -> `""`).
+/// Strips raw newline characters (`\r`, `\n`) to prevent CSV line injection, and escapes internal double quotes (`"` -> `""`).
 pub fn sanitize_csv_cell(val: &str) -> String {
-    let trimmed = val.trim_start();
+    let clean = val.replace(['\r', '\n'], " ");
+    let trimmed = clean.trim_start();
     let escaped = if trimmed.starts_with('=')
         || trimmed.starts_with('+')
         || trimmed.starts_with('-')
         || trimmed.starts_with('@')
+        || trimmed.starts_with('|')
+        || trimmed.starts_with('%')
         || trimmed.starts_with('\t')
         || trimmed.starts_with('\r')
     {
-        format!("'{}", val)
+        format!("'{}", clean)
     } else {
-        val.to_string()
+        clean
     };
     escaped.replace('"', "\"\"")
 }

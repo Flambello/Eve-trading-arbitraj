@@ -37,7 +37,7 @@ pub async fn fetch_region_market_opts(
     let mut buy_orders: HashMap<u32, Vec<MarketOrder>> = HashMap::new();
 
     for order in raw_orders {
-        if order.volume_remain == 0 {
+        if order.volume_remain == 0 || !order.price.is_finite() || order.price <= 0.0 {
             continue;
         }
 
@@ -115,7 +115,7 @@ pub async fn fetch_markets_opts(
 pub fn cheapest_sell(orders: &[MarketOrder]) -> Option<&MarketOrder> {
     orders
         .iter()
-        .filter(|o| !o.is_buy_order && o.volume_remain > 0)
+        .filter(|o| !o.is_buy_order && o.volume_remain > 0 && o.price.is_finite() && o.price > 0.0)
         .min_by(|a, b| {
             a.price
                 .partial_cmp(&b.price)
@@ -126,7 +126,7 @@ pub fn cheapest_sell(orders: &[MarketOrder]) -> Option<&MarketOrder> {
 pub fn best_buy(orders: &[MarketOrder]) -> Option<&MarketOrder> {
     orders
         .iter()
-        .filter(|o| o.is_buy_order && o.volume_remain > 0)
+        .filter(|o| o.is_buy_order && o.volume_remain > 0 && o.price.is_finite() && o.price > 0.0)
         .max_by(|a, b| {
             a.price
                 .partial_cmp(&b.price)

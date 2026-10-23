@@ -3,7 +3,7 @@
 ## Mandatory Session Start Protocol
 Whenever starting a session in this repository:
 1. **Always Read the Full `.agents/` Documentation First**:
-   Review all documents in `.agents/` (`00_PROJECT_OVERVIEW.md` through `09_RUST_BEST_PRACTICES_AND_TESTING.md`) before implementing or modifying any code.
+   Review all documents in `.agents/` (`00_PROJECT_OVERVIEW.md` through `10_ERROR_CODES_AND_LOGGING.md`) before implementing or modifying any code.
 2. **Execute Post-Edit Checks After EVERY Change**:
    Every code modification MUST be followed by:
    ```bash

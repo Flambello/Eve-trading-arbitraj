@@ -91,30 +91,29 @@ Eve trading arbitraj/
 │   ├── hub_arbitrage.rs            ← core trade hub arbitrage & corridor runs
 │   ├── audio.rs                    ← freedesktop notifications & sound alerts
 │   └── ui/
-│       ├── mod.rs                  ← UI dispatcher (GUI vs TUI vs CLI)
+│       ├── mod.rs                  ← UI dispatcher & utility helpers
 │       ├── gui.rs                  ← native desktop GUI (egui / eframe, universal default)
-│       ├── theme.rs                ← 4 cockpit themes, tokenized ThemePalette & contrast system
-│       └── tui.rs                  ← terminal interface (ratatui / crossterm, deprecated)
+│       └── theme.rs                ← 4 cockpit themes, tokenized ThemePalette & contrast system
 │
-├── data/                           ← cached SDE SQLite database
-│   └── .gitkeep
-│
-├── tests/                          ← comprehensive automated test suites (15 suites)
+├── tests/                          ← comprehensive automated test suites (18 suites)
 │   ├── test_arbitrage.rs           ← 10% ROI, station filter, highsec filter, PPJ, hauler limits
-│   ├── test_config.rs              ← ship profile parser, user config defaults & TOML roundtrip
-│   ├── test_graph.rs               ← highsec security tags, safe route bypass, Dijkstra jumps
-│   ├── test_route_planner.rs       ← greedy trade chaining, multi-stop constraints
-│   ├── test_esi_models.rs          ← JSON order deserialization, best buy/sell matching
 │   ├── test_chain_route_planner.rs ← multi-leg chain beam search, detour cost, knapsack packing
+│   ├── test_concurrency.rs         ← multi-threaded stress testing, parallel market fetching
+│   ├── test_config.rs              ← ship profile parser, user config defaults & TOML roundtrip
+│   ├── test_donation_branding.rs   ← in-game donation recipient & branding formatting
+│   ├── test_dos_defense.rs         ← payload bounding, resource exhaustion defenses
+│   ├── test_error_codes.rs         ← centralized error code taxonomy & formatting
+│   ├── test_esi_models.rs          ← JSON order deserialization, best buy/sell matching
+│   ├── test_graph.rs               ← highsec security tags, safe route bypass, Dijkstra jumps
 │   ├── test_hub_arbitrage.rs       ← core hub corridors, filters, manifests, and summaries
+│   ├── test_logging.rs             ← structured logging, file rotation & redacting
+│   ├── test_reliability.rs         ← fault recovery, poison lock handling, transient retries
+│   ├── test_route_planner.rs       ← greedy trade chaining, multi-stop constraints
 │   ├── test_sde_search.rs          ← Roman numerals, autocomplete, SQL escaping resilience
 │   ├── test_security_audit.rs      ← decompression bomb guard, SSO validation, CSV escaping
 │   ├── test_sso.rs                 ← PKCE derivation, token lifecycle, claims validation
-│   ├── test_donation_branding.rs   ← in-game donation recipient & branding formatting
-│   ├── test_error_codes.rs         ← centralized error code taxonomy & formatting
-│   ├── test_logging.rs             ← structured logging, file rotation & redacting
-│   ├── test_theme.rs               ← 4 cockpit themes, contrast tokens, frames & indicators
-│   └── test_startup_resilience.rs  ← startup failure catch-all, channel disconnect & offline mode
+│   ├── test_startup_resilience.rs  ← startup failure catch-all, channel disconnect & offline mode
+│   └── test_theme.rs               ← 4 cockpit themes, contrast tokens, frames & indicators
 │
 ├── Cargo.toml
 ├── Cargo.lock
@@ -135,12 +134,10 @@ Eve trading arbitraj/
 | JSON parsing | `serde` + `serde_json` | Zero-copy deserialization |
 | SQLite (SDE) | `rusqlite` (bundled) | Zero dynamic dependencies, embedded C SQLite |
 | Graph / pathfinding | `petgraph` | Dijkstra, efficient adjacency list |
-| Desktop GUI | `eframe` + `egui` | Native Linux window (Wayland & X11), 4 selectable cockpit themes |
-| Terminal UI | `ratatui` + `crossterm` | Rich interactive TUI, tables, spinners |
-| CLI argument parsing | `clap` | Derive-macro based, flags and headless mode |
+| Desktop GUI | `eframe` + `egui` | Native desktop window (Wayland & X11, Windows), 4 selectable cockpit themes |
+| Telemetry & Logging | `tracing` + `tracing-subscriber` + `tracing-appender` | Structured JSONL daily rotating logs + ANSI terminal output |
 | Config files | `toml` crate | Read/write `config.toml` |
-| Progress bars | `indicatif` | Download and processing progress |
-| Error handling | `anyhow` + `thiserror` | Contextual and typed error propagation |
+| Error handling | `anyhow` + `ErrorCode` enum | Contextual error propagation with standardized error taxonomy |
 | Date/time | `chrono` | Timestamp parsing from ESI |
 | LRU cache | `lru` crate | Jump-count memoization |
 

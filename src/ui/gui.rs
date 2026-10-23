@@ -3480,12 +3480,30 @@ impl DesktopApp {
                     }
                     (filter.is_empty()
                         || crate::hub_arbitrage::contains_ignore_ascii_case(&d.item_name, filter)
-                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_system_name, filter)
-                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_system_name, filter)
-                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_station_name, filter)
-                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_station_name, &filter_sde)
-                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_station_name, filter)
-                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_station_name, &filter_sde))
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(
+                            &d.source_system_name,
+                            filter,
+                        )
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(
+                            &d.dest_system_name,
+                            filter,
+                        )
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(
+                            &d.source_station_name,
+                            filter,
+                        )
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(
+                            &d.source_station_name,
+                            &filter_sde,
+                        )
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(
+                            &d.dest_station_name,
+                            filter,
+                        )
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(
+                            &d.dest_station_name,
+                            &filter_sde,
+                        ))
                         && d.net_profit >= min_profit_threshold
                         && (max_jumps == 0 || d.total_jumps <= max_jumps)
                 })
@@ -3587,9 +3605,15 @@ impl DesktopApp {
                 DealSortBy::BuySystem => {
                     filtered.sort_by(|(_, a), (_, b)| {
                         if self.sort_descending {
-                            crate::hub_arbitrage::cmp_ignore_ascii_case(&b.source_system_name, &a.source_system_name)
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(
+                                &b.source_system_name,
+                                &a.source_system_name,
+                            )
                         } else {
-                            crate::hub_arbitrage::cmp_ignore_ascii_case(&a.source_system_name, &b.source_system_name)
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(
+                                &a.source_system_name,
+                                &b.source_system_name,
+                            )
                         }
                     });
                 }
@@ -3609,9 +3633,15 @@ impl DesktopApp {
                 DealSortBy::SellSystem => {
                     filtered.sort_by(|(_, a), (_, b)| {
                         if self.sort_descending {
-                            crate::hub_arbitrage::cmp_ignore_ascii_case(&b.dest_system_name, &a.dest_system_name)
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(
+                                &b.dest_system_name,
+                                &a.dest_system_name,
+                            )
                         } else {
-                            crate::hub_arbitrage::cmp_ignore_ascii_case(&a.dest_system_name, &b.dest_system_name)
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(
+                                &a.dest_system_name,
+                                &b.dest_system_name,
+                            )
                         }
                     });
                 }
@@ -6697,9 +6727,15 @@ impl DesktopApp {
                 }),
                 DealSortBy::BuySystem => filtered.sort_by(|a, b| {
                     if self.hub_sort_descending {
-                        crate::hub_arbitrage::cmp_ignore_ascii_case(&b.source_system_name, &a.source_system_name)
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(
+                            &b.source_system_name,
+                            &a.source_system_name,
+                        )
                     } else {
-                        crate::hub_arbitrage::cmp_ignore_ascii_case(&a.source_system_name, &b.source_system_name)
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(
+                            &a.source_system_name,
+                            &b.source_system_name,
+                        )
                     }
                 }),
                 DealSortBy::BuyPrice => filtered.sort_by(|a, b| {
@@ -6715,9 +6751,15 @@ impl DesktopApp {
                 }),
                 DealSortBy::SellSystem => filtered.sort_by(|a, b| {
                     if self.hub_sort_descending {
-                        crate::hub_arbitrage::cmp_ignore_ascii_case(&b.dest_system_name, &a.dest_system_name)
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(
+                            &b.dest_system_name,
+                            &a.dest_system_name,
+                        )
                     } else {
-                        crate::hub_arbitrage::cmp_ignore_ascii_case(&a.dest_system_name, &b.dest_system_name)
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(
+                            &a.dest_system_name,
+                            &b.dest_system_name,
+                        )
                     }
                 }),
                 DealSortBy::SellPrice => filtered.sort_by(|a, b| {

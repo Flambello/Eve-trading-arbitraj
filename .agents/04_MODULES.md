@@ -109,7 +109,6 @@ impl SdeLoader {
     pub fn decompress_and_validate_archive<R: Read>(reader: R, dest_path: &Path) -> anyhow::Result<u64>;
 
     /// Download and decompress the Fuzzwork SQLite dump.
-    /// Shows an indicatif progress bar during download.
     pub async fn download(db_path: &Path) -> anyhow::Result<()>;
 
     /// Look up item metadata from invTypes.
@@ -502,20 +501,11 @@ pub fn detour_cost(from: u32, waypoint: u32, to: u32, graph: &SystemGraph, safe:
 
 ---
 
-## `src/ui/mod.rs`, `src/ui/gui.rs` & `src/ui/tui.rs`
+## `src/ui/mod.rs` & `src/ui/gui.rs`
 
 ```rust
 // UI Entry Points
 pub fn run_desktop_gui(app: DesktopApp) -> Result<(), eframe::Error>;
-
-pub fn run_tui(
-    deals:             &[ArbitrageDeal],
-    route:             &TradeRoute,
-    ship:              ShipProfile,
-    home_system:       &str,
-    safe_only:         bool,
-    npc_stations_only: bool,
-) -> anyhow::Result<()>;
 
 pub fn format_unit_price(val: f64) -> String;
 
@@ -695,62 +685,42 @@ pub fn init_logging(log_dir: Option<&Path>, default_level: &str) -> Result<Worke
 ## `src/main.rs`
 
 ```rust
-use clap::Parser;
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "eve-merchant",
-    author = "EVE Traveling Merchant",
-    version = "0.1.0",
-    about = "EVE Traveling Merchant — High-profit cross-station arbitrage engine & multi-stop route planner"
-)]
-pub struct Args {
-    #[arg(short, long)]                                               pub ship: Option<String>,
-    #[arg(long)]                                                      pub system: Option<String>,
-    #[arg(long)]                                                      pub regions: Option<String>,
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)] pub adjacent_regions: bool,
-    #[arg(long)]                                                      pub safe: bool,
-    #[arg(long)]                                                      pub unsafe_routes: bool,
-    #[arg(long)]                                                      pub npc_only: bool,
-    #[arg(long, aliases = ["allow-citadels", "include-structures"])]  pub allow_structures: bool,
-    #[arg(long)]                                                      pub min_profit: Option<f64>,
-    #[arg(long)]                                                      pub min_spread: Option<f64>,
-    #[arg(long)]                                                      pub min_roi: Option<f64>,     // Default: 10.0% enforced
-    #[arg(short, long, default_value_t = 25)]                         pub top: usize,
-    #[arg(long, default_value_t = 5)]                                 pub max_stops: usize,
-    #[arg(long)]                                                      pub route: bool,
-    #[arg(long)]                                                      pub gui: bool,
-    #[arg(long)]                                                      pub auto_refresh: bool,
-    #[arg(long)]                                                      pub tui: bool,
-    #[arg(long)]                                                      pub no_ui: bool,
-    #[arg(long)]                                                      pub no_tui: bool,
-    #[arg(long)]                                                      pub export: Option<PathBuf>,
-    #[arg(long)]                                                      pub update_sde: bool,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()>;
+
+async fn run_app() -> anyhow::Result<()>;
+
+fn resolve_sde_path() -> PathBuf;
+fn resolve_cache_dir(cfg_dir: &str) -> PathBuf;
+fn resolve_log_dir() -> PathBuf;
 ```
+
+`main.rs` configures structured daily rotating file logging via `init_logging`, loads user configuration, spawns background universe initialization and regional market fetch tasks via `tokio::spawn` with a panic supervisor channel, and launches the native desktop window via `ui::run_desktop_gui`.
 
 ---
 
 ## Automated Test Suites (`tests/`)
 
-The repository contains 13 dedicated integration test suites providing rigorous test coverage over critical domain logic, invariants, security, SSO, and diagnostics:
+The repository contains 18 dedicated integration test suites providing rigorous test coverage over critical domain logic, invariants, security, SSO, and diagnostics:
 
 | Suite | File | Tests Covered |
 |---|---|---|
 | **Arbitrage Engine** | `tests/test_arbitrage.rs` | Ship profile volume/budget limits, profit-per-jump (PPJ) formula, enforced 10.0% net profitability rejection/acceptance, NPC station ID boundary ($< 10^{12}$ vs $\ge 10^{12}$), station toggle filter, highsec security filtering ($\ge 0.45$), 4-way quantity solver, deal sorting (PPJ DESC, net DESC). |
 | **Chain Route Planner** | `tests/test_chain_route_planner.rs` | Multi-leg chained trade routes, knapsack cargo packing, detour tolerance, beam search candidate exploration, market load limits per destination station. |
+| **Concurrency & Load** | `tests/test_concurrency.rs` | Multi-threaded stress testing, parallel market order fetching, safe shared state mutation. |
 | **Config & Profiles** | `tests/test_config.rs` | Ship profile string parsing (case-insensitivity, aliases, invalid string rejection), `UserConfig` defaults and invariant checks, TOML roundtrip serialization & deserialization. |
 | **Donation Branding** | `tests/test_donation_branding.rs` | In-game ISK donation branding, developer character ID and name verification for tip jar. |
+| **DoS Defense** | `tests/test_dos_defense.rs` | Payload size boundaries, decompression limits, resource exhaustion defense. |
 | **Error Codes Taxonomy** | `tests/test_error_codes.rs` | Taxonomy verification: uniqueness of integer code numbers, valid code ranges (1000..9999), string identifier formatting, JSON serialization/deserialization. |
 | **ESI Models & Deserialization** | `tests/test_esi_models.rs` | JSON order array deserialization, buy vs sell discrimination, `cheapest_sell` and `best_buy` price matching across order books. |
 | **Graph & Pathfinding** | `tests/test_graph.rs` | Solar system security classification (`is_highsec`), Dijkstra jump counting, safe routing bypass around lowsec systems, lowsec destination rejection in safe mode, adjacent region discovery. |
 | **Hub Arbitrage** | `tests/test_hub_arbitrage.rs` | Multi-hub arbitrage matrix across 5 major trade hubs (Jita, Amarr, Dodixie, Rens, Hek), capital allocation, ROI filtering. |
 | **Logging & Diagnostics** | `tests/test_logging.rs` | Initialization of dual-sink logging, file output generation, panic hook interceptor, JSON line schema validation, log retention. |
+| **Reliability & Resilience** | `tests/test_reliability.rs` | Fault recovery, transient HTTP 408 retries, poison lock recovery, atomic file cleanup guards. |
 | **Route Planner** | `tests/test_route_planner.rs` | Empty deal handling, greedy sequential multi-stop deal chaining, cargo volume and budget accumulation, maximum stop constraint enforcement. |
 | **SDE Search** | `tests/test_sde_search.rs` | Solar system substring and fuzzy search, station name resolution, item type lookup from SQLite. |
 | **Security Audit** | `tests/test_security_audit.rs` | Untrusted input validation, path traversal prevention, CSV injection sanitization, numeric edge cases (NaN/Inf pricing). |
 | **SSO Integration** | `tests/test_sso.rs` | EVE Online SSO v2 PKCE OAuth authorization flow, state verification, token exchange and refresh, authenticated client headers. |
+| **Startup Resilience** | `tests/test_startup_resilience.rs` | Application startup supervisor, channel disconnect detection, offline fallback mode safety. |
+| **Cockpit Themes** | `tests/test_theme.rs` | Contrast verification across all 4 themes, adaptive semantic indicators, theme frame generators. |
 

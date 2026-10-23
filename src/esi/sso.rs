@@ -446,7 +446,7 @@ fn format_http_400_response(body: &str) -> String {
     )
 }
 
-/// Listens on 127.0.0.1:<port> for the OAuth callback from the browser.
+/// Listens on `127.0.0.1:<port>` for the OAuth callback from the browser.
 /// Returns the authorization code once received.
 pub async fn listen_for_auth_code(
     port: u16,
@@ -981,7 +981,7 @@ pub fn parse_jwt_character_claims_with_scopes(jwt: &str) -> Option<(u64, String,
     Some((character_id, name, scopes))
 }
 
-/// Decodes the payload segment of a JWT token to extract `name` and `sub` (CHARACTER:EVE:<id>).
+/// Decodes the payload segment of a JWT token to extract `name` and `sub` (`CHARACTER:EVE:<id>`).
 pub fn parse_jwt_character_claims(jwt: &str) -> Option<(u64, String)> {
     parse_jwt_character_claims_with_scopes(jwt).map(|(id, name, _)| (id, name))
 }

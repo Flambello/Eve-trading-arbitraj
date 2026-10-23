@@ -69,7 +69,12 @@ pub struct ItemInfo {
     pub name:            String,
     pub packaged_volume: f64,    // m³ per unit (used for cargo calculation)
     pub group_id:        u32,
+    pub category_id:     u32,
     pub published:       bool,
+}
+
+impl ItemInfo {
+    pub fn is_npc_trade_commodity(&self) -> bool;
 }
 ```
 
@@ -80,38 +85,52 @@ pub struct ItemInfo {
 A single profitable opportunity: buy at station A, sell at station B.
 
 ```rust
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArbitrageDeal {
-    pub type_id:            u32,
-    pub item_name:          String,
+    pub type_id:                    u32,
+    pub item_name:                  String,
+    pub source_order_id:            u64,
+    pub dest_order_id:              u64,
+    pub source_order_volume_remain: u32,
+    pub dest_order_volume_remain:   u32,
+    pub dest_order_min_volume:      u32,
+    pub is_npc_trade:               bool,
 
-    pub buy_price:          f64,   // cheapest sell order price at source (you pay this)
-    pub sell_price:         f64,   // highest buy order price at dest (you receive this)
-    pub spread_pct:         f64,   // (sell - buy) / buy * 100
+    pub buy_price:                  f64,   // cheapest sell order price at source (you pay this)
+    pub sell_price:                 f64,   // highest buy order price at dest (you receive this)
+    pub spread_pct:                 f64,   // (sell - buy) / buy * 100
 
-    pub source_station_id:  u64,
-    pub source_system_id:   u32,
-    pub source_system_name: String,
+    pub source_station_id:          u64,
+    pub source_system_id:           u32,
+    pub source_system_name:         String,
+    pub source_station_name:        String,
+    pub source_security:            f64,
 
-    pub dest_station_id:    u64,
-    pub dest_system_id:     u32,
-    pub dest_system_name:   String,
+    pub dest_station_id:            u64,
+    pub dest_system_id:             u32,
+    pub dest_system_name:           String,
+    pub dest_station_name:          String,
+    pub dest_security:              f64,
 
-    pub quantity:           u32,
-    pub volume_used:        f64,   // m³ for that quantity
-    pub capital_required:   f64,   // ISK to buy that quantity
+    pub quantity:                   u32,
+    pub volume_used:                f64,   // m³ for that quantity
+    pub capital_required:           f64,   // ISK to buy that quantity
 
-    pub gross_profit:       f64,
-    pub taxes_and_fees:     f64,
-    pub net_profit:         f64,
-    pub net_profit_pct:     f64,   // (net_profit / capital_required) * 100 (enforced >= 10.0%)
+    pub gross_profit:               f64,
+    pub taxes_and_fees:             f64,
+    pub net_profit:                 f64,
+    pub net_profit_pct:             f64,   // (net_profit / capital_required) * 100 (enforced >= 10.0%)
 
-    pub jumps_from_home:    u32,   // home → source
-    pub jumps_source_dest:  u32,   // source → destination
-    pub total_jumps:        u32,
+    pub jumps_from_home:            u32,   // home → source
+    pub jumps_source_dest:          u32,   // source → destination
+    pub total_jumps:                u32,
 
-    pub profit_per_jump:    f64,   // net_profit / total_jumps  ← primary sort key
-    pub profit_per_m3:      f64,   // net_profit / volume_used
+    pub profit_per_jump:            f64,   // net_profit / total_jumps  ← primary sort key
+    pub profit_per_m3:              f64,   // net_profit / volume_used
+}
+
+impl ArbitrageDeal {
+    pub fn is_high_roi(&self) -> bool; // net_profit_pct >= 40.0%
 }
 ```
 
@@ -160,11 +179,17 @@ pub struct UserConfig {
     pub fees:     FeeConfig,
     pub cache:    CacheConfig,
     pub sso:      SsoConfig,
+    pub theme:    AppTheme,
+    pub ui:       UiConfig,
+    pub view:     ViewConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ShipConfig {
-    pub profile: String,           // "big" | "small"
+    pub profile:           String, // "big" | "small"
+    pub use_custom_ship:   bool,
+    pub custom_cargo_vol:  f64,
+    pub custom_budget_isk: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -208,6 +233,58 @@ pub struct SsoConfig {
     pub callback_port:      u16,     // Loopback TCP port (default: 37373)
     pub auto_sync_location: bool,    // Auto-sync starting system from active character
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UiConfig {
+    pub ui_scale:           f32,     // 0.75..=1.50
+    pub is_fullscreen:      bool,
+    pub dossier_side_panel: bool,
+    pub compact_kpi:        bool,
+    pub max_route_stops:    usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ViewConfig {
+    pub hide_npc_trades:         bool,
+    pub max_deals_per_order:     usize,
+    pub min_profit_filter_m:     f64,
+    pub max_jumps_filter:        u32,
+    pub deal_sort_by:            String,
+    pub deal_sort_descending:    bool,
+    pub chain_max_legs:          usize,
+    pub chain_max_dest_loads:    usize,
+    pub chain_include_npc:       bool,
+    pub chain_detour_enabled:    bool,
+    pub chain_max_detour:        u32,
+    pub hub_source_hub:          Option<String>,
+    pub hub_dest_hub:            Option<String>,
+    pub hub_include_npc:         bool,
+    pub hub_major_stations_only: bool,
+    pub hub_min_profit_m:        f64,
+}
+```
+
+---
+
+## 7. Autopilot Navigation (`AutopilotNavigable`) & Hubs (`CoreHub`)
+
+```rust
+/// Abstraction for route entities that yield an ordered sequence of EVE station IDs for autopilot injection.
+pub trait AutopilotNavigable {
+    fn ordered_destination_ids(&self) -> Vec<u64>;
+}
+
+// Implemented for: ArbitrageDeal, TradeCorridorManifest, TradeRoute, ChainRoute
+
+/// The 5 major empire trade hubs in EVE Online.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CoreHub {
+    Jita,
+    Amarr,
+    Dodixie,
+    Rens,
+    Hek,
+}
 ```
 
 ### SSO Token & Local Storage (`SsoToken`)
@@ -231,7 +308,7 @@ pub struct SsoToken {
 
 ---
 
-## 7. ESI Cache Entry (StoredEtag)
+## 8. ESI Cache Entry (StoredEtag)
 
 Stored on disk in `cache/etags.json` for ETag-based conditional HTTP GET requests.
 
@@ -246,7 +323,7 @@ pub struct StoredEtag {
 
 ---
 
-## 8. Graph Node
+## 9. Graph Node
 
 Stored internally in the `petgraph` graph. Each node carries this as its weight.
 

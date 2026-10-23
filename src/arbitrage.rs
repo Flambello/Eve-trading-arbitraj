@@ -221,7 +221,8 @@ pub fn find_deals(
         // Test all (source_station, dest_station) pairs
         for &src_order in sell_list {
             // Early prune: skip source stations unreachable from home in safe mode
-            if cfg.safe_only && graph.jump_count(cfg.home_system, src_order.system_id, true) >= 9999 {
+            if cfg.safe_only && graph.jump_count(cfg.home_system, src_order.system_id, true) >= 9999
+            {
                 continue;
             }
 

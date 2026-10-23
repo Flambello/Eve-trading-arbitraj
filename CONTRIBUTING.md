@@ -36,7 +36,8 @@ make test
 # or: cargo test --verbose
 
 # Run the native desktop GUI
-cargo run --bin eve-merchant -- --gui
+cargo run --bin eve-merchant
+# or: make run
 ```
 
 ---

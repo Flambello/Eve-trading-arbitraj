@@ -43,7 +43,7 @@ If `cargo check` or `cargo test` produces ANY failure or compiler warning:
   let resp = client.get(&url).send().await
       .with_context(|| format!("Failed to fetch market orders from {}", url))?;
   ```
-- **Domain Errors with `thiserror`**: When matching against specific operational failures (e.g. rate limits, 404s), define typed enums using `thiserror`.
+- **Standardized Error Taxonomy with `ErrorCode`**: When matching against specific operational failures or reporting diagnostics to the UI, reference typed error codes from `crate::error::ErrorCode` (`ERR_SDE_NOT_FOUND`, `ERR_ESI_NETWORK_FAILED`, `ERR_SSO_AUTH_SERVER_FAILED`, etc.).
 
 ### B. Type Safety & Domain Invariants
 - **Ship Limits**: Never hardcode ship cargo capacity (60,000 m³ / 30,000 m³) or budget limits (500M / 50M ISK) as raw literals across multiple files. Always reference `ShipProfile` (`BIG_HAULER`, `SMALL_HAULER`).
@@ -87,7 +87,7 @@ The integrity of the automated test suite is paramount. Tests are not merely a v
 
 ## 4. Testing Necessities & Test Suites Catalog
 
-The codebase enforces full automated test suites across all domain components and invariants. All 11 integration test suites are located in `tests/` (105 tests passing) and run via `cargo test --verbose` or `make test`.
+The codebase enforces full automated test suites across all domain components and invariants. All 18 integration test suites are located in `tests/` (179 tests passing) and run via `cargo test --verbose` or `make test`.
 
 ### Test Suite Structure
 
@@ -148,6 +148,27 @@ The codebase enforces full automated test suites across all domain components an
 
 11. **`tests/test_sso.rs` (EVE Online SSO v2 PKCE)**
     - Validates PKCE OAuth authorization flow, state parameter verification, token exchange and refresh logic.
+
+12. **`tests/test_concurrency.rs` (Concurrency & Multi-Thread Stress)**
+    - Verifies thread-safe state access, parallel market fetching, and lock contention resilience.
+
+13. **`tests/test_dos_defense.rs` (DoS Defense & Resource Exhaustion)**
+    - Verifies decompression limits, oversized payload bounding, and allocation ceilings.
+
+14. **`tests/test_error_codes.rs` (ErrorCode Taxonomy)**
+    - Verifies integer code uniqueness, range boundaries (1000..9999), and JSON serialization.
+
+15. **`tests/test_logging.rs` (Structured Logging & Redaction)**
+    - Verifies dual-sink logging initialization, file creation, and panic interception.
+
+16. **`tests/test_reliability.rs` (Fault Recovery & Transient Resilience)**
+    - Verifies poison lock recovery, transient HTTP 408 retry handling, and atomic file cleanup guards.
+
+17. **`tests/test_startup_resilience.rs` (Startup Supervisor & Channel Health)**
+    - Verifies worker thread join handles, panic interception, and offline fallback mode.
+
+18. **`tests/test_theme.rs` (Cockpit Themes & WCAG Contrast)**
+    - Verifies tokenized theme palettes, dark/light modes, frame builders, and contrast ratios.
 
 ### Adding New Features
 Whenever adding a new trading filter, formula, or routing mode:

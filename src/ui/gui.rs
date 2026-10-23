@@ -2572,7 +2572,7 @@ impl DesktopApp {
                 .on_hover_text(format!("System: {} (ID: {})\nSecurity: {:.2}\nRegion: {}\nResolved successfully from: '{}'", sys_name, hid, sec, reg_name, self.home_system));
 
                 if !sys_name.is_empty()
-                    && self.home_system.trim().to_lowercase() != sys_name.to_lowercase()
+                    && !self.home_system.trim().eq_ignore_ascii_case(&sys_name)
                     && ui
                         .small_button(format!("Use {}", sys_name))
                         .on_hover_text(format!("Clean input to exact solar system name '{}' and scan", sys_name))
@@ -3103,18 +3103,8 @@ impl DesktopApp {
     }
 
     fn render_tab_bar(&mut self, ui: &mut egui::Ui) {
-        let hub_count = crate::hub_arbitrage::filter_hub_deals(
-            &self.deals,
-            &crate::hub_arbitrage::HubFilterOptions {
-                source_hub: self.hub_source_filter,
-                dest_hub: self.hub_dest_filter,
-                include_npc: self.hub_include_npc,
-                major_stations_only: self.hub_major_stations_only,
-                min_profit: self.hub_min_profit_m * 1_000_000.0,
-                search_query: self.hub_search_query.clone(),
-            },
-        )
-        .len();
+        self.ensure_cached_hub_deals();
+        let hub_count = self.cached_hub_deals.len();
 
         let palette = self.theme.palette();
 
@@ -3395,8 +3385,8 @@ impl DesktopApp {
                             .strong(),
                     );
                     if ui.add(export_btn).on_hover_text("Export all currently filtered deals to ./deals_export.csv and copy to clipboard").clicked() {
-                        let filter_inner = self.filter_item_name.trim().to_lowercase();
-                        let filter_sde_inner = crate::sde::station_name_to_sde(&filter_inner).to_lowercase();
+                        let filter_inner = self.filter_item_name.trim();
+                        let filter_sde_inner = crate::sde::station_name_to_sde(filter_inner);
                         let min_prof = self.min_profit_filter_m * 1_000_000.0;
                         let max_j = self.max_jumps_filter;
                         let hide_npc = self.hide_npc_trades;
@@ -3410,13 +3400,13 @@ impl DesktopApp {
                                     return false;
                                 }
                                 (filter_inner.is_empty()
-                                    || d.item_name.to_lowercase().contains(&filter_inner)
-                                    || d.source_system_name.to_lowercase().contains(&filter_inner)
-                                    || d.dest_system_name.to_lowercase().contains(&filter_inner)
-                                    || d.source_station_name.to_lowercase().contains(&filter_inner)
-                                    || d.source_station_name.to_lowercase().contains(&filter_sde_inner)
-                                    || d.dest_station_name.to_lowercase().contains(&filter_inner)
-                                    || d.dest_station_name.to_lowercase().contains(&filter_sde_inner))
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.item_name, filter_inner)
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_system_name, filter_inner)
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_system_name, filter_inner)
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_station_name, filter_inner)
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_station_name, &filter_sde_inner)
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_station_name, filter_inner)
+                                    || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_station_name, &filter_sde_inner))
                                     && d.net_profit >= min_prof
                                     && (max_j == 0 || d.total_jumps <= max_j)
                             })
@@ -3474,8 +3464,8 @@ impl DesktopApp {
         );
 
         if self.cached_deals_key != current_key {
-            let filter = self.filter_item_name.trim().to_lowercase();
-            let filter_sde = crate::sde::station_name_to_sde(&filter).to_lowercase();
+            let filter = self.filter_item_name.trim();
+            let filter_sde = crate::sde::station_name_to_sde(filter);
             let min_profit_threshold = self.min_profit_filter_m * 1_000_000.0;
             let max_jumps = self.max_jumps_filter;
             let hide_npc = self.hide_npc_trades;
@@ -3489,13 +3479,13 @@ impl DesktopApp {
                         return false;
                     }
                     (filter.is_empty()
-                        || d.item_name.to_lowercase().contains(&filter)
-                        || d.source_system_name.to_lowercase().contains(&filter)
-                        || d.dest_system_name.to_lowercase().contains(&filter)
-                        || d.source_station_name.to_lowercase().contains(&filter)
-                        || d.source_station_name.to_lowercase().contains(&filter_sde)
-                        || d.dest_station_name.to_lowercase().contains(&filter)
-                        || d.dest_station_name.to_lowercase().contains(&filter_sde))
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.item_name, filter)
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_system_name, filter)
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_system_name, filter)
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_station_name, filter)
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.source_station_name, &filter_sde)
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_station_name, filter)
+                        || crate::hub_arbitrage::contains_ignore_ascii_case(&d.dest_station_name, &filter_sde))
                         && d.net_profit >= min_profit_threshold
                         && (max_jumps == 0 || d.total_jumps <= max_jumps)
                 })
@@ -3588,22 +3578,18 @@ impl DesktopApp {
                 DealSortBy::ItemName => {
                     filtered.sort_by(|(_, a), (_, b)| {
                         if self.sort_descending {
-                            b.item_name.to_lowercase().cmp(&a.item_name.to_lowercase())
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(&b.item_name, &a.item_name)
                         } else {
-                            a.item_name.to_lowercase().cmp(&b.item_name.to_lowercase())
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(&a.item_name, &b.item_name)
                         }
                     });
                 }
                 DealSortBy::BuySystem => {
                     filtered.sort_by(|(_, a), (_, b)| {
                         if self.sort_descending {
-                            b.source_system_name
-                                .to_lowercase()
-                                .cmp(&a.source_system_name.to_lowercase())
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(&b.source_system_name, &a.source_system_name)
                         } else {
-                            a.source_system_name
-                                .to_lowercase()
-                                .cmp(&b.source_system_name.to_lowercase())
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(&a.source_system_name, &b.source_system_name)
                         }
                     });
                 }
@@ -3623,13 +3609,9 @@ impl DesktopApp {
                 DealSortBy::SellSystem => {
                     filtered.sort_by(|(_, a), (_, b)| {
                         if self.sort_descending {
-                            b.dest_system_name
-                                .to_lowercase()
-                                .cmp(&a.dest_system_name.to_lowercase())
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(&b.dest_system_name, &a.dest_system_name)
                         } else {
-                            a.dest_system_name
-                                .to_lowercase()
-                                .cmp(&b.dest_system_name.to_lowercase())
+                            crate::hub_arbitrage::cmp_ignore_ascii_case(&a.dest_system_name, &b.dest_system_name)
                         }
                     });
                 }
@@ -6613,6 +6595,167 @@ impl DesktopApp {
         );
     }
 
+    fn ensure_cached_hub_deals(&mut self) {
+        let current_hub_key = (
+            self.hub_source_filter,
+            self.hub_dest_filter,
+            self.hub_include_npc,
+            self.hub_major_stations_only,
+            self.hub_min_profit_m.to_bits(),
+            self.hub_search_query.clone(),
+            self.hub_sort_by,
+            self.hub_sort_descending,
+            self.deals.len(),
+        );
+
+        if self.cached_hub_key != current_hub_key {
+            let opts = hub_arbitrage::HubFilterOptions {
+                source_hub: self.hub_source_filter,
+                dest_hub: self.hub_dest_filter,
+                include_npc: self.hub_include_npc,
+                major_stations_only: self.hub_major_stations_only,
+                min_profit: self.hub_min_profit_m * 1_000_000.0,
+                search_query: self.hub_search_query.clone(),
+            };
+
+            let mut filtered: Vec<crate::arbitrage::ArbitrageDeal> =
+                hub_arbitrage::filter_hub_deals(&self.deals, &opts)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+
+            // Zero-allocation case-insensitive sorting comparisons
+            match self.hub_sort_by {
+                DealSortBy::ProfitPerJump => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.profit_per_jump
+                            .partial_cmp(&a.profit_per_jump)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.profit_per_jump
+                            .partial_cmp(&b.profit_per_jump)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::TotalProfit => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.net_profit
+                            .partial_cmp(&a.net_profit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.net_profit
+                            .partial_cmp(&b.net_profit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::RoiPct => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.net_profit_pct
+                            .partial_cmp(&a.net_profit_pct)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.net_profit_pct
+                            .partial_cmp(&b.net_profit_pct)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::ProfitPerM3 => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.profit_per_m3
+                            .partial_cmp(&a.profit_per_m3)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.profit_per_m3
+                            .partial_cmp(&b.profit_per_m3)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::Jumps => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.total_jumps.cmp(&a.total_jumps)
+                    } else {
+                        a.total_jumps.cmp(&b.total_jumps)
+                    }
+                }),
+                DealSortBy::Cost => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.capital_required
+                            .partial_cmp(&a.capital_required)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.capital_required
+                            .partial_cmp(&b.capital_required)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::ItemName => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(&b.item_name, &a.item_name)
+                    } else {
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(&a.item_name, &b.item_name)
+                    }
+                }),
+                DealSortBy::BuySystem => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(&b.source_system_name, &a.source_system_name)
+                    } else {
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(&a.source_system_name, &b.source_system_name)
+                    }
+                }),
+                DealSortBy::BuyPrice => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.buy_price
+                            .partial_cmp(&a.buy_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.buy_price
+                            .partial_cmp(&b.buy_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::SellSystem => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(&b.dest_system_name, &a.dest_system_name)
+                    } else {
+                        crate::hub_arbitrage::cmp_ignore_ascii_case(&a.dest_system_name, &b.dest_system_name)
+                    }
+                }),
+                DealSortBy::SellPrice => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.sell_price
+                            .partial_cmp(&a.sell_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.sell_price
+                            .partial_cmp(&b.sell_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+                DealSortBy::Quantity => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.quantity.cmp(&a.quantity)
+                    } else {
+                        a.quantity.cmp(&b.quantity)
+                    }
+                }),
+                DealSortBy::Volume => filtered.sort_by(|a, b| {
+                    if self.hub_sort_descending {
+                        b.volume_used
+                            .partial_cmp(&a.volume_used)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        a.volume_used
+                            .partial_cmp(&b.volume_used)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                }),
+            }
+
+            self.cached_hub_deals = filtered;
+            self.cached_hub_key = current_hub_key;
+        }
+    }
+
     fn render_hub_arbitrage_tab(&mut self, ui: &mut egui::Ui) {
         let palette = self.theme.palette();
         if self.deals.is_empty() {
@@ -6786,172 +6929,7 @@ impl DesktopApp {
 
         ui.add_space(6.0);
 
-        let opts = hub_arbitrage::HubFilterOptions {
-            source_hub: self.hub_source_filter,
-            dest_hub: self.hub_dest_filter,
-            include_npc: self.hub_include_npc,
-            major_stations_only: self.hub_major_stations_only,
-            min_profit: self.hub_min_profit_m * 1_000_000.0,
-            search_query: self.hub_search_query.clone(),
-        };
-
-        let current_hub_key = (
-            self.hub_source_filter,
-            self.hub_dest_filter,
-            self.hub_include_npc,
-            self.hub_major_stations_only,
-            self.hub_min_profit_m.to_bits(),
-            self.hub_search_query.clone(),
-            self.hub_sort_by,
-            self.hub_sort_descending,
-            self.deals.len(),
-        );
-
-        if self.cached_hub_key != current_hub_key {
-            let mut filtered: Vec<crate::arbitrage::ArbitrageDeal> =
-                hub_arbitrage::filter_hub_deals(&self.deals, &opts)
-                    .into_iter()
-                    .cloned()
-                    .collect();
-
-            // Sorting
-            match self.hub_sort_by {
-                DealSortBy::ProfitPerJump => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.profit_per_jump
-                            .partial_cmp(&a.profit_per_jump)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.profit_per_jump
-                            .partial_cmp(&b.profit_per_jump)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::TotalProfit => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.net_profit
-                            .partial_cmp(&a.net_profit)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.net_profit
-                            .partial_cmp(&b.net_profit)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::RoiPct => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.net_profit_pct
-                            .partial_cmp(&a.net_profit_pct)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.net_profit_pct
-                            .partial_cmp(&b.net_profit_pct)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::ProfitPerM3 => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.profit_per_m3
-                            .partial_cmp(&a.profit_per_m3)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.profit_per_m3
-                            .partial_cmp(&b.profit_per_m3)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::Jumps => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.total_jumps.cmp(&a.total_jumps)
-                    } else {
-                        a.total_jumps.cmp(&b.total_jumps)
-                    }
-                }),
-                DealSortBy::Cost => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.capital_required
-                            .partial_cmp(&a.capital_required)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.capital_required
-                            .partial_cmp(&b.capital_required)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::ItemName => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.item_name.to_lowercase().cmp(&a.item_name.to_lowercase())
-                    } else {
-                        a.item_name.to_lowercase().cmp(&b.item_name.to_lowercase())
-                    }
-                }),
-                DealSortBy::BuySystem => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.source_system_name
-                            .to_lowercase()
-                            .cmp(&a.source_system_name.to_lowercase())
-                    } else {
-                        a.source_system_name
-                            .to_lowercase()
-                            .cmp(&b.source_system_name.to_lowercase())
-                    }
-                }),
-                DealSortBy::BuyPrice => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.buy_price
-                            .partial_cmp(&a.buy_price)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.buy_price
-                            .partial_cmp(&b.buy_price)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::SellSystem => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.dest_system_name
-                            .to_lowercase()
-                            .cmp(&a.dest_system_name.to_lowercase())
-                    } else {
-                        a.dest_system_name
-                            .to_lowercase()
-                            .cmp(&b.dest_system_name.to_lowercase())
-                    }
-                }),
-                DealSortBy::SellPrice => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.sell_price
-                            .partial_cmp(&a.sell_price)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.sell_price
-                            .partial_cmp(&b.sell_price)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-                DealSortBy::Quantity => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.quantity.cmp(&a.quantity)
-                    } else {
-                        a.quantity.cmp(&b.quantity)
-                    }
-                }),
-                DealSortBy::Volume => filtered.sort_by(|a, b| {
-                    if self.hub_sort_descending {
-                        b.volume_used
-                            .partial_cmp(&a.volume_used)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    } else {
-                        a.volume_used
-                            .partial_cmp(&b.volume_used)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                }),
-            }
-
-            self.cached_hub_deals = filtered;
-            self.cached_hub_key = current_hub_key;
-        }
+        self.ensure_cached_hub_deals();
 
         let filtered_deals = &self.cached_hub_deals;
 

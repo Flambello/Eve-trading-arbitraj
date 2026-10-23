@@ -122,8 +122,10 @@ pub fn find_deals(
     cfg: &ArbitrageConfig,
 ) -> Vec<ArbitrageDeal> {
     // 1. Find cheapest sell order and highest buy order per (type_id, station_id) directly
-    let mut best_sells_by_type_station: HashMap<(u32, u64), &MarketOrder> = HashMap::new();
-    let mut best_buys_by_type_station: HashMap<(u32, u64), &MarketOrder> = HashMap::new();
+    let mut best_sells_by_type_station: HashMap<(u32, u64), &MarketOrder> =
+        HashMap::with_capacity(4096);
+    let mut best_buys_by_type_station: HashMap<(u32, u64), &MarketOrder> =
+        HashMap::with_capacity(4096);
 
     for market in markets.values() {
         for (&type_id, orders) in &market.sell_orders {
@@ -174,7 +176,7 @@ pub fn find_deals(
     }
 
     // 2. Group deduplicated station bests by type_id and bound station cross-product
-    let mut sells_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    let mut sells_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::with_capacity(1024);
     for ((type_id, _), order) in best_sells_by_type_station {
         sells_by_type.entry(type_id).or_default().push(order);
     }
@@ -187,7 +189,7 @@ pub fn find_deals(
         list.truncate(MAX_STATIONS_PER_TYPE);
     }
 
-    let mut buys_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::new();
+    let mut buys_by_type: HashMap<u32, Vec<&MarketOrder>> = HashMap::with_capacity(1024);
     for ((type_id, _), order) in best_buys_by_type_station {
         buys_by_type.entry(type_id).or_default().push(order);
     }
@@ -200,7 +202,7 @@ pub fn find_deals(
         list.truncate(MAX_STATIONS_PER_TYPE);
     }
 
-    let mut deals = Vec::new();
+    let mut deals = Vec::with_capacity(2048);
 
     // 3. For each type_id that exists in both buys and sells
     for (&type_id, sell_list) in &sells_by_type {
@@ -218,6 +220,11 @@ pub fn find_deals(
 
         // Test all (source_station, dest_station) pairs
         for &src_order in sell_list {
+            // Early prune: skip source stations unreachable from home in safe mode
+            if cfg.safe_only && graph.jump_count(cfg.home_system, src_order.system_id, true) >= 9999 {
+                continue;
+            }
+
             for &dst_order in buy_list {
                 // Must be cross-station trade (not same station)
                 if src_order.location_id == dst_order.location_id {

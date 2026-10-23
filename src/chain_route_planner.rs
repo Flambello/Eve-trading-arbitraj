@@ -269,6 +269,11 @@ pub fn gather_enroute_candidates<'a, 'b>(
             continue;
         }
 
+        // Only evaluate systems that actually contain deals terminating at `dest`
+        if !sys_deals.iter().any(|d| d.dest_system_id == dest) {
+            continue;
+        }
+
         // Fast-pruning: if distance from source alone exceeds (direct_jumps + max_detour),
         // it is impossible by triangle inequality for (j1 + j2 - direct_jumps) to be <= max_detour.
         let j1 = graph.jump_count(source, sys_id, config.safe_only);
@@ -940,6 +945,9 @@ pub fn find_chain_routes(
                 let j = graph.jump_count(candidate.current_system, src_sys, config.safe_only);
                 if j < min_dist {
                     min_dist = j;
+                    if min_dist == 0 {
+                        break;
+                    }
                 }
             }
 
@@ -981,6 +989,23 @@ pub fn find_chain_routes(
                 }
                 let j_src_dst = graph.jump_count(src_sys, dst_sys, config.safe_only);
                 if j_src_dst >= 9999 {
+                    continue;
+                }
+
+                // Check if any deals in this corridor are available before full knapsack allocation
+                let has_viable = corr_deals.iter().any(|d| {
+                    !candidate.used_deal_keys.contains(&(
+                        d.type_id,
+                        d.source_station_id,
+                        d.dest_station_id,
+                    )) && !candidate
+                        .exhausted_source_stations
+                        .contains(&(d.type_id, d.source_station_id))
+                        && !candidate
+                            .exhausted_dest_stations
+                            .contains(&(d.type_id, d.dest_station_id))
+                });
+                if !has_viable {
                     continue;
                 }
 

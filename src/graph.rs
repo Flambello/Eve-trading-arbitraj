@@ -172,6 +172,15 @@ impl SystemGraph {
             None => return 9999,
         };
 
+        if safe_only
+            && (self.graph[origin_idx].security_status < 0.45
+                || self.graph[dest_idx].security_status < 0.45)
+        {
+            let mut cache = self.jump_cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache.put(cache_key, 9999);
+            return 9999;
+        }
+
         let node_count = self.graph.node_count();
         let mut visited = FastBitSet::new(node_count);
         let mut queue = VecDeque::new();
@@ -179,11 +188,6 @@ impl SystemGraph {
         queue.push_back((origin_idx, 0u32));
 
         let result = if safe_only {
-            // Strictly exclude lowsec and nullsec origin or destination
-            if !self.is_highsec(origin) || !self.is_highsec(dest) {
-                return 9999;
-            }
-
             let mut found_dist = None;
             while let Some((curr, dist)) = queue.pop_front() {
                 if curr == dest_idx {

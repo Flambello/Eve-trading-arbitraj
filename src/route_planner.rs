@@ -147,7 +147,7 @@ pub fn plan_route(
     } else {
         deals
     };
-    let mut unused_deals: Vec<ArbitrageDeal> = candidate_pool.to_vec();
+    let mut unused_deals: Vec<&ArbitrageDeal> = candidate_pool.iter().collect();
     let effective_max_stops = max_stops.min(MAX_ALLOWED_ROUTE_STOPS);
     let mut stops = Vec::new();
     let mut current_system = home_system;
@@ -199,7 +199,7 @@ pub fn plan_route(
             None => break,
         };
 
-        let chosen_deal = unused_deals.remove(chosen_idx);
+        let chosen_deal = unused_deals.swap_remove(chosen_idx);
         let chosen_src_order = chosen_deal.source_order_id;
         let chosen_src_station = chosen_deal.source_station_id;
         let chosen_dest_station = chosen_deal.dest_station_id;
@@ -263,7 +263,7 @@ pub fn plan_route(
 
         stops.push(RouteStop {
             step,
-            deal: chosen_deal,
+            deal: (*chosen_deal).clone(),
             jumps_from_prev: best_leg_jumps,
             prev_system_id: departure_system,
             prev_system_name: prev_name,
